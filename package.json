@@ -23,6 +23,7 @@
     "typecheck:ui": "vue-tsc --noEmit -p ui/tsconfig.json",
     "typecheck:all": "npm run typecheck && npm run typecheck:ui",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "verify:build": "node scripts/verify-build.mjs",
     "license:check": "node scripts/check-licenses.mjs",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
