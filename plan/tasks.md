@@ -38,7 +38,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 - [x] **015. Add standard development commands** — **Status: [done]** — Define package scripts or documented Compose commands for shell access, app startup, tests, build, and cleanup. **Done when:** contributors can use one consistent command surface. **Spec:** [§3, §18](SPECIFICATION.md#3-technology-and-packaging).
 - [x] **016. Verify clean container startup** — **Status: [done]** — Build and start the development environment from a clean checkout without relying on host-installed Node.js. **Done when:** the command succeeds on a clean Linux Docker installation. **Spec:** [§3, §17.2](SPECIFICATION.md#3-technology-and-packaging).
 - [x] **017. Verify the minimum runtime image** — **Status: [done]** — Ensure the development/test image can run Node.js `22.13.0`, the minimum specified for `node:sqlite`. **Done when:** `node:sqlite` can be imported without requiring `--experimental-sqlite`. **Spec:** [§3, §20](SPECIFICATION.md#3-technology-and-packaging).
-- [ ] **018. Document Docker setup and teardown** — **Status: [new]** — Document initial build, start, shell, stop, cleanup, and safe data-volume handling. **Done when:** a contributor can reproduce the environment from the README. **Spec:** [§18](SPECIFICATION.md#18-documentation-deliverables).
+- [x] **018. Document Docker setup and teardown** — **Status: [done]** — Document initial build, start, shell, stop, cleanup, and safe data-volume handling. **Done when:** a contributor can reproduce the environment from the README. **Spec:** [§18](SPECIFICATION.md#18-documentation-deliverables).
 
 ## Stage 2 — Set up the testing foundation first
 
