@@ -79,7 +79,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 
 - [x] **045. Add Prettier configuration** — **Status: [done]** — Define formatting rules for TypeScript, Vue, JSON, Markdown, and YAML. **Done when:** a consistent formatting command is available. **Spec:** [§4.1, §17.3](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
 - [x] **046. Add formatting scripts** — **Status: [done]** — Add format and format-check scripts without silently rewriting code in CI. **Done when:** contributors can format locally and CI checks without modifying files. **Spec:** [§17.3](SPECIFICATION.md#173-enforced-quality-thresholds).
-- [ ] **047. Enforce formatting checks in CI** — **Status: [new]** — Add the format check as a required pull-request job. **Done when:** unformatted changes fail CI. **Spec:** [§4.4, §17.3](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
+- [x] **047. Enforce formatting checks in CI** — **Status: [done]** — Add the format check as a required pull-request job. **Done when:** unformatted changes fail CI. **Spec:** [§4.4, §17.3](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
 
 ## Stage 6 — Build the initial CI and release safety net
 
