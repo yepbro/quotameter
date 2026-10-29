@@ -1,0 +1,16 @@
+# Development environment for Quotameter.
+#
+# `docker compose run --rm dev` starts an interactive development shell with a
+# predictable working directory. See README.md ("Development environment") for
+# the full command surface.
+name: quotameter
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    # Keep the container alive so `docker compose exec` / `run` can be used
+    # for repeat commands without restarting the environment.
+    command: ["sleep", "infinity"]
