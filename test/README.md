@@ -17,3 +17,16 @@ Conventions:
 - Every test must clean up after itself (see `test/helpers/isolation.ts`); tests must not depend on execution order.
 - The default suite runs with the no-network guard enabled (`test/helpers/network-guard.ts`): outbound requests to non-loopback hosts fail loudly. Tests that need HTTP use the local mock provider server or explicit loopback listeners.
 - Property-based tests import `fast-check` and follow the deterministic-seed convention documented in the root README of `test/`.
+
+## Command surface
+
+All test commands run inside the development container (`make shell`) or any Node.js `>=22.13.0` environment:
+
+| Command                   | Effect                                                        |
+| ------------------------- | ------------------------------------------------------------- |
+| `npm run test`            | Run the full unit + integration suite once; exits non-zero on any failure. |
+| `npm run test:unit`       | Run only `test/unit/`.                                         |
+| `npm run test:integration`| Run only `test/integration/`.                                  |
+| `npm run test:component`  | Run only `test/component/`.                                    |
+| `npm run test:watch`      | Watch mode for local development.                              |
+| `npm run test:ci`         | Full suite with an additional JUnit report at `reports/junit.xml` for CI. |

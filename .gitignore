@@ -35,6 +35,7 @@ config.local.json
 /dist
 /build
 /coverage
+/reports
 /.vite
 *.tsbuildinfo
 .eslintcache
