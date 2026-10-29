@@ -109,6 +109,21 @@ describe('parseJson', () => {
       expect(result.problems.join('\n')).not.toContain(secret);
     }
   });
+
+  it('strips a quote-free V8 snippet down to the token and context (spec §15.4)', () => {
+    // V8 quotes the offending region in `…, "<snippet>" is not valid JSON`;
+    // when the snippet carries no inner quotes (a bare token inside an array
+    // or scalar), the strip pattern removes it whole — the echoed region must
+    // not survive into the problem.
+    const result = parseJson('[1, 2, s3cret]');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.problems).toHaveLength(1);
+      expect(result.problems[0]).toMatch(/^invalid JSON: Unexpected token/);
+      expect(result.problems[0]).not.toContain('is not valid JSON');
+      expect(result.problems.join('\n')).not.toContain('s3cret');
+    }
+  });
 });
 
 describe('parseConfig — valid input (spec §6.2)', () => {
@@ -535,6 +550,76 @@ describe('formatSchemaError — total over any Ajv error (doctor reuse)', () => 
     });
     expect(formatSchemaError(error, root)).toBe(
       "configuration: property name 'za i' must match the pattern '^id$'",
+    );
+  });
+
+  it('omits the actual-type suffix when the instance path cannot be walked', () => {
+    // A type error whose data path crosses a scalar cannot name an actual
+    // type; the formatter stays total and drops the suffix instead.
+    const error = at({
+      keyword: 'type',
+      params: { type: 'integer' },
+      instancePath: '/a/b',
+    });
+    expect(formatSchemaError(error, ConfigSchema, { a: 'str' })).toBe('a.b: expected an integer');
+  });
+
+  it('resolves the parent schema from a hand-built path without the # prefix', () => {
+    const root: Record<string, unknown> = {
+      properties: { server: { patternProperties: { '^h$': {} }, additionalProperties: false } },
+    };
+    const error = at({
+      keyword: 'additionalProperties',
+      instancePath: '/server',
+      schemaPath: 'properties/server/additionalProperties',
+      params: { additionalProperty: 'h!' },
+    });
+    expect(formatSchemaError(error, root)).toBe(
+      "server: property name 'h!' must match the pattern '^h$'",
+    );
+  });
+
+  it('falls back to "unknown property" when the schema walk cannot resolve a parent', () => {
+    const root: Record<string, unknown> = { definitions: 'not an object' };
+    // Mid-walk break: the walk crosses the string on its way to a deeper key.
+    const through = at({
+      keyword: 'additionalProperties',
+      instancePath: '/x',
+      schemaPath: '#/definitions/x/additionalProperties',
+      params: { additionalProperty: 'k' },
+    });
+    expect(formatSchemaError(through, root)).toBe("x: unknown property 'k'");
+    // Final-segment break: the walk ends on the string itself.
+    const atEnd = at({
+      keyword: 'additionalProperties',
+      instancePath: '/x',
+      schemaPath: '#/definitions/additionalProperties',
+      params: { additionalProperty: 'k' },
+    });
+    expect(formatSchemaError(atEnd, root)).toBe("x: unknown property 'k'");
+  });
+
+  it('renders an empty pattern for a parent with an empty patternProperties record', () => {
+    const root: Record<string, unknown> = {
+      properties: { p: { patternProperties: {}, additionalProperties: false } },
+    };
+    const error = at({
+      keyword: 'additionalProperties',
+      instancePath: '/p',
+      schemaPath: '#/properties/p/additionalProperties',
+      params: { additionalProperty: 'k' },
+    });
+    expect(formatSchemaError(error, root)).toBe("p: property name 'k' must match the pattern ''");
+  });
+
+  it('plurals the counted noun for limits above one', () => {
+    // The live contract's length/item limits are all 1 (singular); the
+    // plural half of the vocabulary stays pinned here for the future.
+    expect(
+      formatSchemaError(at({ keyword: 'minLength', params: { limit: 2 } }), ConfigSchema),
+    ).toBe('configuration: must be at least 2 characters long');
+    expect(formatSchemaError(at({ keyword: 'minItems', params: { limit: 2 } }), ConfigSchema)).toBe(
+      'configuration: must contain at least 2 items',
     );
   });
 });

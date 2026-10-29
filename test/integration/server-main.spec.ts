@@ -237,6 +237,27 @@ describe('runServer (in-process)', () => {
     await expect(server).resolves.toBe(0);
   });
 
+  it('runs with the assembled default components when none are passed', async () => {
+    const onSpy = vi.spyOn(process, 'on');
+    let resolveReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+
+    // No `components`: the bootstrap assembly from buildComponents() runs —
+    // the "starts and stops cleanly without collecting provider data"
+    // milestone through the production default.
+    const server = runServer({
+      runtime: { nodeVersion: '22.13.0', uid: 1000 },
+      onSignalsReady: () => resolveReady(),
+    });
+    const handler = await sigtermHandlerAfter(onSpy, ready);
+    shutdownTriggers.push(() => handler('SIGTERM'));
+
+    handler('SIGTERM');
+    await expect(server).resolves.toBe(0);
+  });
+
   it('propagates a throwing readiness callback and still disposes the handlers', async () => {
     const removeSpy = vi.spyOn(process, 'removeListener');
     const component: LifecycleComponent = {

@@ -596,4 +596,26 @@ describe('loadConfigWithEnv — composed with loadConfigFile (task 064)', () => 
     );
     expect(result).toEqual({ ok: false, problems: ['server.port: must be >= 1'] });
   });
+
+  it('returns the composed rejection when a valid file meets a broken environment', async () => {
+    // The file stage succeeded; the environment composition fails — the
+    // pipeline reports the composition's own problems verbatim.
+    await expect(
+      loadConfigWithEnv(
+        '/x/config.json',
+        { QUOTAMETER_TYPO: 'x' },
+        fsWith(JSON.stringify(fileConfig())),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      problems: ['QUOTAMETER_TYPO: unsupported environment variable'],
+    });
+    await expect(
+      loadConfigWithEnv(
+        '/x/config.json',
+        { QUOTAMETER_SERVER_PORT: '70000' },
+        fsWith(JSON.stringify(fileConfig())),
+      ),
+    ).resolves.toEqual({ ok: false, problems: ['server.port: must be <= 65535'] });
+  });
 });

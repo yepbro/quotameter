@@ -281,6 +281,75 @@ describe('writeConfigFile — interrupted writes', () => {
     });
   });
 
+  it('surfaces the original interruption even when the cleanup unlink fails', async () => {
+    await withTempDir(async (dir) => {
+      const target = join(dir.path, 'config.json');
+      const previous = `${JSON.stringify(sampleConfig('previous'), null, 2)}\n`;
+      await seedTarget(target, previous, 0o600);
+      const failure = new Error('simulated interruption before activation');
+      const unlinkDenied = Object.assign(new Error('EPERM: cleanup denied'), {
+        code: 'EPERM',
+      });
+      const base = trackingFilesystem([], {
+        renameImpl: async () => {
+          throw failure;
+        },
+      });
+      const unlinkBroken: WriteFilesystem = {
+        ...base,
+        unlink: () => Promise.reject(unlinkDenied),
+      };
+
+      // The swallowed cleanup failure must not mask the original error.
+      await expect(
+        writeConfigFile(target, sampleConfig('never-activated'), unlinkBroken),
+      ).rejects.toMatchObject({ cause: failure });
+
+      await expect(readFile(target, 'utf8')).resolves.toBe(previous);
+      expect(await modeOf(target)).toBe(0o600);
+      // With the cleanup unlink denied, the inert hidden temp remains — the
+      // documented crash residue; it is never the active file.
+      const entries = await readdir(dir.path);
+      expect(entries).toHaveLength(2);
+      expect(entries.filter((name) => name !== 'config.json').at(0)).toMatch(
+        /^\.config\.json\.tmp-\d+-[a-z0-9]+$/,
+      );
+    });
+  });
+
+  it('surfaces the original interruption even when the cleanup close fails', async () => {
+    await withTempDir(async (dir) => {
+      const target = join(dir.path, 'config.json');
+      const previous = `${JSON.stringify(sampleConfig('previous'), null, 2)}\n`;
+      await seedTarget(target, previous, 0o600);
+      const failure = new Error('simulated interruption before fsync completed');
+
+      // `close` runs for real (no fd leak) and then rejects, simulating a
+      // handle that is broken exactly when the cleanup path calls it.
+      const closeBroken = (handle: FileHandle): FileHandle => {
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          await close();
+          throw new Error('close during cleanup is broken');
+        };
+        return syncRejectingHandle(handle, failure);
+      };
+
+      await expect(
+        writeConfigFile(
+          target,
+          sampleConfig('lost'),
+          trackingFilesystem([], { wrapHandle: closeBroken }),
+        ),
+      ).rejects.toMatchObject({ cause: failure });
+
+      await expect(readFile(target, 'utf8')).resolves.toBe(previous);
+      expect(await modeOf(target)).toBe(0o600);
+      // The cleanup unlink still ran (only `close` was broken): no residue.
+      await expect(readdir(dir.path)).resolves.toEqual(['config.json']);
+    });
+  });
+
   it('touches no file at all when serialization fails', async () => {
     await withTempDir(async (dir) => {
       const target = join(dir.path, 'config.json');

@@ -6,6 +6,7 @@ import { createConfigReloader, type ConfigReloader } from '../../src/config/relo
 import { createLogger, type Logger } from '../../src/util/logger';
 import type { AccountConfig, AuthMode, Config, ProviderConfig } from '../../src/schemas/config';
 import { createMemoryLogSink, type MemoryLogSink } from '../helpers/logSink';
+import { withQuotameterEnv } from '../helpers/hermeticEnv';
 import { withTempDir } from '../helpers/isolation';
 
 /**
@@ -442,6 +443,54 @@ describe('reload — environment overrides re-apply every time (decision D-023)'
       expect(current.config.accounts).toEqual([]);
       expect(current.config.providers).toEqual({});
       expect(current.config.app.timezone).toBe('Europe/Berlin');
+    });
+  });
+});
+
+describe('reload — the environment snapshot defaults to process.env (D-023, D-028)', () => {
+  it('pins construction-time values; later process.env mutations cannot flip them', async () => {
+    await withTempDir(async (dir) => {
+      const target = configFilePath(dir.path);
+      await writeFile(
+        target,
+        variant(() => {}),
+        'utf8',
+      );
+
+      // Omitting `env` exercises the production default (the snapshot of
+      // process.env) under a hermetic QUOTAMETER_* state (decision D-028).
+      await withQuotameterEnv({ QUOTAMETER_SERVER_PORT: '9100' }, async () => {
+        const initial = await loadConfigWithEnv(target);
+        if (!initial.ok) throw new Error(initial.problems.join('; '));
+        const reloader = createConfigReloader({ initial, targetPath: target });
+        expect(reloader.current().config.server?.port).toBe(9100);
+
+        // A library mutates the live environment after construction, and
+        // the file asks for yet another port…
+        process.env.QUOTAMETER_SERVER_PORT = '9400';
+        await writeFile(
+          target,
+          variant((c) => {
+            c.server.port = 9999;
+            c.app.pollingIntervalSeconds = 120;
+          }),
+          'utf8',
+        );
+
+        const result = await reloader.reload();
+
+        // …but the one-time snapshot wins over both: the pinned port keeps
+        // its construction-time value and never becomes a restart-requiring
+        // change (decision D-026 §4).
+        expect(result).toMatchObject({
+          ok: true,
+          outcome: 'applied',
+          applied: ['app.pollingIntervalSeconds'],
+          restartRequired: [],
+        });
+        expect(reloader.current().config.server?.port).toBe(9100);
+        expect(reloader.current().sources.fields).toEqual(['server.port']);
+      });
     });
   });
 });

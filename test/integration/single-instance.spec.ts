@@ -348,6 +348,79 @@ describe('createSingleInstanceLock', () => {
     }
   });
 
+  it('refuses with the wrapped errno when the contended lock cannot be read', async () => {
+    const dir = await createTempDir('quotameter-lock-eacces-');
+    try {
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+      // Mode 000 on the lock file (foreign-owned 0600 in production): the
+      // publish sees EEXIST, and inspecting the holder then fails — a
+      // filesystem failure, not a deliberate refusal, so it surfaces with
+      // the data-directory context and the errno (runs as non-root).
+      await fs.chmod(lockFilePath(dir.path), 0o000);
+
+      const lock = createSingleInstanceLock({ dataDir: dir.path, isAlive: () => true });
+      await expect(lock.start()).rejects.toThrow(
+        new RegExp(
+          `cannot acquire the single-instance lock for data directory ` +
+            `${escapeRegExp(dir.path)}: \\(EACCES\\)`,
+        ),
+      );
+      // The file is left exactly as it was found (restore read access for
+      // the assertion; the refusal itself never touched it).
+      await fs.chmod(lockFilePath(dir.path), 0o600);
+      expect(await fs.readFile(lockFilePath(dir.path), 'utf8')).toBe(
+        `${JSON.stringify({ pid: GHOST_PID })}\n`,
+      );
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('wraps a failing liveness probe without inventing an errno for it', async () => {
+    const dir = await createTempDir('quotameter-lock-probe-error-');
+    try {
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        isAlive: () => {
+          throw new Error('probe wiring is broken');
+        },
+      });
+      // A code-less Error renders by message alone — no "(code)" prefix.
+      await expect(lock.start()).rejects.toThrow(
+        new RegExp(
+          `cannot acquire the single-instance lock for data directory ` +
+            `${escapeRegExp(dir.path)}: probe wiring is broken$`,
+        ),
+      );
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('renders a non-Error probe failure as a string, still wrapped with context', async () => {
+    const dir = await createTempDir('quotameter-lock-probe-string-');
+    try {
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        isAlive: () => {
+          throw 'probe exploded';
+        },
+      });
+      await expect(lock.start()).rejects.toThrow(
+        new RegExp(
+          `cannot acquire the single-instance lock for data directory ` +
+            `${escapeRegExp(dir.path)}: probe exploded$`,
+        ),
+      );
+    } finally {
+      await dir.remove();
+    }
+  });
+
   it('creates the data directory when it does not exist', async () => {
     const root = await createTempDir('quotameter-lock-mkdir-');
     try {
@@ -383,6 +456,8 @@ describe('createSingleInstanceLock', () => {
     `{"pid":${GHOST_PID}}\n`,
     `{"pid":${GHOST_PID},"id":"00000000-0000-4000-8000-000000000000"}\n`,
     'not json at all',
+    'null',
+    '42',
   ])('leaves a foreign lock alone when releasing one that is no longer ours', async (foreign) => {
     const dir = await createTempDir('quotameter-lock-foreign-release-');
     try {

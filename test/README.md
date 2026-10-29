@@ -16,6 +16,7 @@ Conventions:
 - Placement should be unambiguous: a new unit test goes to `test/unit/`, a new storage test to `test/integration/`, and so on. When a test spans categories, place it in the most specific directory it needs (e.g. a test that touches SQLite belongs to `integration` even if it also parses a fixture).
 - Every test must clean up after itself (see `test/helpers/isolation.ts`); tests must not depend on execution order.
 - The default suite runs with the no-network guard enabled (`test/helpers/network-guard.ts`): outbound requests to non-loopback hosts fail loudly. Tests that need HTTP use the local mock provider server or explicit loopback listeners.
+- Environments are injected object literals; `process.env` is never mutated — the one exception is `test/helpers/hermeticEnv.ts` (`withQuotameterEnv`), which swaps the `QUOTAMETER_*` slice of `process.env` for the duration of one body with full save/restore, reserved for testing the production seams whose default is `process.env` (decision D-028).
 - Property-based tests import `fast-check` and follow the deterministic-seed convention documented in the root README of `test/`.
 
 ## Command surface
