@@ -25,6 +25,10 @@ services:
       COVERAGE_DIR: /var/lib/quotameter/coverage
       # Same isolation for Playwright run artifacts.
       E2E_OUTPUT_DIR: /var/lib/quotameter/e2e-results
+      # Same isolation for text/CI reports (JUnit, licenses, mutation HTML).
+      REPORTS_DIR: /var/lib/quotameter/reports
+      # Same isolation for the built UI (vite outDir and preview server).
+      DIST_DIR: /var/lib/quotameter/ui-dist
     volumes:
       # Live-editable source tree; changes are visible immediately without
       # rebuilding the image.

@@ -67,7 +67,11 @@ function runChecker(args, excludeNames) {
   return collectLicenses(JSON.parse(stdout), excludeNames);
 }
 
-mkdirSync('reports', { recursive: true });
+// Container runs redirect reports into the isolated data volume (see
+// compose.yaml) to avoid ownership conflicts with host-generated output.
+const REPORTS_DIR = process.env.REPORTS_DIR ?? 'reports';
+
+mkdirSync(REPORTS_DIR, { recursive: true });
 // The repository package itself is not a dependency; license-checker reports
 // it as UNLICENSED because the package is private.
 const SELF = new Set(['quotameter@0.0.0']);
@@ -82,7 +86,7 @@ const summaryLines = ['# License check summary', ''];
 for (const scope of scopes) {
   const findings = runChecker(scope.args, SELF);
   const lines = findings.map((f) => `${f.name}: ${f.licenses.join(', ')}`).sort();
-  writeFileSync(`reports/licenses-${scope.label}.txt`, `${lines.join('\n')}\n`);
+  writeFileSync(join(REPORTS_DIR, `licenses-${scope.label}.txt`), `${lines.join('\n')}\n`);
 
   const offenders = findings.filter((f) => atomicLicenses(f.licenses).some((l) => !ALLOWED.has(l)));
   summaryLines.push(

@@ -13,7 +13,7 @@ FROM node:22.13.0-bookworm-slim
 # git for tooling that clones repositories, and dumb-init for correct signal
 # handling (PID 1 reaping, SIGTERM propagation).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git dumb-init \
+    && apt-get install -y --no-install-recommends ca-certificates curl git dumb-init procps \
         libglib2.0-0 libnss3 libnspr4 libasound2 \
         libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 \
         libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \

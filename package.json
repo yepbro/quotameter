@@ -24,7 +24,7 @@
     "test:component": "vitest run --project component",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile.junit=reports/junit.xml",
+    "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile.junit=${REPORTS_DIR:-reports}/junit.xml",
     "test:e2e": "playwright test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

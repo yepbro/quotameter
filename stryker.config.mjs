@@ -10,6 +10,14 @@
  *
  * `test:mutation` runs the full suite per mutant against the Vitest runner.
  */
+
+// Container runs redirect reports into the isolated data volume (see
+// compose.yaml) to avoid ownership conflicts with host-generated output.
+const reportsDir = process.env.REPORTS_DIR ?? 'reports';
+const htmlReportFile = `${reportsDir}/mutation/mutation.html`;
+// Stryker's scratch directory gets the same treatment.
+const tempDir = reportsDir === 'reports' ? '.stryker-tmp' : `${reportsDir}/../stryker-tmp`;
+
 export default {
   packageManager: 'npm',
   testRunner: 'vitest',
@@ -19,6 +27,10 @@ export default {
   mutate: ['src/**/*.ts'],
   coverageAnalysis: 'perTest',
   reporters: ['clear-text', 'progress', 'html'],
+  htmlReporter: {
+    fileName: htmlReportFile,
+  },
+  tempDirName: tempDir,
   thresholds: {
     // Bootstrap baseline for the small current codebase; the critical
     // modules raise this when they land (target 80+ for all of them).

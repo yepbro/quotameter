@@ -17,16 +17,51 @@ The project is in the bootstrapping stage: the specification and the task plan a
 
 ## Development environment
 
-All routine work runs inside a Docker container with the pinned minimum runtime (Node.js 22.13.0); no host-installed Node.js is required. The command surface is the [`Makefile`](Makefile):
+All routine work runs inside a Docker container with the pinned minimum runtime (Node.js 22.13.0); no host-installed Node.js is required. The command surface is the [`Makefile`](Makefile): every project command runs in the container, brings it up automatically, and synchronizes dependencies from the lockfile when it changes. On a fresh checkout run `make image up` once; afterwards any target works on its own.
 
-```bash
-make help          # list all targets
-make build         # build (or rebuild) the development image
-make up            # start the development container in the background
-make shell         # open an interactive shell inside the container
-make down          # stop the container (volumes are kept)
-make clean         # stop the container and remove ALL volumes
-```
+`make help` prints the same list with one-line descriptions.
+
+### Container lifecycle
+
+| Command                 | Effect                                                                     |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `make image`            | Build (or rebuild) the development image                                   |
+| `make up` / `make down` | Start / stop the container (volumes are kept)                              |
+| `make restart`          | Recreate the container after image or Compose changes                      |
+| `make status`           | Show development container status                                          |
+| `make clean`            | Stop the container and remove **all** volumes (dependencies, caches, data) |
+
+### Interactive
+
+| Command                   | Effect                                     |
+| ------------------------- | ------------------------------------------ |
+| `make shell`              | Open an interactive shell in the container |
+| `make exec CMD="node -v"` | Run a one-off command in the container     |
+
+### Checks
+
+| Command          | Effect                                                                                                                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `make check`     | **Minimal gate** before committing: format check, lint, type checks, full Vitest suite (~15 s)                                                                                                                                 |
+| `make check-all` | **Full CI parity**: everything the required CI job runs — static checks, audit, licenses, tests with coverage and JUnit report, UI build with artifact verification, Playwright E2E, mutation testing, tarball allowlist check |
+
+### Individual commands
+
+| Command                                                           | Effect                                                                                         |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `make test` / `test-unit` / `test-integration` / `test-component` | Run the whole Vitest suite / one project                                                       |
+| `make test-coverage` / `test-ci`                                  | Tests with coverage thresholds / CI mode (coverage + JUnit)                                    |
+| `make test-e2e`                                                   | Playwright E2E against a locally built UI                                                      |
+| `make test-watch`                                                 | Watch mode (interactive)                                                                       |
+| `make lint` / `lint-fix`                                          | Lint / lint and auto-fix                                                                       |
+| `make format` / `format-check`                                    | Rewrite formatting / verify without touching files                                             |
+| `make typecheck` / `typecheck-ui` / `typecheck-all`               | Type-check server / UI / both                                                                  |
+| `make audit`                                                      | `npm audit --omit=dev` (policy: [vulnerability policy](docs/security/vulnerability-policy.md)) |
+| `make licenses`                                                   | Dependency license check against the allowlist                                                 |
+| `make mutation`                                                   | Stryker mutation testing                                                                       |
+| `make package`                                                    | npm tarball contents against the packaging allowlist                                           |
+| `make build`                                                      | Build the UI and verify the expected artifacts                                                 |
+| `make verify-runtime`                                             | Confirm Node `>= 22.13.0` and flagless `node:sqlite`                                           |
 
 Layout inside the container:
 
