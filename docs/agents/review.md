@@ -6,7 +6,7 @@
   `zai-coding-plan/glm-5.3#max`:
 
   ```bash
-  timeout 600 opencode run --auto \
+  timeout 1200 opencode run --auto \
     -m "zai-coding-plan/glm-5.3#max" \
     --title "review-<slug>" "$(cat /tmp/opencode/review/prompt-<slug>.md)" \
     > /tmp/opencode/review/<slug>-stdout.md 2>&1; echo "exit=$?"
