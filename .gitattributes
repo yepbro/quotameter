@@ -1,0 +1,40 @@
+# Normalize all text files to LF in the repository; checkout as LF too.
+* text=auto eol=lf
+
+# Explicit text types
+*.js text
+*.mjs text
+*.cjs text
+*.ts text
+*.mts text
+*.cts text
+*.vue text
+*.json text
+*.jsonc text
+*.md text
+*.yml text
+*.yaml text
+*.html text
+*.css text
+*.scss text
+*.sh text eol=lf
+*.service text
+Dockerfile text
+*.editorconfig text
+*.gitattributes text
+*.gitignore text
+
+# Windows-only scripts must keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.db binary
+*.sqlite binary
