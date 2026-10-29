@@ -42,7 +42,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 
 ## Stage 2 — Set up the testing foundation first
 
-- [ ] **019. Define the test directory convention** — **Status: [new]** — Establish predictable locations/naming for unit, integration, component, E2E, fixtures, and helpers. **Done when:** a new test can be placed without ambiguity. **Spec:** [§17.1](SPECIFICATION.md#171-required-test-coverage).
+- [x] **019. Define the test directory convention** — **Status: [done]** — Establish predictable locations/naming for unit, integration, component, E2E, fixtures, and helpers. **Done when:** a new test can be placed without ambiguity. **Spec:** [§17.1](SPECIFICATION.md#171-required-test-coverage).
 - [ ] **020. Configure Vitest** — **Status: [new]** — Install and configure Vitest for TypeScript unit/integration tests and generate machine-readable results. **Done when:** a sample test runs in Docker and CI-compatible mode. **Spec:** [§3, §17](SPECIFICATION.md#3-technology-and-packaging).
 - [ ] **021. Add test scripts** — **Status: [new]** — Add scripts for all tests, unit tests, coverage, and watch mode. **Done when:** each command is documented and returns a failing exit code if a test fails. **Spec:** [§17](SPECIFICATION.md#17-automated-testing-and-quality-gates).
 - [ ] **022. Configure coverage reporting** — **Status: [new]** — Configure line/branch coverage output and baseline thresholds for the overall 90% target. **Done when:** CI can fail on thresholds and publish a coverage summary. **Spec:** [§17.3](SPECIFICATION.md#173-enforced-quality-thresholds).
