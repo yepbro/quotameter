@@ -56,6 +56,14 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Spec §4.4/§17.2: cover Node.js 22 including the declared minimum
+      # (22.13.0, required for flagless node:sqlite) and Node.js 24, which is
+      # the current LTS line since October 2026. When the next LTS ships, add
+      # it here.
+      matrix:
+        node: ["22.13.0", "22", "24"]
     steps:
       - name: Check out the repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -63,7 +71,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - name: Install dependencies
@@ -73,19 +81,22 @@ jobs:
         run: npm run test:ci
 
       - name: Set up Playwright browser
+        if: matrix.node == '22'
         run: npx playwright install --with-deps chromium
 
       - name: Build the UI for E2E
+        if: matrix.node == '22'
         run: npm run build:ui
 
       - name: Run E2E tests
+        if: matrix.node == '22'
         run: npm run test:e2e
 
       - name: Retain reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: test-reports
+          name: test-reports-${{ matrix.node }}
           path: |
             reports/
             playwright-report/
