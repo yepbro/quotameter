@@ -1,49 +1,52 @@
 # Quotameter — development command surface.
 #
-# Every project command runs inside the Docker development environment
-# (Node.js 22.13.0); no host-installed Node.js is required. Dependencies are
-# synchronized automatically before commands run. Start with `make image up`
-# on a fresh checkout; afterwards any target brings the container up itself.
+# Every project command runs inside a Docker development environment managed
+# by docktree: each git worktree gets its own isolated compose project
+# (unique container names, volumes — including node_modules — and ports), so
+# parallel worktrees never interfere. Dependencies are synchronized
+# automatically before commands run. Start with `make image up` on a fresh
+# checkout; afterwards any target brings the container up itself.
 
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
-# Non-interactive command execution inside the container.
-RUN = docker compose exec -T dev
+# Non-interactive command execution inside the worktree's container.
+RUN = docktree exec -T dev --
 # Interactive execution (TTY) for shells and watch modes.
-RUN_TTY = docker compose exec dev
+RUN_TTY = docktree exec dev --
 
 #@ ─ Container lifecycle ───────────────────────────────────────────────
 
 .PHONY: image
 image: ## Build (or rebuild) the development image
-	docker compose build
+	docktree build
 
 .PHONY: up
-up: ## Start the development container in the background
-	docker compose up -d
+up: ## Start this worktree's development container
+	docktree --json up 2>/dev/null
 
 .PHONY: down
-down: ## Stop the development container (volumes are kept)
-	docker compose down
+down: ## Stop this worktree's development container (volumes are kept)
+	docktree --json down 2>/dev/null
 
 .PHONY: restart
 restart: ## Recreate the container after image or Compose changes
-	docker compose up -d --build
+	docktree --json up --build 2>/dev/null
 
 .PHONY: status
-status: ## Show development container status
-	docker compose ps
+status: ## Show this worktree's development container status
+	docktree --json status 2>/dev/null || true
+	@docktree ps --format 'table {{ .Name }}\t{{ .Status }}' 2>/dev/null || true
 
 .PHONY: clean
-clean: ## Stop the container and remove ALL volumes (deps, caches, data)
-	docker compose down -v
+clean: ## Stop this worktree's container and remove its volumes
+	docktree --json down --volumes 2>/dev/null
 
 #@ ─ Interactive ────────────────────────────────────────────────────────
 
 .PHONY: shell
 shell: ## Open an interactive shell in the development container
-	docker compose run --rm dev
+	docktree run --rm dev
 
 .PHONY: exec
 exec: ## Run a one-off command, e.g. make exec CMD="node -v"
@@ -167,8 +170,8 @@ help: ## Show this help
 # sync with the lockfile. Not exposed in `make help`.
 .PHONY: container
 container:
-	@docker compose up -d 2>/dev/null || { \
-	  echo "Development container is not available. Run: make image && make up" >&2; exit 1; }
+	@docktree --json up 2>/dev/null || { \
+	  echo "Docktree environment is not available. Run: make image && make up" >&2; exit 1; }
 
 .PHONY: deps
 deps: container

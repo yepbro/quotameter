@@ -61,3 +61,7 @@ Thumbs.db
 # --- Playwright ---
 /test-results
 /playwright-report
+
+# --- Docktree per-worktree state ---
+/.docktree/
+.docktree/

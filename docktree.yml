@@ -1,0 +1,24 @@
+# Docktree configuration: per-worktree isolated Docker environments.
+#
+# Every git worktree gets its own compose project: unique container names,
+# volumes (including node_modules), and allocated ports, so parallel
+# worktrees never interfere. See docktree help / README.md.
+compose:
+  files:
+    - compose.yaml
+
+# No setup steps on purpose:
+# - node_modules is a per-worktree named volume (NOT a host symlink): each
+#   worktree installs its own dependencies inside its own container.
+# - .env is not copied: the example defaults point at container-internal
+#   volume paths that are identical in every worktree.
+# - npm ci is not run here: `make` targets sync dependencies on demand via
+#   the per-volume stamp.
+setup: {}
+
+# ports:
+#   bind_host: 127.0.0.1
+#   range: 41000-49999
+
+# state:
+#   directory: .docktree
