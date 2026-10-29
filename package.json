@@ -10,15 +10,20 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:unit": "vitest run test/unit",
-    "test:integration": "vitest run test/integration",
-    "test:component": "vitest run test/component",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:component": "vitest run --project component",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile.junit=reports/junit.xml"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
     "@vitest/coverage-v8": "^5.0.5",
-    "vitest": "^5.0.5"
+    "@vue/test-utils": "^2.5.1",
+    "happy-dom": "^21.0.4",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "vue": "^3.5.44"
   }
 }

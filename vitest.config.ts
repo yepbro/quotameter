@@ -1,19 +1,18 @@
+import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vitest/config";
 
 /**
  * Vitest configuration.
  *
- * Unit and integration suites run in the plain Node environment against the
- * pinned minimum runtime inside the development container (see Makefile).
- * Component (happy-dom) and E2E (Playwright) projects are layered on top of
- * this base configuration by later tasks.
+ * Projects: `unit` and `integration` run in the plain Node environment;
+ * `component` runs Vue component tests under happy-dom. All projects run
+ * against the pinned minimum runtime inside the development container.
+ * E2E browser tests use Playwright separately (playwright.config.ts).
  */
 export default defineConfig({
   test: {
-    include: ["test/{unit,integration}/**/*.spec.ts"],
-    environment: "node",
-    // Deterministic by default: no file watching, stable order.
     sequence: {
+      // Deterministic by default: no file watching, stable order.
       sort: "path",
     },
     coverage: {
@@ -32,5 +31,29 @@ export default defineConfig({
         statements: 90,
       },
     },
+    projects: [
+      {
+        test: {
+          name: "unit",
+          environment: "node",
+          include: ["test/unit/**/*.spec.ts"],
+        },
+      },
+      {
+        test: {
+          name: "integration",
+          environment: "node",
+          include: ["test/integration/**/*.spec.ts"],
+        },
+      },
+      {
+        plugins: [vue()],
+        test: {
+          name: "component",
+          environment: "happy-dom",
+          include: ["test/component/**/*.spec.ts"],
+        },
+      },
+    ],
   },
 });
