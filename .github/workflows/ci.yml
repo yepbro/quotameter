@@ -168,7 +168,10 @@ jobs:
           name: package-tarball
 
       - name: Install the package globally from the tarball
-        run: npm install --global ./quotameter-*.tgz
+        # --prefix /usr/local keeps the binary on PATH: the container's Node
+        # lives in its own prefix (/usr/local/lib/nodejs/...) whose bin
+        # directory is not on PATH.
+        run: npm install --global --prefix /usr/local ./quotameter-*.tgz
 
       - name: Invoke the installed CLI
         run: |

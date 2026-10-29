@@ -17,10 +17,10 @@
 export function compareVersions(a: string, b: string): number {
   const pa = parse(a);
   const pb = parse(b);
-  for (let i = 0; i < 3; i++) {
-    const left = pa[i] ?? 0;
-    const right = pb[i] ?? 0;
-    if (left !== right) return left < right ? -1 : 1;
+  // Tuple-typed keys avoid unreachable defensive branches: parse() guarantees
+  // exactly three numeric segments, so indexing cannot yield undefined.
+  for (const key of [0, 1, 2] as const) {
+    if (pa[key] !== pb[key]) return pa[key] < pb[key] ? -1 : 1;
   }
   return 0;
 }
