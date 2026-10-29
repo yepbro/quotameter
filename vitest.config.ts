@@ -17,7 +17,7 @@ export default defineConfig({
     },
     coverage: {
       provider: 'v8',
-      include: ['src/**'],
+      include: ['src/**/*.ts'],
       // Container runs write into the isolated data volume (see compose.yaml)
       // so host- and container-generated reports never fight over ownership.
       reportsDirectory: process.env.COVERAGE_DIR ?? 'coverage',
