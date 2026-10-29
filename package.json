@@ -22,6 +22,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:ui": "vue-tsc --noEmit -p ui/tsconfig.json",
     "typecheck:all": "npm run typecheck && npm run typecheck:ui",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
     "build:ui": "vite build ui",
     "preview:ui": "vite preview ui --port 4173 --strictPort --host 127.0.0.1"
   },

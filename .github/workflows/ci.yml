@@ -30,3 +30,6 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Audit production dependencies
+        run: npm run audit:prod
