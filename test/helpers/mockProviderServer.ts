@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 
 /**
  * Local mock HTTP provider server (spec §7.2, §17.1).
@@ -58,22 +58,25 @@ export async function startMockProviderServer(port = 0): Promise<MockProviderSer
         body: Buffer.concat(chunks).toString("utf8"),
       });
 
-      if (behavior.kind === "abort") {
+      // Capture the current behavior so TypeScript can narrow the union
+      // inside this closure (`behavior` itself stays assignable outside).
+      const current = behavior;
+      if (current.kind === "abort") {
         res.socket?.destroy();
         return;
       }
 
       const respond = () => {
-        const body = behavior.body ?? "";
-        res.writeHead(behavior.status, {
+        const body = current.body ?? "";
+        res.writeHead(current.status, {
           "content-type": "application/json",
-          ...behavior.headers,
+          ...current.headers,
         });
         res.end(body);
       };
 
-      if (behavior.delayMs && behavior.delayMs > 0) {
-        setTimeout(respond, behavior.delayMs);
+      if (current.delayMs && current.delayMs > 0) {
+        setTimeout(respond, current.delayMs);
       } else {
         respond();
       }
@@ -92,7 +95,9 @@ export async function startMockProviderServer(port = 0): Promise<MockProviderSer
     requests,
     close: async () => {
       await new Promise<void>((resolve, reject) =>
-        server.close((err) => (err && err.code !== "ERR_SERVER_NOT_RUNNING" ? reject(err) : resolve())),
+        server.close((err?: Error & { code?: string }) =>
+          err && err.code !== "ERR_SERVER_NOT_RUNNING" ? reject(err) : resolve(),
+        ),
       );
     },
   };

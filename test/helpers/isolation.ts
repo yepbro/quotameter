@@ -93,7 +93,9 @@ export async function withFakeTimers(
   try {
     await body({
       advanceMs: (ms) => vi.advanceTimersByTime(ms),
-      runAllTimersAsync: () => vi.runAllTimersAsync(),
+      runAllTimersAsync: async () => {
+        await vi.runAllTimersAsync();
+      },
     });
   } finally {
     vi.useRealTimers();

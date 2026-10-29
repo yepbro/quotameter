@@ -48,7 +48,10 @@ export async function installNetworkGuard(): Promise<void> {
             ? input.hostname
             : undefined;
       assertAllowedHost(url);
-      return originalFetch!(input as RequestInfo | URL, init as RequestInit | undefined);
+      return originalFetch!(
+        input as Parameters<FetchLike>[0],
+        init as Parameters<FetchLike>[1] | undefined,
+      );
     };
     guardedFetch.__quotameterGuarded = true;
     globalThis.fetch = guardedFetch as typeof globalThis.fetch;

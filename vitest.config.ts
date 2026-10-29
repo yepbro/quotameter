@@ -12,8 +12,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     sequence: {
-      // Deterministic by default: no file watching, stable order.
-      sort: "path",
+      // Deterministic by default: stable file/suite ordering.
+      shuffle: false,
     },
     coverage: {
       provider: "v8",

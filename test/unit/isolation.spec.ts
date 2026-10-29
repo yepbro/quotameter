@@ -38,8 +38,12 @@ describe("isolation helpers", () => {
   it("deferList flushes in reverse order exactly once", async () => {
     const order: number[] = [];
     const cleanup = deferList();
-    cleanup.defer(() => order.push(1));
-    cleanup.defer(() => order.push(2));
+    cleanup.defer(() => {
+      order.push(1);
+    });
+    cleanup.defer(() => {
+      order.push(2);
+    });
     await cleanup.flush();
     await cleanup.flush(); // second call is a no-op
     expect(order).toEqual([2, 1]);
