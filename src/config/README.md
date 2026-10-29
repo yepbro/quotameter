@@ -110,3 +110,60 @@ between `parseJson` and `parseConfig`; the atomic writer (065) takes the
 same path via `configFilePath` — loading never writes or creates anything.
 The optional second parameter (`ConfigReadFilesystem`) injects the read
 primitive for deterministic tests; production callers never pass it.
+
+## `permissions.ts` — startup permission enforcement (spec §6.3, §15.4, decision D-019)
+
+`enforceConfigPermissions({ configDir, configFile })` is the startup
+verifier required by §6.3: it creates the configuration directory when
+absent and brings both objects to the spec modes — directory exactly
+`0700`, file exactly `0600` (the constant `CONFIG_FILE_MODE` is shared
+with `write.ts`). Policy, pinned in D-019:
+
+- **Exact modes.** Compliant means `mode & 0o7777` equals the required
+  mode, so setuid/setgid/sticky bits are cleared too, and
+  stricter-than-required states (a hand-set `0500` directory or `0400`
+  file) are corrected just like permissive drift — the exact-mode policy
+  D-016 already applies to writes.
+- **Fix = explicit `chmod` + re-verify.** `chmod` is exempt from the
+  process umask (the directory-creation counterpart of D-016's `fchmod`),
+  and the mode is re-read afterwards: a filesystem that accepts but does
+  not apply the change still refuses startup.
+- **Directory creation** walks the missing levels of the path and creates
+  them one at a time, each `mkdir` followed by an explicit `chmod` to
+  `0700`: Node's recursive `mkdir` would apply `mode & ~umask` to every
+  new level, and a umask containing the owner-execute bit (e.g. `0177`)
+  would leave the first new ancestor untraversable (`0600`), failing the
+  next level's creation with a misleading `EACCES`. Per-level chmod keeps
+  creation umask-proof at every depth; pre-existing levels are never
+  touched (§6.3 pins the configuration directory; the ancestors hold no
+  secrets).
+- **The file is never created here.** An absent file passes as `'absent'`:
+  creation with `0600` by construction belongs to the atomic write path
+  (D-016), and an empty placeholder would be invalid JSON for the loader.
+- **Symlinks on the final objects are refused.** A symlinked directory or
+  file redirects where a `chmod` would land (and, for a directory, where
+  later writes resolve); the atomic write's `rename` would instead
+  silently replace a symlinked file — either way the operator's redirect
+  is not honored, so both are refused. Symlinked _ancestors_ are not
+  policed: normal path resolution applies, and the mode guarantees still
+  bind to the real objects holding secrets.
+- **Ownership is checked first.** Both objects must belong to the running
+  uid; a foreign-owned object is uncorrectable by `chmod` and refuses with
+  both uids in the message. An undeterminable uid refuses the same way the
+  task-060 runtime gate does.
+
+Refusals throw actionable English errors (`refusing to start: …`);
+unexpected filesystem failures are wrapped once with the errno `cause`.
+Enforcement is a startup verifier, not a race-free guard against a
+concurrent writer in a parent directory: the path-based
+`lstat` → `chmod` window can end only in a refusal or a mode-restricting
+change — the post-fix re-read sees a substituted symlink and refuses —
+never in a silent unsafe pass.
+
+`createPermissionsCheck(options)` wraps the check as a lifecycle component
+for the task-060 seam (the 074 pattern): structurally a `LifecycleComponent`
+— the config layer must not import server code, so compatibility is proven
+where the component is consumed. `start` enforces (a refusal aborts startup
+through the app's rollback); `stop` is a no-op. The optional `filesystem`
+and `getuid` parameters are test seams; production callers never pass them.
+Composition-root wiring happens in the later assembly task.
