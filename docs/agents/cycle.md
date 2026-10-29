@@ -2,7 +2,7 @@
 
 ## Roles
 
-The main session runs the cycle: it picks tasks, sets statuses, lands and verifies work. Each task is executed by a separate subagent launched in the background with full context: the task text, links to the spec sections, the worktree's absolute path as the working directory, and the verification requirements.
+The main session runs the cycle: it picks tasks, sets statuses, lands and verifies work. Each task is executed by a separate subagent launched in the background with full context: the task text, links to the spec sections, the worktree's absolute path as the working directory, the verification requirements, and the decision number allocated to the task (see "Decision numbers").
 
 ## Sliding window
 
@@ -68,6 +68,13 @@ Rules:
 
 - **Cycle (subagents)**: only the main session changes statuses in `plan/tasks.md`; `[done]` = green `make check-all` on `master`.
 - **Solo (the main session does the task itself)**: the `[x] + [done]` flip is part of the task commit, as before.
+
+## Decision numbers
+
+Parallel subagents cannot see each other's `DECISIONS.md` edits, so tasks that record a decision independently pick the same next free `D-NNN` — observed live when the 061/063/070 wave all chose D-011 and the collisions had to be renumbered by hand at each finalization. Therefore:
+
+- **The main session assigns the number at launch** and passes it in the subagent prompt ("record your decision as D-NNN"). Numbers are allocated in launch order, starting from the highest existing entry in `master`'s `DECISIONS.md` plus one; a task that ends up recording no decision simply leaves its number unused.
+- **If a collision still slips through** (the number is already occupied when the task lands), fix it while landing, before the `[done]` amend: renumber the branch's entry heading, every in-tree reference to it (`src/`, tests, READMEs), and the `D-NNN` mentions in the commit message, then add a one-line renumbering note to the final message. This is how D-013 and D-014 were allocated during the 061/063/070 wave.
 
 ## Miscellany
 
