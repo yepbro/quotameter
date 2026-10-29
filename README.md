@@ -16,6 +16,7 @@ Designed to be installed and operated by one person on their own Linux VPS: dist
 - [Implementation Task Plan](plan/tasks.md) — staged, independently reviewable task breakdown with acceptance conditions
 - [Decision Log](DECISIONS.md) — key technical and business decisions, their reasons, and consequences
 - [Contributing guide](CONTRIBUTING.md) — commit convention, pull-request rules, and repository workflow
+- [Package layout](docs/architecture/package-layout.md) — module map and dependency rules for `src/`, `ui/`, and `bin/`
 
 ## Project status
 
@@ -102,3 +103,23 @@ Data-volume handling:
 - To point the development data elsewhere, copy [`.env.example`](.env.example) to `.env` and adjust the paths (container-side only; the volumes must stay out of the source tree).
 
 Run `make verify-runtime` after the first build to confirm the minimum runtime: it checks Node.js `>= 22.13.0` and that `node:sqlite` imports without `--experimental-sqlite`.
+
+## Project structure
+
+The application separates server, CLI, provider adapters, services, database access, and shared schemas into layered modules; the frontend (`ui/`) talks only to the HTTP API. The full map with dependency rules is in [docs/architecture/package-layout.md](docs/architecture/package-layout.md) — a structural test (`test/unit/package-layout.spec.ts`) enforces the import directions.
+
+```
+bin/            quotameter launcher (plain JS, no build step)
+src/
+  schemas/      TypeBox contracts at every trust boundary (leaf)
+  util/         cross-cutting helpers: clock, logger, version (leaf)
+  config/       configuration mechanics: XDG paths, loading, atomic writes
+  providers/    provider core (registry, transport) + one <id>/ dir per adapter
+  storage/      all node:sqlite access: migrations, QuotaRepository
+  services/     PollingService, HistoryService, EventService, PeakHoursService, …
+  server/       composition root: Fastify app, HTTP API, lifecycle
+  cli/          quotameter commands (init, run, status, doctor, …)
+ui/             Vue 3 + Vite frontend (own build)
+test/           unit / integration / component / e2e tests, fixtures, helpers
+docs/           architecture, provider, security, and release documentation
+```

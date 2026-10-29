@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { compareVersions, satisfiesMinimum } from '../../src/version';
+import { compareVersions, satisfiesMinimum } from '../../src/util/version';
 import { fc } from '../helpers/property';
 
 /**
- * Sample property tests over src/version.ts proving the deterministic
+ * Sample property tests over src/util/version.ts proving the deterministic
  * fast-check convention works and the comparison behaves as an ordering.
  */
 const versionArb = fc

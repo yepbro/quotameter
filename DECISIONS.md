@@ -89,3 +89,13 @@ This file records important technical and business decisions made during develop
 **Reasons.** Tag-gated, CI-only publishing makes releases reproducible and auditable, prevents accidental local publishes, and attaches provenance attestations required for supply-chain trust.
 
 **Consequences.** No local `npm publish` workflow exists by design. Every release requires a green CI run on the tagged commit; package content is restricted by a `files` allowlist and audited (`npm audit --omit=dev`, license checks) before publication.
+
+## D-009 — Layered `src/` package layout with enforced import direction
+
+**Date:** 2026-10-29 · **Status:** Accepted · **Spec:** [§3, §8.1](plan/SPECIFICATION.md#3-technology-and-packaging) · **Tasks:** [059](plan/tasks.md)
+
+**Decision.** Server-side code is organized into layer directories under `src/` — `schemas`, `util`, `config`, `providers` (shared core + one subdirectory per adapter), `storage`, `services`, `server` (composition root), `cli` — with a one-way dependency table: leaves (`schemas`, `util`) import nothing; adapters are islands reachable only through the registry and wired only by the composition root; `bin/` stays a build-free launcher over `src/cli/`. The map and rules live in [docs/architecture/package-layout.md](docs/architecture/package-layout.md) and are enforced mechanically by `test/unit/package-layout.spec.ts`, which resolves every relative import in `src/`, `ui/`, and `bin/`. `ui/` may consume `src/schemas/**` only through type-only imports; it has no runtime dependency on server code.
+
+**Reasons.** Spec §8.1 requires that adding a provider never rewrites the scheduler, persistence, history endpoints, or charts — only a mechanical import boundary makes that guarantee instead of a hope. Spec §3 requires all `node:sqlite` access isolated behind a storage module. A second interpretation was settled here: §8.1 names `QuotaRepository` among the "core services", so it is implemented as the storage layer's public facade — services consume it, but all SQL stays in `src/storage/`.
+
+**Consequences.** Parallel plan tasks target disjoint file sets by construction (each task's placement is listed in the layout doc; directories may repeat across sequential stages). `src/version.ts` moved to `src/util/version.ts` so no loose files sit at `src/` root. Forbidden or unresolved relative imports, cross-adapter imports, and `node:sqlite` usage outside `src/storage/` fail `make check`. Publishing (compiled output, `files` allowlist) remains owned by tasks 184–186 and must respect the documented packaging constraints.

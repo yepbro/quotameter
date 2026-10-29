@@ -8,7 +8,7 @@
 
 | #   | Boundary                      | Untrusted input                                     | Validation owner                                        | Validated output                                                                                                |
 | --- | ----------------------------- | --------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 1   | HTTP API requests             | Request bodies, query parameters, headers           | `src/schemas/api/` (task 061+)                          | Typed route handlers only see validated shapes                                                                  |
+| 1   | HTTP API requests             | Request bodies, query parameters, headers           | `src/schemas/api/` (Stage 12, tasks 147+)               | Typed route handlers only see validated shapes                                                                  |
 | 2   | Provider responses            | Provider HTTP bodies (Z.ai now, others later)       | Adapter-local schema in `src/providers/<id>/` (Stage 9) | Normalized snapshot model (spec §8.4); anything unvalidated becomes a parse failure with a sanitized diagnostic |
 | 3   | Configuration and environment | `config.json`, `QUOTAMETER_*` environment variables | `src/schemas/config.ts` (task 061+)                     | One validated configuration object; startup refuses invalid config (spec §6.2)                                  |
 | 4   | Database rows                 | Anything read back from SQLite                      | Repository layer mapping (Stage 8)                      | Typed domain records                                                                                            |
@@ -23,4 +23,4 @@
 
 ## Status
 
-This file is the durable map; the schema modules are created by their owning tasks and must link back here. When a new boundary appears (for example a new provider), it is added to this table first, then implemented.
+This file is the durable map; the schema modules are created by their owning tasks and must link back here. When a new boundary appears (for example a new provider), it is added to this table first, then implemented. The directory owning each module and the allowed import directions are fixed by [package-layout.md](package-layout.md) and enforced by `test/unit/package-layout.spec.ts`.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareVersions, satisfiesMinimum } from '../../src/version';
+import { compareVersions, satisfiesMinimum } from '../../src/util/version';
 
 describe('compareVersions', () => {
   it('orders numeric segments correctly', () => {
