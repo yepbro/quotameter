@@ -199,6 +199,83 @@ describe('runServer (in-process)', () => {
     expect(removeSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
   });
 
+  it('announces signal readiness once started, with both shutdown handlers installed', async () => {
+    const onSpy = vi.spyOn(process, 'on');
+    let resolveStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    });
+    let handlersAtReady = -1;
+    let announcements = 0;
+    const component: LifecycleComponent = {
+      name: 'probe',
+      async start() {
+        resolveStart();
+      },
+      async stop() {},
+    };
+
+    const server = runServer({
+      components: [component],
+      onSignalsReady: () => {
+        announcements++;
+        handlersAtReady = onSpy.mock.calls.filter(
+          ([event]) => event === 'SIGTERM' || event === 'SIGINT',
+        ).length;
+      },
+    });
+    const handler = await sigtermHandlerAfter(onSpy, started);
+    shutdownTriggers.push(() => handler('SIGTERM'));
+
+    // The handshake the child-process tests rely on: `onSignalsReady` has
+    // run exactly once by the first macrotask after start, and both handlers
+    // were registered first.
+    expect(announcements).toBe(1);
+    expect(handlersAtReady).toBe(2);
+
+    handler('SIGTERM');
+    await expect(server).resolves.toBe(0);
+  });
+
+  it('propagates a throwing readiness callback and still disposes the handlers', async () => {
+    const removeSpy = vi.spyOn(process, 'removeListener');
+    const component: LifecycleComponent = {
+      name: 'probe',
+      async start() {},
+      async stop() {},
+    };
+
+    const server = runServer({
+      components: [component],
+      onSignalsReady: () => {
+        throw new Error('ready probe exploded');
+      },
+    });
+    // Attach the rejection expectation before any await so the rejection is
+    // never momentarily unhandled.
+    const rejected = expect(server).rejects.toThrow('ready probe exploded');
+    await rejected;
+
+    // The finally clause ran: both handlers disposed, keep-alive cleared.
+    expect(removeSpy).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
+  });
+
+  it('does not announce signal readiness when the runtime gate refuses to start', async () => {
+    const stderr = captureStderr();
+    const announcements: string[] = [];
+    try {
+      const code = await runServer({
+        runtime: { nodeVersion: '20.0.0', uid: 1000 },
+        onSignalsReady: () => announcements.push('signals-ready'),
+      });
+      expect(code).toBe(1);
+      expect(announcements).toEqual([]);
+    } finally {
+      stderr.restore();
+    }
+  });
+
   it('refuses to start on an unsupported runtime and explains why', async () => {
     const stderr = captureStderr();
     try {
@@ -332,13 +409,20 @@ describe('runServer (child process, real signals)', () => {
     try {
       const started = startRunner('ok', dir.path);
       child = started.child;
-      await waitForFile(join(dir.path, 'started'));
+      // Wait for signal readiness, not `started`: the marker component starts
+      // before `runServer` installs the signal handlers, and a signal
+      // delivered in that window kills the handler-less child via the
+      // OS-default disposition (the U-001 race). `signals-ready` is emitted
+      // only once both handlers are installed, so the kill below is always
+      // caught.
+      await waitForFile(join(dir.path, 'signals-ready'));
 
       started.child.kill(signal);
       const result = await started.exited;
 
       expect(result.code).toBe(0);
       expect(result.signal).toBeNull();
+      expect(existsSync(join(dir.path, 'started'))).toBe(true);
       expect(existsSync(join(dir.path, 'stopped'))).toBe(true);
     } finally {
       if (child) killIfAlive(child);

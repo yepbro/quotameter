@@ -108,6 +108,16 @@ export interface RunServerOptions {
   readonly components?: readonly LifecycleComponent[];
   /** Runtime facts to verify; defaults to the current process. */
   readonly runtime?: RuntimeFacts;
+  /**
+   * Announces that the application started and the shutdown signal handlers
+   * are installed — the process is gracefully stoppable from this moment.
+   * Signal-readiness seam for embedders and the lifecycle tests (the
+   * child-process specs must not signal before the handlers exist, U-001);
+   * omitting it, as normal runs do, changes nothing. A throwing callback
+   * rejects {@link runServer} without stopping the started components —
+   * fail-fast for a broken readiness hook.
+   */
+  readonly onSignalsReady?: () => void;
 }
 
 /**
@@ -164,6 +174,9 @@ export async function runServer(options: RunServerOptions = {}): Promise<number>
   });
 
   try {
+    // First statement of the try on purpose: the finally clause releases the
+    // signal handlers and the keep-alive interval even if the callback throws.
+    options.onSignalsReady?.();
     await shutdownCompleted;
   } finally {
     signals.dispose();

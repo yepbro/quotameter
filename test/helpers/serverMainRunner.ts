@@ -10,7 +10,12 @@
  *
  * The `ok` mode registers a marker component so the spec can observe the
  * startup and shutdown sequences through the filesystem, exactly like the
- * real components the later construction tasks will register.
+ * real components the later construction tasks will register. Every mode
+ * registers the `onSignalsReady` seam, but the `signals-ready` marker
+ * appears only when the components started and the shutdown handlers are
+ * installed — the `old-node` and `root` gates refuse before that point.
+ * The spec waits for the marker before sending a signal, because the
+ * `started` marker alone races the handler installation (U-001).
  */
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,7 +64,11 @@ const runtime =
       : undefined;
 
 void (async () => {
-  const code = await runServer({ components, runtime });
+  const code = await runServer({
+    components,
+    runtime,
+    onSignalsReady: () => marker('signals-ready'),
+  });
   // Hard exit: the runner owns the process and owes the test a definite code.
   process.exit(code);
 })().catch((error: unknown) => {
