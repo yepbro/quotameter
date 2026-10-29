@@ -83,7 +83,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 
 ## Stage 6 — Build the initial CI and release safety net
 
-- [ ] **048. Create the pull-request CI workflow** — **Status: [new]** — Run install, tests, lint, type check, format check, and build on pull requests. **Done when:** the workflow runs for pull requests and pushes to `master`. **Spec:** [§4.4](SPECIFICATION.md#44-cicd-and-supply-chain-safeguards).
+- [x] **048. Create the pull-request CI workflow** — **Status: [done]** — Run install, tests, lint, type check, format check, and build on pull requests. **Done when:** the workflow runs for pull requests and pushes to `master`. **Spec:** [§4.4](SPECIFICATION.md#44-cicd-and-supply-chain-safeguards).
 - [ ] **049. Add the Node.js CI matrix** — **Status: [new]** — Test Node.js 22 (including the declared minimum), 24, and the current LTS release. **Done when:** supported runtime regressions are visible before merge. **Spec:** [§4.4, §17.2](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
 - [ ] **050. Add Linux installation containers** — **Status: [new]** — Prepare clean Ubuntu 22.04, Ubuntu 24.04, and Debian container jobs for packaging/install smoke tests. **Done when:** the test matrix covers the target distributions. **Spec:** [§4.4, §17.2](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
 - [ ] **051. Add build-artifact verification** — **Status: [new]** — Make CI build the server and UI and verify that the expected frontend `dist/` output exists. **Done when:** a missing build artifact fails the workflow. **Spec:** [§3, §17.2](SPECIFICATION.md#3-technology-and-packaging).

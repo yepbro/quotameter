@@ -1,7 +1,10 @@
 # Continuous integration (spec §4.4, §17.3).
 #
-# The job is named `CI` to match the required status check configured on
-# `master` (task 004): a failure of any step blocks pull requests.
+# Jobs: `static` (lint/format/types/audit/licenses), `test` (unit,
+# integration, component, E2E) and `build`. The final gate job is named
+# `CI` to match the required status check configured on `master` (task 004):
+# it runs after every other job, fails if any of them failed, and is the
+# single check that blocks pull requests.
 name: CI
 
 on:
@@ -13,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  CI:
+  static:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
@@ -47,6 +50,79 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: reports
+          name: static-reports
           path: reports/
           retention-days: 30
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit, integration, and component tests
+        run: npm run test:ci
+
+      - name: Set up Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Build the UI for E2E
+        run: npm run build:ui
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+
+      - name: Retain reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-reports
+          path: |
+            reports/
+            playwright-report/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build:ui
+
+  # Required gate: keeps the protected-branch configuration stable (the
+  # required check is exactly `CI`) while the pipeline grows behind it.
+  CI:
+    name: CI
+    needs: [static, test, build]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all jobs to pass
+        run: |
+          results='${{ toJSON(needs.*.result) }}'
+          echo "Job results: $results"
+          if echo "$results" | grep -Eq '"(failure|cancelled)"'; then
+            echo "::error::One or more CI jobs failed."
+            exit 1
+          fi
