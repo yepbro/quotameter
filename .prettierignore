@@ -1,0 +1,10 @@
+# Generated and external artifacts are never formatted.
+node_modules/
+coverage/
+dist/
+ui/dist/
+reports/
+test-results/
+playwright-report/
+.agents/
+package-lock.json
