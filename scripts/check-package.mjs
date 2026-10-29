@@ -7,55 +7,49 @@
  * beyond the README, and development artifacts must never ship. Fails with
  * the list of unexpected entries when the package would leak something.
  */
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 /**
  * Exact entries allowed in the tarball. `npm` always adds `package.json`
  * and the README automatically; LICENSE/NOTICE are listed here and packed
  * once they exist (they are §18 deliverables of the plan).
  */
-const ALLOWED = [
-  "package.json",
-  "README.md",
-  "bin/quotameter.mjs",
-  "LICENSE",
-  "NOTICE",
-];
+const ALLOWED = ['package.json', 'README.md', 'bin/quotameter.mjs', 'LICENSE', 'NOTICE'];
 
-const stdout = execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" });
+const stdout = execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8' });
 const packed = JSON.parse(stdout)
   .flatMap((entry) => entry.files.map((file) => file.path))
-  .filter((path) => path !== "package"); // npm's root directory marker
+  .filter((path) => path !== 'package'); // npm's root directory marker
 
 const unexpected = packed.filter((path) => !ALLOWED.includes(path));
-const missingRequired = ["package.json", "bin/quotameter.mjs"].filter(
+const missingRequired = ['package.json', 'bin/quotameter.mjs'].filter(
   (path) => !packed.includes(path),
 );
 
-console.log(`packed entries: ${packed.join(", ") || "(none)"}`);
+console.log(`packed entries: ${packed.join(', ') || '(none)'}`);
 
 let failed = false;
 if (unexpected.length > 0) {
   failed = true;
-  console.error(`\nUNEXPECTED entries in the tarball:\n  ${unexpected.join("\n  ")}`);
+  console.error(`\nUNEXPECTED entries in the tarball:\n  ${unexpected.join('\n  ')}`);
 }
 if (missingRequired.length > 0) {
   failed = true;
-  console.error(`\nREQUIRED entries missing from the tarball:\n  ${missingRequired.join("\n  ")}`);
+  console.error(`\nREQUIRED entries missing from the tarball:\n  ${missingRequired.join('\n  ')}`);
 }
 
-const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 if (!pkg.bin?.quotameter) {
   failed = true;
-  console.error("\npackage.json must declare the `quotameter` bin entry.");
+  console.error('\npackage.json must declare the `quotameter` bin entry.');
 }
 
 if (failed) {
   console.error(
-    "\nThe tarball allowlist lives in scripts/check-package.mjs. " +
-      "Extend it only with files that belong in the published package.",
+    '\nThe tarball allowlist lives in scripts/check-package.mjs. ' +
+      'Extend it only with files that belong in the published package.',
   );
   process.exit(1);
 }
-console.log("\ntarball contents match the allowlist");
+console.log('\ntarball contents match the allowlist');

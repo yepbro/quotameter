@@ -37,6 +37,7 @@ config.local.json
 /build
 /coverage
 /reports
+/.stryker-tmp
 /.vite
 *.tsbuildinfo
 .eslintcache

@@ -10,12 +10,12 @@
  * without a build step, on any machine that satisfies the declared minimum
  * runtime.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync } from 'node:fs';
 
 const MINIMUM = [22, 13, 0];
 
 function isBelowMinimum(version, minimum) {
-  const current = version.split(".").map(Number);
+  const current = version.split('.').map(Number);
   for (let i = 0; i < minimum.length; i++) {
     const a = current[i] ?? 0;
     const b = minimum[i] ?? 0;
@@ -32,9 +32,9 @@ if (isBelowMinimum(process.versions.node, MINIMUM)) {
   process.exit(1);
 }
 
-const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
-if (process.argv.includes("--version")) {
+if (process.argv.includes('--version')) {
   console.log(pkg.version);
 } else {
   console.log(`quotameter ${pkg.version} — the CLI is not implemented yet (bootstrap stage)`);

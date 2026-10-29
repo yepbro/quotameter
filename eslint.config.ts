@@ -41,7 +41,7 @@ export default tseslint.config(
 
   // Node-facing code: application sources, tests, scripts, and configs.
   {
-    files: ['src/**/*.ts', 'test/**/*.ts', 'scripts/**/*.mjs', '*.config.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts', 'scripts/**/*.mjs', 'bin/**/*.mjs', '*.config.ts'],
     languageOptions: {
       globals: {
         ...globals.node,
