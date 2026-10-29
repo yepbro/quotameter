@@ -43,3 +43,7 @@ status: ## Show development container status
 .PHONY: clean
 clean: ## Stop the container and remove volumes (dependencies, caches, data)
 	docker compose down -v
+
+.PHONY: verify-runtime
+verify-runtime: ## Verify minimum Node version and node:sqlite in the container
+	docker compose exec dev node scripts/verify-runtime.mjs
