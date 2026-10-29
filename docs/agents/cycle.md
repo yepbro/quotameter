@@ -35,9 +35,13 @@ after:  ... — A_final — B_start' — C_start'        (master)
 ```bash
 BASE=$(git rev-parse "$XSTART^")
 
-# 1) Move the task commit underneath the other tasks' start commits
-#    (the task tree now contains ONLY its own changes — B/C starts stay non-empty)
-git -C ~/worktrees/quotamonitor/t-NNN rebase --onto "$BASE" master t-NNN
+# 1) Move the task commit — and nothing else — onto BASE
+#    (the task tree now contains ONLY its own changes — B/C starts stay non-empty).
+#    The upstream is t-NNN^ (not master): after another task's finalization the
+#    start commits this branch was cut from may no longer be in master, and
+#    `--onto "$BASE" master` would replay those orphaned status commits into
+#    the branch (observed live in the 059/060/069 wave).
+git -C ~/worktrees/quotamonitor/t-NNN rebase --onto "$BASE" t-NNN^ t-NNN
 
 # 2) In the worktree: the [done] flip in plan/tasks.md + the final message — amend.
 #    IMPORTANT: after step 1 the branch is based on BASE (before the start commit),
@@ -54,6 +58,7 @@ git rebase --onto "$XFINAL" "$XSTART" master
 Rules:
 
 - **Step 1 is mandatory**: rebasing the branch onto the `master` tip instead would bake the other tasks' start flips into the task tree, and step 4 would replay them as empty commits that git drops. Rebasing onto `BASE` keeps task changes discrete (subagents never touch tasks.md).
+- **Orphaned start commits**: finalization drops other tasks' start commits from `master`, but a branch cut before that finalization still carries them, so the range `(master..t-NNN]` can contain more than the task commit — replaying it with `master` as the upstream bakes a foreign status flip into the task tree (seen live in the 059/060/069 wave). Step 1 avoids this by using `t-NNN^` as the upstream, which always selects exactly the one task commit. Safety check after any rebase of the branch: `git log --oneline "$BASE"..t-NNN` must show exactly one commit; if extras appear, drop them with another targeted rebase (`git rebase --onto "$BASE" <orphan-immediately-below-the-task-commit> t-NNN`).
 - **Expected conflict on step 4**: task lines in `plan/tasks.md` are adjacent, so the finalized task's flip and a replayed start's flip touch overlapping hunks — git stops with a conflict in `tasks.md`. The resolution is mechanical: inside the conflict block, every task keeps its current status (`[done]` for finalized, `[in progress]` for running), then `git rebase --continue`. The recipe is verified by a live scratch test on the A/B/C scenario: the final landed at the anchor position and the B/C starts replayed non-empty.
 - A finalization rewrites the hashes of later commits on `master` — safe, because pushing happens only on request. Branches of still-running tasks rebase normally at their own finalization (step 1 of their recipe).
 - Anchor hashes of live tasks are invalidated by another task's finalization: after every finalization, recompute the anchors of the remaining tasks (the new hash of a start commit is found via `git log --grep` on the status commit message).
