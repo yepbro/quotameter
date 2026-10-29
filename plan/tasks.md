@@ -73,7 +73,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 - [x] **041. Define runtime schema/type boundaries** — **Status: [done]** — Ensure external input and provider payloads enter typed code only through validated schemas. **Done when:** trust boundaries and validated types are documented in code structure. **Spec:** [§3, §8.4, §13](SPECIFICATION.md#3-technology-and-packaging).
 - [x] **042. Add dependency vulnerability checks** — **Status: [done]** — Run `npm audit --omit=dev` as a repeatable CI step and document handling of findings. **Done when:** CI reports/fails according to an explicit policy. **Spec:** [§4.4, §17.3](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
 - [x] **043. Add dependency license checks** — **Status: [done]** — Check production and development dependency licenses and retain the report. **Done when:** unapproved or unknown licenses are visible and reviewed. **Spec:** [§4.3, §4.4](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
-- [ ] **044. Enforce static checks in CI** — **Status: [new]** — Make type checking, audit, and license verification required workflow steps. **Done when:** their failures block pull requests. **Spec:** [§4.4, §17.3](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
+- [x] **044. Enforce static checks in CI** — **Status: [done]** — Make type checking, audit, and license verification required workflow steps. **Done when:** their failures block pull requests. **Spec:** [§4.4, §17.3](SPECIFICATION.md#4-repository-language-licensing-and-release-process).
 
 ## Stage 5 — Configure formatting
 

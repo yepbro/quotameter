@@ -31,6 +31,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Type-check server and UI
+        run: npm run typecheck:all
+
       - name: Audit production dependencies
         run: npm run audit:prod
 
