@@ -29,10 +29,14 @@ export function satisfiesMinimum(version: string, minimum: string): boolean {
 }
 
 function parse(version: string): [number, number, number] {
-  if (!/^\d+(\.\d+){0,2}$/.test(version)) {
+  const parts = version.split(".");
+  // Written without nested regex quantifiers on purpose: keeps the security
+  // lint ("detect-unsafe-regex") clean and the check trivially auditable.
+  const valid = parts.length >= 1 && parts.length <= 3 && parts.every((p) => /^\d+$/.test(p));
+  if (!valid) {
     throw new Error(`Invalid version string: ${JSON.stringify(version)}`);
   }
-  const parts = version.split(".").map(Number);
-  while (parts.length < 3) parts.push(0);
-  return parts as [number, number, number];
+  const numbers = parts.map(Number);
+  while (numbers.length < 3) numbers.push(0);
+  return numbers as [number, number, number];
 }

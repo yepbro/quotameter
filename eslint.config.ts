@@ -1,5 +1,6 @@
 import eslint from "@eslint/js";
 import globals from "globals";
+import pluginSecurity from "eslint-plugin-security";
 import pluginVue from "eslint-plugin-vue";
 import tseslint from "typescript-eslint";
 
@@ -63,6 +64,26 @@ export default tseslint.config(
       "no-console": ["error", { allow: ["warn", "error", "info", "log"] }],
       eqeqeq: ["error", "always"],
       "prefer-const": "error",
+    },
+  },
+
+  // Security-oriented rules for application code (spec §15, §17.3).
+  {
+    files: ["src/**/*.{ts,vue}", "ui/**/*.{ts,vue}"],
+    ...pluginSecurity.configs.recommended,
+    rules: {
+      ...pluginSecurity.configs.recommended.rules,
+      // Application code must not print to stdout/stderr directly: secrets and
+      // provider payloads may only travel through the structured logger with
+      // redaction (spec §15.4). The logger module enforces this from task 072.
+      "no-console": "error",
+      // Exception: object-member access driven by data is pervasive in mapping
+      // tables and validated at runtime boundaries (task 041 schemas); the
+      // rule's signal-to-noise ratio on typed code is too low to keep on.
+      "security/detect-object-injection": "off",
+      // Exception: non-literal fs calls are the configuration write path and
+      // are always built from validated, schema-checked path components.
+      "security/detect-non-literal-fs-filename": "off",
     },
   },
 );
