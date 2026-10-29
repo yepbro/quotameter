@@ -30,3 +30,8 @@ All test commands run inside the development container (`make shell`) or any Nod
 | `npm run test:component`  | Run only `test/component/`.                                    |
 | `npm run test:watch`      | Watch mode for local development.                              |
 | `npm run test:ci`         | Full suite with an additional JUnit report at `reports/junit.xml` for CI. |
+
+## Failure semantics
+
+The canonical command (`npm run test`, and every `test:*` variant) exits **non-zero** when any assertion fails, when a suite fails to collect, and when a scoped suite matches no test files. Verified live: a temporary failing spec produced `Test Files 1 failed | 7 passed`, exit code `1`. CI consumes these exit codes directly, so a failing assertion always blocks a build.
+
