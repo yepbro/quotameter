@@ -73,7 +73,7 @@ Rules:
 
 Parallel subagents cannot see each other's `DECISIONS.md` edits, so tasks that record a decision independently pick the same next free `D-NNN` — observed live when the 061/063/070 wave all chose D-011 and the collisions had to be renumbered by hand at each finalization. Therefore:
 
-- **The main session assigns the number at launch** and passes it in the subagent prompt ("record your decision as D-NNN"). Numbers are allocated in launch order, starting from the highest existing entry in `master`'s `DECISIONS.md` plus one; a task that ends up recording no decision simply leaves its number unused.
+- **The main session assigns the number at launch** and passes it in the subagent prompt ("record your decision as D-NNN"). Numbers are allocated in launch order, starting from the highest number among landed `DECISIONS.md` entries **and outstanding in-flight allocations**, plus one; a task that ends up recording no decision simply leaves its number unused.
 - **If a collision still slips through** (the number is already occupied when the task lands), fix it while landing, before the `[done]` amend: renumber the branch's entry heading, every in-tree reference to it (`src/`, tests, READMEs), and the `D-NNN` mentions in the commit message, then add a one-line renumbering note to the final message. This is how D-013 and D-014 were allocated during the 061/063/070 wave.
 
 ## Miscellany
