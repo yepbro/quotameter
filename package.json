@@ -23,6 +23,7 @@
     "typecheck:ui": "vue-tsc --noEmit -p ui/tsconfig.json",
     "typecheck:all": "npm run typecheck && npm run typecheck:ui",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "license:check": "node scripts/check-licenses.mjs",
     "build:ui": "vite build ui",
     "preview:ui": "vite preview ui --port 4173 --strictPort --host 127.0.0.1"
   },
@@ -42,6 +43,7 @@
     "globals": "^17.13.0",
     "happy-dom": "^21.0.4",
     "jiti": "^2.7.0",
+    "license-checker": "^25.0.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.1",
     "vite": "^8.3.5",
