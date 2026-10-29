@@ -2,6 +2,7 @@ import eslint from "@eslint/js";
 import globals from "globals";
 import pluginSecurity from "eslint-plugin-security";
 import pluginVue from "eslint-plugin-vue";
+import pluginVueI18n from "@intlify/eslint-plugin-vue-i18n";
 import tseslint from "typescript-eslint";
 
 /**
@@ -84,6 +85,30 @@ export default tseslint.config(
       // Exception: non-literal fs calls are the configuration write path and
       // are always built from validated, schema-checked path components.
       "security/detect-non-literal-fs-filename": "off",
+    },
+  },
+
+  // I18n checks for browser-facing templates (task 036): user-facing strings
+  // must come from the English vue-i18n catalog instead of raw text in
+  // templates (spec §14.1). Only the no-raw-text rule is enabled: the rest of
+  // the preset requires the locale directory layout that arrives with the UI
+  // implementation stages.
+  {
+    files: ["ui/**/*.vue"],
+    plugins: {
+      "@intlify/vue-i18n": pluginVueI18n,
+    },
+    rules: {
+      "@intlify/vue-i18n/no-raw-text": [
+        "error",
+        {
+          // Justified exception: the bootstrap placeholder shell carries two
+          // fixed strings until the i18n catalog exists (UI implementation
+          // stages). Every other raw UI string is an error.
+          ignorePattern: "^(Quotameter|Setup in progress — the interface is not implemented yet\\.)$",
+          ignoreText: ["Quotameter", "Setup in progress — the interface is not implemented yet."],
+        },
+      ],
     },
   },
 );
