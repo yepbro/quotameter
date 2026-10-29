@@ -61,3 +61,34 @@ themselves — tasks 080–087.
 
 Importing `node:sqlite` prints an `ExperimentalWarning` on Node 22 — expected,
 not an error (docs/agents/gotchas.md; spec §3).
+
+## `connection.ts` — the §11.1 database connection (task 079, decision D-030)
+
+`openStorageConnection({ dataDir })` opens
+`<data>/quotameter.sqlite` (`databaseFilePath(dataDir)`; `DATABASE_FILENAME`
+is part of the on-disk contract) and returns a closeable handle:
+
+- **`database`** — the configured `DatabaseSync`; this is the D-027 seam the
+  migration runner and the future repository (task 088) consume.
+- **Pragmas (§11.1)** are applied as statements and verified by readback:
+  `busy_timeout=5000` first (so engaging WAL on a busy existing file waits
+  instead of failing), then `journal_mode=WAL`, `synchronous=NORMAL`,
+  `foreign_keys=ON`. A database that cannot hold a required setting refuses
+  to open — `:memory:` silently keeps `journal_mode=memory`, and without the
+  readback that would degrade into a non-WAL database. A corrupt or
+  non-SQLite file at the path (the driver's constructor reads the header
+  lazily, so it passes) first fails inside pragma application; every
+  configuration-time failure — open, driver error mid-pragma, refused
+  setting — carries the full path and the original error as `cause`. The
+  optional `openDatabase` seam exists so tests can prove the refusals;
+  production callers never pass it.
+- **`close()` is idempotent** — a repeated call, or one that follows a direct
+  `database.close()` by a consumer, is tolerated instead of throwing
+  `ERR_INVALID_STATE` (Node 22.13 has no `isOpen` on the handle, so the
+  wrapper tracks openness itself). `isOpen` reports the tracked state.
+- **No directory creation.** The startup path creates the data directory
+  when acquiring the single-instance lock (task 074); a missing parent is
+  reported loudly with the full path and the original error as `cause`.
+
+The data directory arrives already resolved by `src/config/paths.ts` (task 063) — storage never re-resolves XDG paths (it may not import `src/config/`;
+see the layer rules above).
