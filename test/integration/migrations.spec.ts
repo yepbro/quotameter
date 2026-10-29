@@ -1,10 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
+  appliedMigrations,
   createMigrationRunner,
   createMigrationStorage,
+  migrationVersion,
+  MIGRATIONS,
   MIGRATIONS_TABLE,
   type Migration,
+  schemaVersionStatus,
+  supportedSchemaVersion,
 } from '../../src/storage/migrations';
 import { createFixedClock } from '../../src/util/clock';
 import { withTempDir } from '../helpers/isolation';
@@ -21,6 +26,11 @@ import { withTempDir } from '../helpers/isolation';
  * (test/helpers/isolation.ts). State written by the runner is always proven
  * through a second, independent connection — the journal and schema must be
  * visible beyond the runner's own database handle.
+ *
+ * The last describe block covers task 080's metadata layer (D-031): the
+ * done-condition — applied migration versions persisted and queryable — plus
+ * versioned names, the strictly-increasing set rule, the raw journal read,
+ * and the §11.4 schema-version status task 092 builds its refusal on.
  */
 
 /** Deterministic `applied_at` for journal assertions. */
@@ -419,6 +429,254 @@ describe('migration storage adapter (Umzug storage contract)', () => {
       expect(journalRows(dbPath)).toEqual([{ name: '0001-direct', applied_at: T0 }]);
       await storage.unlogMigration(params);
       expect(await storage.executed({ context: undefined })).toEqual([]);
+      db.close();
+    });
+  });
+});
+
+describe('migration metadata and version checks (task 080, D-031)', () => {
+  it('parses versioned names and rejects malformed ones', () => {
+    expect(migrationVersion('0001-init')).toBe(1);
+    expect(migrationVersion('0012-add-quota-events')).toBe(12);
+    expect(migrationVersion('20261030-date-style')).toBe(20_261_030);
+    for (const malformed of [
+      '', // blank
+      'init', // no version prefix
+      '0001', // no description
+      '0001-', // blank description
+      ' 0001-init', // prefix does not start the name
+      '0000000009-nine-digits', // beyond the 8-digit cap (exact Number parsing)
+      'x-0001', // prefix is not digits
+    ]) {
+      expect(() => migrationVersion(malformed)).toThrow(
+        /must be <version>-<description> with a 1-8 digit version prefix/,
+      );
+    }
+    // Version 0 is reserved for "nothing applied yet" — the empty journal.
+    for (const zeroed of ['0-init', '00000000-init']) {
+      expect(() => migrationVersion(zeroed)).toThrow(/has version 0; versions start at 1/);
+    }
+  });
+
+  it('rejects sets whose application order is not strictly version-increasing', () => {
+    const cases: Array<{ migrations: ReadonlyArray<Migration>; message: RegExp }> = [
+      // Name order puts '10-later' first ('1' sorts before '9'): the set
+      // applies 10 then 9, and the rule names the non-increasing migration.
+      {
+        migrations: [probeMigration('9-earlier'), probeMigration('10-later')],
+        message: /strictly increase.*'9-earlier' \(version 9\) does not follow version 10/,
+      },
+      // Distinct names may not share a version.
+      {
+        migrations: [probeMigration('0001-a'), probeMigration('0001-b')],
+        message: /strictly increase.*'0001-b' \(version 1\)/,
+      },
+      // Unversioned names never reach the set rules.
+      { migrations: [probeMigration('init')], message: /must be <version>-<description>/ },
+    ];
+    for (const { migrations, message } of cases) {
+      const database = new DatabaseSync(':memory:');
+      expect(() => createMigrationRunner({ database, migrations })).toThrow(message);
+      // Every version consumer validates the same set the same way.
+      expect(() => schemaVersionStatus(database, migrations)).toThrow(message);
+      database.close();
+    }
+  });
+
+  it('persists applied versions and exposes them queryable beyond the runner', async () => {
+    await withTempDir(async (dir) => {
+      const dbPath = dir.sqlitePath('metadata.sqlite');
+      const db = new DatabaseSync(dbPath);
+      const runner = createMigrationRunner({
+        database: db,
+        clock: createFixedClock(T0),
+        // Authored out of order: application order is name (version) order.
+        migrations: [probeMigration('0002-accounts'), probeMigration('0001-init')],
+      });
+
+      expect(await runner.up()).toEqual(['0001-init', '0002-accounts']);
+      db.close();
+
+      // The done-condition: applied versions persisted and queryable, read
+      // through an independent connection, with §11.1 epoch-ms timestamps.
+      const reader = new DatabaseSync(dbPath);
+      const applied = appliedMigrations(reader);
+      reader.close();
+      expect(applied).toEqual([
+        { name: '0001-init', appliedAt: T0 },
+        { name: '0002-accounts', appliedAt: T0 },
+      ]);
+      for (const entry of applied) {
+        expect(Number.isInteger(entry.appliedAt)).toBe(true);
+      }
+    });
+  });
+
+  it('reports a brand-new database against the empty canonical set as up-to-date at version 0', async () => {
+    await withTempDir(async (dir) => {
+      const dbPath = dir.sqlitePath('fresh-metadata.sqlite');
+      const db = new DatabaseSync(dbPath);
+
+      // Task 080 ships no schema migration yet (D-031): the canonical set is
+      // empty, and a fresh database is exactly at the version it supports.
+      expect(MIGRATIONS).toEqual([]);
+      expect(supportedSchemaVersion(MIGRATIONS)).toBe(0);
+      expect(appliedMigrations(db)).toEqual([]);
+      expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
+        supportedVersion: 0,
+        appliedVersion: 0,
+        relation: 'up-to-date',
+        newerThanSupported: [],
+      });
+      // The query is read-only: it must not create the journal table.
+      expect(tableNames(dbPath)).not.toContain(MIGRATIONS_TABLE);
+
+      // The same fresh database is behind any non-empty set.
+      expect(schemaVersionStatus(db, [probeMigration('0001-init')]).relation).toBe('behind');
+      db.close();
+    });
+  });
+
+  it('flips behind → up-to-date as the runner applies, including one release forward', async () => {
+    await withTempDir(async (dir) => {
+      const dbPath = dir.sqlitePath('interplay.sqlite');
+      const db = new DatabaseSync(dbPath);
+      const clock = createFixedClock(T0);
+      const set = [probeMigration('0001-init'), probeMigration('0002-accounts')];
+      const runner = createMigrationRunner({ database: db, clock, migrations: set });
+
+      expect(schemaVersionStatus(db, set)).toEqual({
+        supportedVersion: 2,
+        appliedVersion: 0,
+        relation: 'behind',
+        newerThanSupported: [],
+      });
+
+      await runner.up();
+      db.close();
+
+      const reader = new DatabaseSync(dbPath);
+      expect(schemaVersionStatus(reader, set)).toEqual({
+        supportedVersion: 2,
+        appliedVersion: 2,
+        relation: 'up-to-date',
+        newerThanSupported: [],
+      });
+      reader.close();
+
+      // The §11.4 forward pattern each schema release must have: the next
+      // release grows the set by one migration; only it is pending, and
+      // applying it reaches up-to-date from the previous supported schema.
+      const grown = [...set, probeMigration('0003-events')];
+      const db2 = new DatabaseSync(dbPath);
+      expect(schemaVersionStatus(db2, grown).relation).toBe('behind');
+      expect(await createMigrationRunner({ database: db2, clock, migrations: grown }).up()).toEqual(
+        ['0003-events'],
+      );
+      expect(schemaVersionStatus(db2, grown).relation).toBe('up-to-date');
+      db2.close();
+    });
+  });
+
+  it('detects a newer schema with evidence — the surface task 092 refuses on', async () => {
+    await withTempDir(async (dir) => {
+      const dbPath = dir.sqlitePath('newer.sqlite');
+      const db = new DatabaseSync(dbPath);
+      // A database migrated by a newer release of the application.
+      await createMigrationRunner({
+        database: db,
+        clock: createFixedClock(T0 - 1_000),
+        migrations: [probeMigration('0001-init'), probeMigration('0009-from-the-future')],
+      }).up();
+      db.close();
+
+      const olderSet = [probeMigration('0001-init')];
+      const reader = new DatabaseSync(dbPath);
+      expect(schemaVersionStatus(reader, olderSet)).toEqual({
+        supportedVersion: 1,
+        appliedVersion: 9,
+        relation: 'newer',
+        newerThanSupported: [{ name: '0009-from-the-future', appliedAt: T0 - 1_000 }],
+      });
+      reader.close();
+
+      // Unknown journal entries within the supported range are not a newer
+      // schema: versions decide, names alone do not flip the relation.
+      const strayPath = dir.sqlitePath('stray.sqlite');
+      const stray = new DatabaseSync(strayPath);
+      await createMigrationRunner({
+        database: stray,
+        clock: createFixedClock(T0),
+        migrations: [probeMigration('0001-init')],
+      }).up();
+      stray
+        .prepare(`INSERT INTO ${MIGRATIONS_TABLE} (name, applied_at) VALUES (?, ?)`)
+        .run('0001-renamed-legacy', T0);
+      expect(schemaVersionStatus(stray, [probeMigration('0001-init')]).relation).toBe('up-to-date');
+      stray.close();
+
+      // The membership half of the same rule: equal maxima do not mean
+      // up-to-date when a set migration is missing from the journal — here a
+      // foreign row carries version 2 under another name, so 0002-accounts is
+      // still pending work (D-031).
+      const holePath = dir.sqlitePath('hole.sqlite');
+      const hole = new DatabaseSync(holePath);
+      await createMigrationRunner({
+        database: hole,
+        clock: createFixedClock(T0),
+        migrations: [probeMigration('0001-init')],
+      }).up();
+      hole
+        .prepare(`INSERT INTO ${MIGRATIONS_TABLE} (name, applied_at) VALUES (?, ?)`)
+        .run('0002-renamed-legacy', T0);
+      expect(
+        schemaVersionStatus(hole, [probeMigration('0001-init'), probeMigration('0002-accounts')]),
+      ).toEqual({
+        supportedVersion: 2,
+        appliedVersion: 2,
+        relation: 'behind',
+        newerThanSupported: [],
+      });
+      hole.close();
+    });
+  });
+
+  it('fails fast on a journal row with a malformed name', async () => {
+    await withTempDir(async (dir) => {
+      const dbPath = dir.sqlitePath('malformed.sqlite');
+      const db = new DatabaseSync(dbPath);
+      // An empty run only creates the journal table.
+      await createMigrationRunner({
+        database: db,
+        clock: createFixedClock(T0),
+        migrations: [],
+      }).up();
+      db.prepare(`INSERT INTO ${MIGRATIONS_TABLE} (name, applied_at) VALUES (?, ?)`).run(
+        'legacy-init',
+        T0,
+      );
+
+      // A foreign or corrupt row must surface, not silently read as version 0.
+      expect(() => schemaVersionStatus(db, MIGRATIONS)).toThrow(
+        /'legacy-init' must be <version>-<description>/,
+      );
+      db.close();
+    });
+  });
+
+  it('rejects journal rows with non-integer applied_at values', async () => {
+    await withTempDir(async (dir) => {
+      const dbPath = dir.sqlitePath('foreign.sqlite');
+      const db = new DatabaseSync(dbPath);
+      // A journal this application did not write: no STRICT column, and a
+      // corrupt timestamp that must not flow out as a fake number.
+      db.exec(`CREATE TABLE ${MIGRATIONS_TABLE} (name TEXT PRIMARY KEY, applied_at TEXT)`);
+      db.prepare(`INSERT INTO ${MIGRATIONS_TABLE} (name, applied_at) VALUES (?, ?)`).run(
+        '0001-foreign',
+        'yesterday',
+      );
+
+      expect(() => appliedMigrations(db)).toThrow(/'0001-foreign' has a non-integer applied_at/);
       db.close();
     });
   });

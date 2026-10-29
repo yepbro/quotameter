@@ -92,3 +92,38 @@ is part of the on-disk contract) and returns a closeable handle:
 
 The data directory arrives already resolved by `src/config/paths.ts` (task 063) — storage never re-resolves XDG paths (it may not import `src/config/`;
 see the layer rules above).
+
+## Migration metadata and version checks (task 080, spec §11.4, decision D-031)
+
+On top of the 078 journal — without duplicating it — `migrations.ts` carries
+the version semantics the startup wiring and task 092 consume:
+
+- **Versioned names.** Every migration name is `<version>-<description>` — a
+  1–8 digit prefix (sequential `0001-…` or date `20261030-…`) and a
+  non-blank description; the parser rejects version 0, which is reserved
+  for "nothing applied yet". `migrationVersion(name)` parses it and throws
+  on malformed names. Sets — the runner's injected list included — must
+  have **strictly increasing versions in application (name) order**, so
+  D-027's name ordering is always version-coherent; violations fail at
+  construction, before the database is touched.
+- **Canonical set.** `MIGRATIONS` is the application's one migration list —
+  empty at task 080 (the journal table comes from the storage adapter, not
+  from a migration); tasks 081–087 append entries. `supportedSchemaVersion(set)`
+  is the version the running application supports (0 for the empty set).
+- **Journal reads.** `appliedMigrations(database)` returns every journal row
+  `{ name, appliedAt }` in name order — including entries the running
+  application does not know, which is exactly the newer-schema evidence
+  §11.4's refusal needs (078's `executed()` deliberately filters those out).
+  The read is read-only: it never creates the journal table, and a
+  non-integer `applied_at` (a journal this app did not write) throws.
+- **Version check.** `schemaVersionStatus(database, migrations)` answers
+  §11.4's comparison: `supportedVersion`, `appliedVersion`, `relation`
+  (`'up-to-date'` / `'behind'` — apply pending at startup — / `'newer'` —
+  task 092 refuses to start), and `newerThanSupported`, the refusal's
+  evidence. Version maxima decide `'newer'`; a set migration missing from
+  the journal means `'behind'` even at equal versions. A journal row with a
+  malformed name throws instead of silently reading as version 0.
+
+The schema tables themselves are tasks 081–087; backups (`VACUUM INTO`,
+retention) and the refuse-to-start behavior remain task 092, which builds
+them on `appliedMigrations()` and `schemaVersionStatus()`.
