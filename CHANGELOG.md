@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MIT `LICENSE` and attribution `NOTICE` files.
 - Project documentation: technical specification, implementation task plan, decision log, contributing guide.
 - Docker-based development environment pinned to Node.js 22.13.0 with isolated data volumes.
 - Testing foundation: Vitest (unit, integration, component projects), Playwright E2E smoke and accessibility checks, fast-check property tests, local mock provider server, no-network guard.
