@@ -1,0 +1,14 @@
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "subscriptionPlan": "synthetic-plan",
+    "quota": {
+      "window": "day",
+      "used": 12345,
+      "limit": 50000,
+      "unit": "requests",
+      "resetsAt": "2026-10-30T00:00:00+08:00"
+    }
+  }
+}
