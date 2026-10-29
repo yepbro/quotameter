@@ -8,3 +8,9 @@ Designed to be installed and operated by one person on their own Linux VPS: dist
 
 - [Technical Specification](plan/SPECIFICATION.md) — full requirements: architecture, providers, persistence, security, testing, and release process
 - [Implementation Task Plan](plan/tasks.md) — staged, independently reviewable task breakdown with acceptance conditions
+- [Contributing guide](CONTRIBUTING.md) — commit convention, pull-request rules, and repository workflow
+
+## Project status
+
+The project is in the bootstrapping stage: the specification and the task plan are complete, and implementation work follows [plan/tasks.md](plan/tasks.md) in order. A reproducible Docker-based development environment and setup instructions arrive with Stage 1 of the plan; until then, `plan/SPECIFICATION.md` is the single source of truth for every design decision.
+
