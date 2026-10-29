@@ -12,7 +12,9 @@ resolves every relative import in `src/`, `ui/`, and `bin/` and fails when a
 forbidden dependency appears — the layer import directions, adapter isolation,
 the `node:sqlite` storage gate, the no-loose-files rule, the `ui/` type-only
 rule, and the `bin/` → `src/cli/` rule. The [trust-boundaries map](trust-boundaries.md)
-says _what_ is validated where; this page says _which module owns it_.
+says _what_ is validated where; this page says _which module owns it_. The
+reasoning behind these structural choices and their trade-offs is consolidated in
+[decision-overview.md](decision-overview.md).
 
 ## Repository top level
 

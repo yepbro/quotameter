@@ -23,4 +23,4 @@
 
 ## Status
 
-This file is the durable map; the schema modules are created by their owning tasks and must link back here. When a new boundary appears (for example a new provider), it is added to this table first, then implemented. The directory owning each module and the allowed import directions are fixed by [package-layout.md](package-layout.md) and enforced by `test/unit/package-layout.spec.ts`.
+This file is the durable map; the schema modules are created by their owning tasks and must link back here. When a new boundary appears (for example a new provider), it is added to this table first, then implemented. The directory owning each module and the allowed import directions are fixed by [package-layout.md](package-layout.md) and enforced by `test/unit/package-layout.spec.ts`. The rationale for these boundaries and the decisions behind them is consolidated in [decision-overview.md](decision-overview.md).
