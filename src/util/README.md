@@ -1,12 +1,12 @@
 # `src/util/` — cross-cutting helpers
 
 Cross-cutting utilities shared across layers: the clock/time-zone API
-(`clock.ts`, task 071), the structured redacting logger (task 072), and
-version-string helpers (`version.ts`).
+(`clock.ts`, task 071), the structured redacting logger (`logger.ts`,
+task 072), and version-string helpers (`version.ts`).
 
 **Rule:** this layer is a leaf — it imports nothing from other `src/` modules.
-External packages are allowed (`clock.ts` uses Luxon, which spec §3 names for
-server-side time zones). Add a file here only when it is genuinely
+External packages are allowed (`clock.ts` uses Luxon, `logger.ts` uses Pino —
+both named by spec §3). Add a file here only when it is genuinely
 cross-cutting; module-specific helpers stay inside their owning module.
 
 ## `clock.ts` — the canonical time API (spec §10, decision D-021)
@@ -46,3 +46,48 @@ never calls `Date.now()`, `new Date()`, or machine-local zone APIs itself.
   direction is where DST nonexistent/ambiguous times live, and spec §9.3
   fixes their resolution policy — task 115 owns it; peak-hours intervals
   (114) and rolling ranges (116) build on `zonedDateTime`/`zonedParts`.
+
+## `logger.ts` — the structured redacting logger (spec §16, §15.4, decision D-025)
+
+The module every layer logs through; the exit side of "secrets stop at their
+layer". `createLogger(options)` returns a wrapper around one Pino instance
+writing JSON lines to an injectable destination (default `process.stdout`,
+spec §16; journald collects them). Never `console` — ESLint forbids it in
+`src/**`, and the logger is the sanctioned output path.
+
+- **Two redaction layers (D-025).** Layer B (the wrapper, first-party
+  surface) deep-sanitizes the message and the merging object before Pino
+  sees them: sensitive keys by name at any depth, known secret values
+  wherever they occur in strings, `Error` payloads normalized through
+  Pino's `errWithCause` and scrubbed (message, stack, cause chain, custom
+  properties). Layer A (Pino `redact` paths + an `err` serializer) protects
+  the raw instance exposed as `logger.pino` for integrations (task 146
+  wraps it as the Fastify logger) — by key name at depths 0–2 only; the raw
+  instance does not scrub message strings or non-sensitive field values, so
+  task 146 must keep secrets out of its own URLs, messages, and values by
+  construction or scrub them itself (D-025 records the boundary).
+- **Levels.** The wrapper exposes all six Pino levels (`trace`…`fatal`);
+  spec §16's four configuration levels (`error|warn|info|debug`, default
+  `warn`) remain the user-facing policy pinned by `LOG_LEVELS` in
+  `src/schemas/config.ts` — a deliberate twin, since the layers cannot
+  import each other. `setLevel` serves the reload path (D-023).
+- **Sensitive key names** are matched normalized (lowercase,
+  non-alphanumerics stripped), so `apiKey`, `API_KEY`, `api-key`, and
+  `api_key` all match; the closed list is exported as `SENSITIVE_KEY_NAMES`
+  and errs on the side of redaction. Known-secret values supplied at
+  creation (`secrets`) are scrubbed from every string.
+- **Failure contract.** Construction validates options and throws (wiring
+  mistakes fail fast); every log call is synchronous and never throws
+  (D-020's diagnostics rule). The non-enumerable D-013 `AccountContext`
+  secret is invisible to the sanitizer by construction.
+- **Lifecycle seam.** `createLifecycleSink(logger)` adapts the logger to the
+  reserved `onLifecycle`/`onEvent` seams of `src/server/` — synchronous,
+  never throws, logs `lifecycle: <type>` at `info` (§16: at `info`, log
+  only lifecycle events). The event type is the structural supertype
+  `{ type: string } & Record<string, unknown>`, so both server event unions
+  fit without importing them.
+- **Marker-secret proof.** `test/unit/logger-redaction.spec.ts` fires every
+  leak vector (message interpolation, deep/nested fields, array elements,
+  error payloads, sensitive keys) at every level of the ladder and asserts
+  the marker is absent from the raw JSON line — the task 072
+  done-condition.
