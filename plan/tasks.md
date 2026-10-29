@@ -59,7 +59,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 
 ## Stage 3 — Configure linters
 
-- [ ] **033. Add ESLint** — **Status: [new]** — Configure ESLint for TypeScript, Vue, and the project's module conventions. **Done when:** the lint command runs on source and tests. **Spec:** [§3, §17.3](SPECIFICATION.md#3-technology-and-packaging).
+- [x] **033. Add ESLint** — **Status: [done]** — Configure ESLint for TypeScript, Vue, and the project's module conventions. **Done when:** the lint command runs on source and tests. **Spec:** [§3, §17.3](SPECIFICATION.md#3-technology-and-packaging).
 - [ ] **034. Add ESLint security rules** — **Status: [new]** — Enable suitable security-oriented rules and prohibit unsafe secret logging and problematic patterns where practical. **Done when:** the rules are active in CI and justified exceptions are explicit. **Spec:** [§15, §17.3](SPECIFICATION.md#15-security).
 - [ ] **035. Add Vue template linting** — **Status: [new]** — Check Vue templates and component conventions. **Done when:** errors in templates fail the lint command. **Spec:** [§14, §17](SPECIFICATION.md#14-web-interface).
 - [ ] **036. Add i18n hardcoded-string checks** — **Status: [new]** — Detect user-facing strings that bypass the English `vue-i18n` catalog, to the extent supported by the selected lint tooling. **Done when:** a fixture with a hardcoded UI label is caught. **Spec:** [§14.1](SPECIFICATION.md#141-general-ui-requirements).
