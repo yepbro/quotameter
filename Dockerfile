@@ -20,9 +20,11 @@ WORKDIR /app
 
 # Prepare writable directories for the non-root `node` user:
 # - /app/node_modules is the mount point for the persisted dependency volume;
-# - /home/node/.cache holds the npm/Playwright caches between builds.
-RUN mkdir -p /app/node_modules /home/node/.cache \
-    && chown -R node:node /app /home/node
+# - /home/node/.cache holds the npm/Playwright caches between builds;
+# - /var/lib/quotameter holds isolated development config/data volumes and
+#   must be owned by `node` so named volumes inherit the right ownership.
+RUN mkdir -p /app/node_modules /home/node/.cache /var/lib/quotameter/config /var/lib/quotameter/data \
+    && chown -R node:node /app /home/node /var/lib/quotameter
 
 USER node
 
