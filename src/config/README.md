@@ -167,3 +167,76 @@ where the component is consumed. `start` enforces (a refusal aborts startup
 through the app's rollback); `stop` is a no-op. The optional `filesystem`
 and `getuid` parameters are test seams; production callers never pass them.
 Composition-root wiring happens in the later assembly task.
+
+## `env.ts` — environment-variable overrides (spec §6.3, §6.4, §14.5, decision D-023)
+
+Environment-defined values take precedence over file values and are read-only
+in the UI (spec §6.3). `env.ts` owns that layer as pure functions over an
+environment snapshot (injectable in tests; `process.env` is never mutated):
+
+- **`parseConfigWithEnv(fileInput, env)`** — the task 064 composition seam:
+  scans the snapshot, splices the coerced values on top of the parsed file
+  input, and validates the whole through `parseConfig`, so an environment
+  value fails exactly like a file value — field-addressed, value-free
+  problems (spec §15.4). Env-only configuration (absent file) works by
+  passing `{}`.
+- **`loadConfigWithEnv(targetPath, env?, filesystem?)`** — the full pipeline
+  for startup and the task 068 reload: `loadConfigFile` composes the file
+  stage, then overrides apply on top.
+
+Supported variables (the `ENV_OVERRIDES` table; names mirror the field path —
+upper-cased, `.` → `_`, camelCase → SNAKE_CASE — so the mapping is derivable
+in both directions):
+
+| Variable                                  | Field                        | Coercion |
+| ----------------------------------------- | ---------------------------- | -------- |
+| `QUOTAMETER_SERVER_HOST`                  | `server.host`                | string   |
+| `QUOTAMETER_SERVER_PORT`                  | `server.port`                | integer  |
+| `QUOTAMETER_APP_TIMEZONE`                 | `app.timezone`               | string   |
+| `QUOTAMETER_APP_POLLING_INTERVAL_SECONDS` | `app.pollingIntervalSeconds` | integer  |
+| `QUOTAMETER_APP_HISTORY_RETENTION_DAYS`   | `app.historyRetentionDays`   | integer  |
+| `QUOTAMETER_AUTH_MODE`                    | `auth.mode`                  | string   |
+| `QUOTAMETER_LOGGING_LEVEL`                | `logging.level`              | string   |
+
+Semantics, pinned in D-023:
+
+- **Precedence**: environment over file over defaults. A variable that is set
+  marks its field as environment-sourced even when the value coincides with
+  the file's. An empty string counts as unset (the uniform rule of D-011).
+- **Coercion**: integer fields convert only pure decimal digit strings; every
+  other value stays a string, and the landed parser rejects it with its
+  pinned type message (`server.port: expected an integer, got a string`).
+  Leading zeros are decimal (`09000` → `9000`), and a digit string long
+  enough to coerce to `Infinity` fails the integer type check. Ranges,
+  enums, IANA names, and cross-field rules (e.g. a password is still
+  required for `QUOTAMETER_AUTH_MODE=required`) all come from `parseConfig`.
+- **Unknown `QUOTAMETER_*` names are rejected** (`QUOTAMETER_SEVER_PORT:
+unsupported environment variable`, codepoint-sorted so the order is
+  host-independent) — a typo must fail, not silently pass (the D-014
+  closed-contract philosophy). `QUOTAMETER_CONFIG_DIR` and
+  `QUOTAMETER_DATA_DIR` are known and ignored here; `paths.ts` owns them.
+- **Absent file**: when `loadConfigFile` reports the pinned
+  `configuration file not found: <path>` problem and at least one override is
+  set, the effective configuration is built from the environment alone (a
+  success carries `fileAbsent: true`; a failure prepends the not-found
+  problem so both facts are explained). With no overrides the missing file is
+  the problem — though unsupported `QUOTAMETER_*` names are still scanned and
+  reported beside it, so a typo does not wait for a file to appear; any other
+  file failure (unreadable, invalid JSON, schema or cross-field problems)
+  passes through verbatim — the environment never masks a broken file, and
+  overrides never rescue one.
+- **Read-only marking**: the success result carries `sources` — the
+  overridden field paths in table order plus the ids of accounts whose secret
+  source is `apiKeyEnv` (spec §6.3). This is the data the Stage 12/13 API and
+  UI surface as read-only annotations (spec §14.5). No value, secret or not,
+  ever enters the marking or a problem.
+
+Secrets deliberately have no `QUOTAMETER_*` channel: account keys use the
+per-account `apiKeyEnv` field (spec §6.3), and the password hash has no
+spec-named environment alternative. Structured sections (`providers`,
+`accounts`) do not map to single environment strings and stay file-only.
+One consequence of the strict name scan: an `apiKeyEnv` value must not
+itself start with `QUOTAMETER_` — the schema's variable-name pattern permits
+it, but the moment such a variable is actually set in the service
+environment, the scan rejects it as unsupported; point `apiKeyEnv` at a
+name outside the reserved prefix.
