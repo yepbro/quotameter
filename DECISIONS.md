@@ -110,6 +110,26 @@ This file records important technical and business decisions made during develop
 
 **Consequences.** Storage (tasks 078+) mirrors these rules in its constraints: invalid rows NULL the five quota columns and require `invalid_reason`; `window_seconds`/`resets_at` may be retained. Adding an enum value or derivable field remains a code change plus a database migration (§8.4). Adapters list derivations explicitly and only for fields computed from supplied originals.
 
+## D-011 — XDG path resolution semantics (spec §6.1)
+
+**Date:** 2026-10-29 · **Status:** Accepted · **Spec:** [§6.1](plan/SPECIFICATION.md#61-paths) · **Tasks:** [063](plan/tasks.md)
+
+**Decision.** `src/config/paths.ts` resolves directories with the precedence `QUOTAMETER_CONFIG_DIR`/`QUOTAMETER_DATA_DIR` → `XDG_CONFIG_HOME`/`XDG_DATA_HOME` + `quotameter` segment → `<home>/.config/quotameter` / `<home>/.local/share/quotameter`. Five edge rules are pinned: (1) an empty string counts as unset for all four variables (the XDG wording "either not set or empty", applied uniformly); (2) a `QUOTAMETER_*` value is the directory itself — no `quotameter` segment is appended — because it replaces the whole path the way `AWS_CONFIG_FILE` does, not the base the way `XDG_CONFIG_HOME` does; (3) relative `XDG_*` values are ignored (default applies) because the XDG Base Directory Specification requires absolute paths and leaves relative ones undefined — silently honoring them would make secret-bearing paths depend on the working directory; (4) relative `QUOTAMETER_*` values are honored, anchored to the current working directory via `path.resolve`, because silently discarding an explicit override could redirect secrets back to the default location; (5) the home directory is a non-empty `HOME` from the injected environment snapshot, else `os.homedir()`, and resolution throws when neither yields a value rather than producing a relative default.
+
+**Reasons.** §6.1 names the variables and defaults but not the edge behavior; these choices keep resolution pure and deterministic (environment and home lookup are injectable, so unit tests never mutate `process.env`), keep results absolute and normalized in every branch, and prefer loud failure over guessing where secrets are stored.
+
+**Consequences.** Consumers (config loading 064, permissions/startup 066, `init` CLI) receive only directory paths — file naming (`config.json`) stays with 064 and directory creation/permission enforcement with 066. Deployments that set a relative `QUOTAMETER_*` value get working-directory-anchored paths; deployments with a broken `HOME` get a startup error explaining the home-directory lookup.
+
+## D-012 — Absolute-home requirement and verbatim values in path resolution (refines D-011)
+
+**Date:** 2026-10-29 · **Status:** Accepted · **Spec:** [§6.1](plan/SPECIFICATION.md#61-paths) · **Tasks:** [063](plan/tasks.md) · **References:** D-011
+
+**Decision.** Two refinements of D-011, from the review of task 063. (1) The home directory behind the XDG defaults must be an **absolute** path: a `HOME` that is empty or relative is skipped in favor of the `os.homedir()` fallback — the same fall-through D-011 applies to relative `XDG_*` values — and resolution throws when the fallback is also empty or relative. (2) All variable values are used **verbatim**: a leading `~` is not expanded (matching the XDG Base Directory Specification, which performs no shell expansion), so `QUOTAMETER_CONFIG_DIR=~/conf` denotes a directory literally named `~` under the current working directory.
+
+**Reasons.** (1) With a relative `HOME`, D-011's implementation returned a relative, cwd-dependent default path — contradicting its own "results absolute and normalized in every branch" guarantee and reproducing exactly the cwd-dependent-secrets failure mode that motivated ignoring relative `XDG_*` values; a loud failure is preferable to guessing where secrets are stored. (2) Tilde expansion would import shell semantics (leading `~/` only? `~user`?) that directory-valued environment variables, including the XDG specification itself, do not provide; documenting the verbatim rule is the consistent choice, and the review's only objection was the silent middle ground.
+
+**Consequences.** `src/config/paths.ts` returns an absolute path in every branch or throws. Environments with a relative `HOME` and no usable OS lookup fail with an explanation instead of writing secrets relative to the working directory. The `init`/config documentation (tasks 064, 128) should state that override values are taken verbatim and that `~` is not expanded.
+
 ## D-014 — Configuration contract interpretations (spec §6.2)
 
 **Date:** 2026-10-29 · **Status:** Accepted · **Spec:** [§6.2](plan/SPECIFICATION.md#6-configuration-and-secrets) · **Tasks:** [061](plan/tasks.md)
