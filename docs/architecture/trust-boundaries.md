@@ -6,13 +6,13 @@
 
 ## Boundaries
 
-| # | Boundary | Untrusted input | Validation owner | Validated output |
-| - | -------- | --------------- | ---------------- | ---------------- |
-| 1 | HTTP API requests | Request bodies, query parameters, headers | `src/schemas/api/` (task 061+) | Typed route handlers only see validated shapes |
-| 2 | Provider responses | Provider HTTP bodies (Z.ai now, others later) | Adapter-local schema in `src/providers/<id>/` (Stage 9) | Normalized snapshot model (spec §8.4); anything unvalidated becomes a parse failure with a sanitized diagnostic |
-| 3 | Configuration and environment | `config.json`, `QUOTAMETER_*` environment variables | `src/schemas/config.ts` (task 061+) | One validated configuration object; startup refuses invalid config (spec §6.2) |
-| 4 | Database rows | Anything read back from SQLite | Repository layer mapping (Stage 8) | Typed domain records |
-| 5 | UI ↔ API | Browser-originated payloads (JSON) | Same schemas as boundary 1, applied at the server | The UI itself is untrusted; server-side validation is authoritative |
+| #   | Boundary                      | Untrusted input                                     | Validation owner                                        | Validated output                                                                                                |
+| --- | ----------------------------- | --------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 1   | HTTP API requests             | Request bodies, query parameters, headers           | `src/schemas/api/` (task 061+)                          | Typed route handlers only see validated shapes                                                                  |
+| 2   | Provider responses            | Provider HTTP bodies (Z.ai now, others later)       | Adapter-local schema in `src/providers/<id>/` (Stage 9) | Normalized snapshot model (spec §8.4); anything unvalidated becomes a parse failure with a sanitized diagnostic |
+| 3   | Configuration and environment | `config.json`, `QUOTAMETER_*` environment variables | `src/schemas/config.ts` (task 061+)                     | One validated configuration object; startup refuses invalid config (spec §6.2)                                  |
+| 4   | Database rows                 | Anything read back from SQLite                      | Repository layer mapping (Stage 8)                      | Typed domain records                                                                                            |
+| 5   | UI ↔ API                      | Browser-originated payloads (JSON)                  | Same schemas as boundary 1, applied at the server       | The UI itself is untrusted; server-side validation is authoritative                                             |
 
 ## Enforcement points
 

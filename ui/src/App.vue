@@ -7,9 +7,7 @@
 <template>
   <main class="app">
     <h1>Quotameter</h1>
-    <p data-testid="app-status">
-      Setup in progress — the interface is not implemented yet.
-    </p>
+    <p data-testid="app-status">Setup in progress — the interface is not implemented yet.</p>
   </main>
 </template>
 

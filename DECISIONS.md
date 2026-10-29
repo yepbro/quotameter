@@ -6,7 +6,7 @@ This file records important technical and business decisions made during develop
 
 - Entries are immutable once accepted; a reversed or replaced decision gets a new entry that references the old one.
 - Every entry has a unique stable ID (`D-NNN`), a date, and a status (`Accepted`, `Superseded by D-NNN`, `Reversed`).
-- Decisions live here even when they are also described in the specification; this file records the *reasoning*, not the full requirements.
+- Decisions live here even when they are also described in the specification; this file records the _reasoning_, not the full requirements.
 
 ---
 

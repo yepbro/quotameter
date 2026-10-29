@@ -1,7 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { vi } from "vitest";
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { vi } from 'vitest';
 
 /**
  * Test isolation helpers (spec §11, §17).
@@ -21,7 +21,7 @@ export interface TempDir {
 }
 
 /** Creates a unique temporary directory (removed best-effort on process exit). */
-export async function createTempDir(prefix = "quotameter-test-"): Promise<TempDir> {
+export async function createTempDir(prefix = 'quotameter-test-'): Promise<TempDir> {
   const path = await mkdtemp(join(tmpdir(), prefix));
   let removed = false;
   return {
@@ -45,7 +45,7 @@ export async function withTempDir(
   try {
     await body({
       ...dir,
-      sqlitePath: (name = "test.sqlite") => join(dir.path, name),
+      sqlitePath: (name = 'test.sqlite') => join(dir.path, name),
     });
   } finally {
     await dir.remove();
@@ -61,12 +61,15 @@ export async function withTempDir(
  * afterAll(() => cleanup.flush());
  * ```
  */
-export function deferList(): { defer(fn: () => void | Promise<void>): void; flush(): Promise<void> } {
+export function deferList(): {
+  defer(fn: () => void | Promise<void>): void;
+  flush(): Promise<void>;
+} {
   const fns: Array<() => void | Promise<void>> = [];
   let flushed = false;
   return {
     defer(fn) {
-      if (flushed) throw new Error("deferList.flush() already ran; cannot defer more work");
+      if (flushed) throw new Error('deferList.flush() already ran; cannot defer more work');
       fns.push(fn);
     },
     async flush() {

@@ -13,7 +13,7 @@ services:
     working_dir: /app
     # Keep the container alive so `docker compose exec` / `run` can be used
     # for repeat commands without restarting the environment.
-    command: ["sleep", "infinity"]
+    command: ['sleep', 'infinity']
     environment:
       # Development data lives outside the bind-mounted source tree so that
       # secrets, SQLite databases, and logs never appear in tracked

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { compareVersions, satisfiesMinimum } from "../../src/version";
-import { fc } from "../helpers/property";
+import { describe, expect, it } from 'vitest';
+import { compareVersions, satisfiesMinimum } from '../../src/version';
+import { fc } from '../helpers/property';
 
 /**
  * Sample property tests over src/version.ts proving the deterministic
@@ -10,8 +10,8 @@ const versionArb = fc
   .tuple(fc.nat(99), fc.nat(99), fc.nat(99))
   .map(([a, b, c]) => `${a}.${b}.${c}`);
 
-describe("compareVersions properties", () => {
-  it("is antisymmetric", () => {
+describe('compareVersions properties', () => {
+  it('is antisymmetric', () => {
     fc.assert(
       fc.property(versionArb, versionArb, (a, b) => {
         const forward = Math.sign(compareVersions(a, b));
@@ -21,7 +21,7 @@ describe("compareVersions properties", () => {
     );
   });
 
-  it("is reflexive", () => {
+  it('is reflexive', () => {
     fc.assert(
       fc.property(versionArb, (a) => {
         expect(compareVersions(a, a)).toBe(0);
@@ -29,7 +29,7 @@ describe("compareVersions properties", () => {
     );
   });
 
-  it("is transitive", () => {
+  it('is transitive', () => {
     fc.assert(
       fc.property(versionArb, versionArb, versionArb, (a, b, c) => {
         const ab = compareVersions(a, b);
@@ -41,7 +41,7 @@ describe("compareVersions properties", () => {
     );
   });
 
-  it("treats a version as the minimum for itself", () => {
+  it('treats a version as the minimum for itself', () => {
     fc.assert(
       fc.property(versionArb, (a) => {
         expect(satisfiesMinimum(a, a)).toBe(true);

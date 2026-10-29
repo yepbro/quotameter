@@ -49,22 +49,22 @@ The application is installed and operated by one person on their own Linux VPS. 
 
 ## 3. Technology and packaging
 
-| Concern | Required implementation |
-|---|---|
-| Runtime | Node.js `>=22.13.0`; `engines` field must enforce the minimum |
-| Language | TypeScript, `strict: true` |
-| HTTP server | Fastify, `@fastify/static`, `@fastify/cookie`, `@fastify/helmet`, `@fastify/rate-limit` |
-| Schemas / validation | TypeBox + Ajv; JSON Schema is the source for runtime validation and OpenAPI |
-| Database | Built-in `node:sqlite`; SQLite WAL mode |
-| Migrations | Migration library, preferably Umzug; migrations are forward-only and recorded in the database |
-| Time zones | Luxon on the server; `Intl.DateTimeFormat` in the browser |
-| UI | Vue 3, Vite, Vue Router, `vue-i18n`; Pinia only if it proves useful |
-| Charts | Apache ECharts, modular imports |
-| Logs | Pino through Fastify, JSON to stdout/stderr and journald |
-| Unit/component tests | Vitest, Vue Test Utils, `fast-check` |
-| Browser E2E | Playwright; accessibility smoke checks with axe |
-| Formatting / lint / type checks | ESLint, TypeScript compiler, Prettier |
-| CI | GitHub Actions |
+| Concern                         | Required implementation                                                                       |
+| ------------------------------- | --------------------------------------------------------------------------------------------- |
+| Runtime                         | Node.js `>=22.13.0`; `engines` field must enforce the minimum                                 |
+| Language                        | TypeScript, `strict: true`                                                                    |
+| HTTP server                     | Fastify, `@fastify/static`, `@fastify/cookie`, `@fastify/helmet`, `@fastify/rate-limit`       |
+| Schemas / validation            | TypeBox + Ajv; JSON Schema is the source for runtime validation and OpenAPI                   |
+| Database                        | Built-in `node:sqlite`; SQLite WAL mode                                                       |
+| Migrations                      | Migration library, preferably Umzug; migrations are forward-only and recorded in the database |
+| Time zones                      | Luxon on the server; `Intl.DateTimeFormat` in the browser                                     |
+| UI                              | Vue 3, Vite, Vue Router, `vue-i18n`; Pinia only if it proves useful                           |
+| Charts                          | Apache ECharts, modular imports                                                               |
+| Logs                            | Pino through Fastify, JSON to stdout/stderr and journald                                      |
+| Unit/component tests            | Vitest, Vue Test Utils, `fast-check`                                                          |
+| Browser E2E                     | Playwright; accessibility smoke checks with axe                                               |
+| Formatting / lint / type checks | ESLint, TypeScript compiler, Prettier                                                         |
+| CI                              | GitHub Actions                                                                                |
 
 `node:sqlite` is still an evolving/experimental API in the supported Node 22 line. All database access must be isolated behind a storage module/interface. Test its behavior under every supported Node version. Suppress the expected `ExperimentalWarning` through a documented, supported runtime mechanism only; do not hide unrelated warnings. Use `node:test` for storage tests if the chosen Vitest configuration cannot safely load `node:sqlite`.
 
@@ -98,17 +98,17 @@ Install with `npm install -g quotameter` on Linux with `systemd` and Node.js `>=
 
 ### 5.2 CLI commands
 
-| Command | Purpose |
-|---|---|
-| `quotameter init` | First-time configuration and service setup |
-| `quotameter run` | Foreground execution for systemd and debugging |
-| `quotameter start`, `stop`, `restart` | Control an installed service through systemd |
-| `quotameter reload` | Reload configuration on SIGHUP without restarting where supported |
-| `quotameter status` | Show service status, latest collection, and last error for each account |
-| `quotameter logs` | Convenient `journalctl` wrapper for system or user service |
-| `quotameter service install` / `uninstall` | Install or remove the service independently of `init` |
-| `quotameter passwd` | Set or change the web password |
-| `quotameter doctor` | Diagnose runtime, configuration, database, network, credentials, and service issues |
+| Command                                    | Purpose                                                                             |
+| ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `quotameter init`                          | First-time configuration and service setup                                          |
+| `quotameter run`                           | Foreground execution for systemd and debugging                                      |
+| `quotameter start`, `stop`, `restart`      | Control an installed service through systemd                                        |
+| `quotameter reload`                        | Reload configuration on SIGHUP without restarting where supported                   |
+| `quotameter status`                        | Show service status, latest collection, and last error for each account             |
+| `quotameter logs`                          | Convenient `journalctl` wrapper for system or user service                          |
+| `quotameter service install` / `uninstall` | Install or remove the service independently of `init`                               |
+| `quotameter passwd`                        | Set or change the web password                                                      |
+| `quotameter doctor`                        | Diagnose runtime, configuration, database, network, credentials, and service issues |
 
 Systemd provides daemonization; do not implement a custom double-fork or PID-file mechanism. If service control is requested before installation, display a helpful next step instead of failing cryptically.
 
@@ -184,12 +184,12 @@ The polling interval, display time zone, retention period, account list/labels/k
 
 Default HTTP request timeout is 15 seconds; configurable range is 5–60 seconds.
 
-| Failure | Required behavior |
-|---|---|
-| Network failure, timeout, HTTP 5xx | Up to three retries with exponential delays of 2, 4, and 8 seconds plus jitter within the current cycle. Store one collection-run record with the total attempt count. |
-| HTTP 429 | Do not retry within the current cycle. Respect `Retry-After` up to one hour and do not poll before that time. |
-| HTTP 401/403 | Do not retry within the current cycle. Set `Auth rejected`; pause normal polling for that account until the key changes or a manual test is requested. Perform a verification attempt once every 60 minutes. |
-| Invalid JSON, unexpected response schema, or missing required fields | Set `Format changed`, do not write metric values, and retain a sanitized response for CLI diagnostics. |
+| Failure                                                              | Required behavior                                                                                                                                                                                            |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Network failure, timeout, HTTP 5xx                                   | Up to three retries with exponential delays of 2, 4, and 8 seconds plus jitter within the current cycle. Store one collection-run record with the total attempt count.                                       |
+| HTTP 429                                                             | Do not retry within the current cycle. Respect `Retry-After` up to one hour and do not poll before that time.                                                                                                |
+| HTTP 401/403                                                         | Do not retry within the current cycle. Set `Auth rejected`; pause normal polling for that account until the key changes or a manual test is requested. Perform a verification attempt once every 60 minutes. |
+| Invalid JSON, unexpected response schema, or missing required fields | Set `Format changed`, do not write metric values, and retain a sanitized response for CLI diagnostics.                                                                                                       |
 
 A failure for one account/provider must not stop other accounts. Retain and display the latest valid values and their collection time after an error. Missing data and provider errors must never be represented as zero. The UI must show the most recent successful collection and most recent error for each account.
 
@@ -264,8 +264,8 @@ interface ProviderSnapshot {
 interface NormalizedMetric {
   key: string; // stable, adapter-defined identifier
   label: string; // English display label
-  limitType: 'ROLLING_WINDOW' | 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'OTHER';
-  unit: 'TOKENS' | 'CREDITS' | 'REQUESTS' | 'PERCENT';
+  limitType: "ROLLING_WINDOW" | "DAILY" | "WEEKLY" | "MONTHLY" | "OTHER";
+  unit: "TOKENS" | "CREDITS" | "REQUESTS" | "PERCENT";
   windowSeconds?: number;
   used?: number;
   remaining?: number;
@@ -402,24 +402,24 @@ Show separate timeline indicators for (a) failed collection cycles, taken from `
 
 The API is internal to the web interface. Define every request and response through TypeBox/JSON Schema and generate OpenAPI from the same schema. All endpoints require authentication when authentication is enabled, except the public health response as described below.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | Unauthenticated response contains only `{ "status": "ok" }`; authenticated response may include process/database diagnostics |
-| `GET` | `/api/status` | Service state and each account's status, last success, and last error |
-| `GET` | `/api/providers` | Available provider types and read-only peak-hour schedules |
-| `GET` | `/api/accounts` | Accounts, with keys masked |
-| `POST` | `/api/accounts` | Add an account; key is write-only |
-| `PATCH` | `/api/accounts/:id` | Change label, enable state, or key |
-| `DELETE` | `/api/accounts/:id` | Archive; `?purgeHistory=true` explicitly purges history |
-| `POST` | `/api/accounts/:id/test` | Test provider connection |
-| `GET` | `/api/quota` | Latest successful snapshot for `accountId` |
-| `GET` | `/api/history` | Metric series by `accountId`, `metric`, `from`, `to`, `maxPoints` |
-| `GET` | `/api/events` | Resets, gaps, and collection failures by account/time/metric |
-| `GET` | `/api/peak-hours` | UTC peak/off-peak intervals for `accountId`, `from`, `to` |
-| `GET` | `/api/settings` | Safe settings view with secrets omitted/masked |
-| `PUT` | `/api/settings` | Update settings allowed for runtime modification |
-| `POST` | `/api/auth/login`, `/api/auth/logout` | Login and logout |
-| `GET` | `/api/auth/session` | Current session and auth-mode information |
+| Method   | Path                                  | Purpose                                                                                                                      |
+| -------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/health`                         | Unauthenticated response contains only `{ "status": "ok" }`; authenticated response may include process/database diagnostics |
+| `GET`    | `/api/status`                         | Service state and each account's status, last success, and last error                                                        |
+| `GET`    | `/api/providers`                      | Available provider types and read-only peak-hour schedules                                                                   |
+| `GET`    | `/api/accounts`                       | Accounts, with keys masked                                                                                                   |
+| `POST`   | `/api/accounts`                       | Add an account; key is write-only                                                                                            |
+| `PATCH`  | `/api/accounts/:id`                   | Change label, enable state, or key                                                                                           |
+| `DELETE` | `/api/accounts/:id`                   | Archive; `?purgeHistory=true` explicitly purges history                                                                      |
+| `POST`   | `/api/accounts/:id/test`              | Test provider connection                                                                                                     |
+| `GET`    | `/api/quota`                          | Latest successful snapshot for `accountId`                                                                                   |
+| `GET`    | `/api/history`                        | Metric series by `accountId`, `metric`, `from`, `to`, `maxPoints`                                                            |
+| `GET`    | `/api/events`                         | Resets, gaps, and collection failures by account/time/metric                                                                 |
+| `GET`    | `/api/peak-hours`                     | UTC peak/off-peak intervals for `accountId`, `from`, `to`                                                                    |
+| `GET`    | `/api/settings`                       | Safe settings view with secrets omitted/masked                                                                               |
+| `PUT`    | `/api/settings`                       | Update settings allowed for runtime modification                                                                             |
+| `POST`   | `/api/auth/login`, `/api/auth/logout` | Login and logout                                                                                                             |
+| `GET`    | `/api/auth/session`                   | Current session and auth-mode information                                                                                    |
 
 API requirements:
 
@@ -579,15 +579,15 @@ The MVP is complete only when all criteria are met:
 
 The following customer questions have been resolved:
 
-| Topic | Final decision |
-|---|---|
-| Original prototype author | Den Brooks, `denis@yepbro.pro` |
-| Peak-hours | Mon–Fri 14:00–18:00 Asia/Singapore (UTC+8); off-peak rate is 0.5× standard according to official docs, checked 2026-10-28 |
-| Package name | `quotameter`; recheck npm availability immediately before reservation/publication |
-| API examples | Start from the official docs linked in §8.3. The quota overview does not itself establish a stable quota-statistics response contract; verify the real endpoint and response before implementing the adapter |
-| Rolling-window resets | Conservative detection; do not create an event when ambiguous |
-| Repository/CI | Public GitHub repository and GitHub Actions |
-| Node.js | Node.js `>=22.13.0`; run CI on Node 22, 24, and current LTS. `22.13.0` is the minimum because `node:sqlite` no longer requires the experimental flag from 22.13 onward, although the API remains experimental |
+| Topic                     | Final decision                                                                                                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Original prototype author | Den Brooks, `denis@yepbro.pro`                                                                                                                                                                                |
+| Peak-hours                | Mon–Fri 14:00–18:00 Asia/Singapore (UTC+8); off-peak rate is 0.5× standard according to official docs, checked 2026-10-28                                                                                     |
+| Package name              | `quotameter`; recheck npm availability immediately before reservation/publication                                                                                                                             |
+| API examples              | Start from the official docs linked in §8.3. The quota overview does not itself establish a stable quota-statistics response contract; verify the real endpoint and response before implementing the adapter  |
+| Rolling-window resets     | Conservative detection; do not create an event when ambiguous                                                                                                                                                 |
+| Repository/CI             | Public GitHub repository and GitHub Actions                                                                                                                                                                   |
+| Node.js                   | Node.js `>=22.13.0`; run CI on Node 22, 24, and current LTS. `22.13.0` is the minimum because `node:sqlite` no longer requires the experimental flag from 22.13 onward, although the API remains experimental |
 
 External references:
 

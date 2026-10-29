@@ -25,7 +25,7 @@ Hand-written payloads that never came from a real account. Prefer synthetic fixt
 
 ## Index
 
-| File | Kind | Purpose |
-| ---- | ---- | ------- |
+| File                                   | Kind      | Purpose                                                   |
+| -------------------------------------- | --------- | --------------------------------------------------------- |
 | `synthetic/provider-usage-sample.json` | synthetic | Well-formed usage snapshot example used by parsing tests. |
-| `synthetic/provider-usage-empty.json` | synthetic | Provider success response with no quota data. |
+| `synthetic/provider-usage-empty.json`  | synthetic | Provider success response with no quota data.             |

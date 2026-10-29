@@ -16,18 +16,14 @@ const NO_NETWORK_MESSAGE = (host: string) =>
   `Use the local mock provider server (test/helpers/mockProviderServer.ts) instead.`;
 
 function isLoopback(host: string | undefined): boolean {
-  if (!host || host === "") return true; // relative URL / default
-  const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized === "::1" ||
-    /^127(\.\d+){3}$/.test(normalized)
-  );
+  if (!host || host === '') return true; // relative URL / default
+  const normalized = host.replace(/^\[|\]$/g, '').toLowerCase();
+  return normalized === 'localhost' || normalized === '::1' || /^127(\.\d+){3}$/.test(normalized);
 }
 
 function assertAllowedHost(host: string | undefined): void {
   if (!isLoopback(host)) {
-    throw new Error(NO_NETWORK_MESSAGE(host ?? "<unknown>"));
+    throw new Error(NO_NETWORK_MESSAGE(host ?? '<unknown>'));
   }
 }
 
@@ -36,14 +32,14 @@ type FetchLike = typeof globalThis.fetch;
 export async function installNetworkGuard(): Promise<void> {
   // Guard `fetch`.
   const originalFetch: FetchLike | undefined = globalThis.fetch;
-  if (originalFetch && !("__quotameterGuarded" in originalFetch)) {
+  if (originalFetch && !('__quotameterGuarded' in originalFetch)) {
     const guardedFetch: FetchLike & { __quotameterGuarded?: boolean } = async (
       input: Parameters<FetchLike>[0],
       init?: Parameters<FetchLike>[1],
     ) => {
       const url =
-        typeof input === "string"
-          ? new URL(input, "http://localhost").hostname
+        typeof input === 'string'
+          ? new URL(input, 'http://localhost').hostname
           : input instanceof URL
             ? input.hostname
             : undefined;
@@ -61,8 +57,8 @@ export async function installNetworkGuard(): Promise<void> {
   // modules are read-only, so requests are intercepted at the default agents'
   // socket-creation layer instead: external hosts never get a socket.
   const [{ globalAgent: httpAgent }, { globalAgent: httpsAgent }] = await Promise.all([
-    import("node:http"),
-    import("node:https"),
+    import('node:http'),
+    import('node:https'),
   ]);
   for (const agent of [httpAgent, httpsAgent]) {
     const originalCreateConnection = agent.createConnection.bind(agent);
@@ -72,7 +68,7 @@ export async function installNetworkGuard(): Promise<void> {
     ) => {
       const host = options.host ?? options.hostname;
       if (!isLoopback(host)) {
-        callback(new Error(NO_NETWORK_MESSAGE(host ?? "<unknown>")));
+        callback(new Error(NO_NETWORK_MESSAGE(host ?? '<unknown>')));
         return undefined as unknown as ReturnType<typeof originalCreateConnection>;
       }
       return originalCreateConnection(options, callback);

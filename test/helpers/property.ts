@@ -1,4 +1,4 @@
-import fc from "fast-check";
+import fc from 'fast-check';
 
 /**
  * Property-based testing convention (spec §17.1).

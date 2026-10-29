@@ -1,9 +1,9 @@
-import eslint from "@eslint/js";
-import globals from "globals";
-import pluginSecurity from "eslint-plugin-security";
-import pluginVue from "eslint-plugin-vue";
-import pluginVueI18n from "@intlify/eslint-plugin-vue-i18n";
-import tseslint from "typescript-eslint";
+import eslint from '@eslint/js';
+import globals from 'globals';
+import pluginSecurity from 'eslint-plugin-security';
+import pluginVue from 'eslint-plugin-vue';
+import pluginVueI18n from '@intlify/eslint-plugin-vue-i18n';
+import tseslint from 'typescript-eslint';
 
 /**
  * ESLint flat configuration.
@@ -15,14 +15,14 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     ignores: [
-      "coverage/**",
-      "dist/**",
-      "node_modules/**",
-      "reports/**",
-      "test-results/**",
-      "playwright-report/**",
-      "ui/dist/**",
-      ".agents/**",
+      'coverage/**',
+      'dist/**',
+      'node_modules/**',
+      'reports/**',
+      'test-results/**',
+      'playwright-report/**',
+      'ui/dist/**',
+      '.agents/**',
     ],
   },
 
@@ -31,9 +31,9 @@ export default tseslint.config(
 
   // Vue single-file components: recommended template + script rules, with the
   // TypeScript parser inside <script lang="ts"> blocks.
-  ...pluginVue.configs["flat/recommended"],
+  ...pluginVue.configs['flat/recommended'],
   {
-    files: ["**/*.vue"],
+    files: ['**/*.vue'],
     languageOptions: {
       parserOptions: { parser: tseslint.parser },
     },
@@ -41,7 +41,7 @@ export default tseslint.config(
 
   // Node-facing code: application sources, tests, scripts, and configs.
   {
-    files: ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs", "*.config.ts"],
+    files: ['src/**/*.ts', 'test/**/*.ts', 'scripts/**/*.mjs', '*.config.ts'],
     languageOptions: {
       globals: {
         ...globals.node,
@@ -51,7 +51,7 @@ export default tseslint.config(
 
   // Browser-facing UI code.
   {
-    files: ["ui/**/*.ts", "ui/**/*.vue", "test/component/**/*.ts"],
+    files: ['ui/**/*.ts', 'ui/**/*.vue', 'test/component/**/*.ts'],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -62,29 +62,29 @@ export default tseslint.config(
   {
     rules: {
       // The project's own conventions.
-      "no-console": ["error", { allow: ["warn", "error", "info", "log"] }],
-      eqeqeq: ["error", "always"],
-      "prefer-const": "error",
+      'no-console': ['error', { allow: ['warn', 'error', 'info', 'log'] }],
+      eqeqeq: ['error', 'always'],
+      'prefer-const': 'error',
     },
   },
 
   // Security-oriented rules for application code (spec §15, §17.3).
   {
-    files: ["src/**/*.{ts,vue}", "ui/**/*.{ts,vue}"],
+    files: ['src/**/*.{ts,vue}', 'ui/**/*.{ts,vue}'],
     ...pluginSecurity.configs.recommended,
     rules: {
       ...pluginSecurity.configs.recommended.rules,
       // Application code must not print to stdout/stderr directly: secrets and
       // provider payloads may only travel through the structured logger with
       // redaction (spec §15.4). The logger module enforces this from task 072.
-      "no-console": "error",
+      'no-console': 'error',
       // Exception: object-member access driven by data is pervasive in mapping
       // tables and validated at runtime boundaries (task 041 schemas); the
       // rule's signal-to-noise ratio on typed code is too low to keep on.
-      "security/detect-object-injection": "off",
+      'security/detect-object-injection': 'off',
       // Exception: non-literal fs calls are the configuration write path and
       // are always built from validated, schema-checked path components.
-      "security/detect-non-literal-fs-filename": "off",
+      'security/detect-non-literal-fs-filename': 'off',
     },
   },
 
@@ -94,19 +94,20 @@ export default tseslint.config(
   // the preset requires the locale directory layout that arrives with the UI
   // implementation stages.
   {
-    files: ["ui/**/*.vue"],
+    files: ['ui/**/*.vue'],
     plugins: {
-      "@intlify/vue-i18n": pluginVueI18n,
+      '@intlify/vue-i18n': pluginVueI18n,
     },
     rules: {
-      "@intlify/vue-i18n/no-raw-text": [
-        "error",
+      '@intlify/vue-i18n/no-raw-text': [
+        'error',
         {
           // Justified exception: the bootstrap placeholder shell carries two
           // fixed strings until the i18n catalog exists (UI implementation
           // stages). Every other raw UI string is an error.
-          ignorePattern: "^(Quotameter|Setup in progress — the interface is not implemented yet\\.)$",
-          ignoreText: ["Quotameter", "Setup in progress — the interface is not implemented yet."],
+          ignorePattern:
+            '^(Quotameter|Setup in progress — the interface is not implemented yet\\.)$',
+          ignoreText: ['Quotameter', 'Setup in progress — the interface is not implemented yet.'],
         },
       ],
     },

@@ -1,5 +1,5 @@
-import vue from "@vitejs/plugin-vue";
-import { defineConfig } from "vite";
+import vue from '@vitejs/plugin-vue';
+import { defineConfig } from 'vite';
 
 /**
  * Vite configuration for the bundled web UI.

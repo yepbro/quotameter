@@ -1,32 +1,32 @@
-import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { createTempDir, deferList, withFakeTimers, withTempDir } from "../helpers/isolation";
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import { createTempDir, deferList, withFakeTimers, withTempDir } from '../helpers/isolation';
 
-describe("isolation helpers", () => {
-  it("withTempDir provides a unique writable directory and removes it", async () => {
+describe('isolation helpers', () => {
+  it('withTempDir provides a unique writable directory and removes it', async () => {
     let seen: string | undefined;
     await withTempDir(async (dir) => {
       seen = dir.path;
-      writeFileSync(dir.sqlitePath("db.sqlite"), "x");
-      expect(existsSync(join(dir.path, "db.sqlite"))).toBe(true);
+      writeFileSync(dir.sqlitePath('db.sqlite'), 'x');
+      expect(existsSync(join(dir.path, 'db.sqlite'))).toBe(true);
     });
     expect(seen).toBeDefined();
     expect(existsSync(seen!)).toBe(false);
   });
 
-  it("withTempDir removes the directory even when the body throws", async () => {
+  it('withTempDir removes the directory even when the body throws', async () => {
     let seen: string | undefined;
     await expect(
       withTempDir(async (dir) => {
         seen = dir.path;
-        throw new Error("boom");
+        throw new Error('boom');
       }),
-    ).rejects.toThrow("boom");
+    ).rejects.toThrow('boom');
     expect(existsSync(seen!)).toBe(false);
   });
 
-  it("createTempDir returns distinct directories and remove() is idempotent", async () => {
+  it('createTempDir returns distinct directories and remove() is idempotent', async () => {
     const a = await createTempDir();
     const b = await createTempDir();
     expect(a.path).not.toBe(b.path);
@@ -35,7 +35,7 @@ describe("isolation helpers", () => {
     await b.remove();
   });
 
-  it("deferList flushes in reverse order exactly once", async () => {
+  it('deferList flushes in reverse order exactly once', async () => {
     const order: number[] = [];
     const cleanup = deferList();
     cleanup.defer(() => {
@@ -50,16 +50,16 @@ describe("isolation helpers", () => {
     expect(() => cleanup.defer(() => {})).toThrow(/already ran/);
   });
 
-  it("withFakeTimers restores real timers even on failure", async () => {
+  it('withFakeTimers restores real timers even on failure', async () => {
     const spy = vi.fn();
     await expect(
       withFakeTimers(async (clock) => {
         setTimeout(spy, 1_000);
         clock.advanceMs(1_000);
         expect(spy).toHaveBeenCalledTimes(1);
-        throw new Error("boom");
+        throw new Error('boom');
       }),
-    ).rejects.toThrow("boom");
+    ).rejects.toThrow('boom');
 
     // Real timers again: a short real timeout fires without advancing.
     const realSpy = vi.fn();

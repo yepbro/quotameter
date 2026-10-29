@@ -31,7 +31,7 @@ export function satisfiesMinimum(version: string, minimum: string): boolean {
 }
 
 function parse(version: string): [number, number, number] {
-  const parts = version.split(".");
+  const parts = version.split('.');
   // Written without nested regex quantifiers on purpose: keeps the security
   // lint ("detect-unsafe-regex") clean and the check trivially auditable.
   const valid = parts.length >= 1 && parts.length <= 3 && parts.every((p) => /^\d+$/.test(p));

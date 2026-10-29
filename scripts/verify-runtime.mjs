@@ -9,13 +9,13 @@
  *
  * Exits non-zero with an actionable message when either check fails.
  */
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from 'node:sqlite';
 
-const MINIMUM = "22.13.0";
+const MINIMUM = '22.13.0';
 
 function compareVersions(a, b) {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
   for (let i = 0; i < 3; i++) {
     if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
   }
@@ -31,14 +31,14 @@ if (compareVersions(current, MINIMUM) < 0) {
   process.exit(1);
 }
 
-const db = new DatabaseSync(":memory:");
-db.exec("CREATE TABLE probe (id INTEGER PRIMARY KEY, value TEXT)");
-db.prepare("INSERT INTO probe (value) VALUES (?)").run("ok");
-const row = db.prepare("SELECT value FROM probe WHERE id = ?").get(1);
+const db = new DatabaseSync(':memory:');
+db.exec('CREATE TABLE probe (id INTEGER PRIMARY KEY, value TEXT)');
+db.prepare('INSERT INTO probe (value) VALUES (?)').run('ok');
+const row = db.prepare('SELECT value FROM probe WHERE id = ?').get(1);
 db.close();
 
-if (row?.value !== "ok") {
-  console.error("node:sqlite verification failed: unexpected query result.");
+if (row?.value !== 'ok') {
+  console.error('node:sqlite verification failed: unexpected query result.');
   process.exit(1);
 }
 

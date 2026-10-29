@@ -33,6 +33,7 @@ config.local.json
 
 # --- Build outputs and caches ---
 /dist
+/ui/dist
 /build
 /coverage
 /reports

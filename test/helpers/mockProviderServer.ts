@@ -1,5 +1,5 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 /**
  * Local mock HTTP provider server (spec §7.2, §17.1).
@@ -13,7 +13,7 @@ import type { AddressInfo } from "node:net";
 /** What the mock server should do with the next requests. */
 export type ProviderBehavior =
   | {
-      kind: "respond";
+      kind: 'respond';
       status: number;
       body?: string;
       headers?: Record<string, string>;
@@ -21,7 +21,7 @@ export type ProviderBehavior =
       delayMs?: number;
     }
   /** Accept the connection, then destroy the socket without a response. */
-  | { kind: "abort" };
+  | { kind: 'abort' };
 
 export interface RecordedRequest {
   method: string;
@@ -45,31 +45,31 @@ export interface MockProviderServer {
 
 export async function startMockProviderServer(port = 0): Promise<MockProviderServer> {
   const requests: RecordedRequest[] = [];
-  let behavior: ProviderBehavior = { kind: "respond", status: 200, body: "{}" };
+  let behavior: ProviderBehavior = { kind: 'respond', status: 200, body: '{}' };
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => {
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
       requests.push({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
+        method: req.method ?? 'GET',
+        url: req.url ?? '/',
         headers: req.headers,
-        body: Buffer.concat(chunks).toString("utf8"),
+        body: Buffer.concat(chunks).toString('utf8'),
       });
 
       // Capture the current behavior so TypeScript can narrow the union
       // inside this closure (`behavior` itself stays assignable outside).
       const current = behavior;
-      if (current.kind === "abort") {
+      if (current.kind === 'abort') {
         res.socket?.destroy();
         return;
       }
 
       const respond = () => {
-        const body = current.body ?? "";
+        const body = current.body ?? '';
         res.writeHead(current.status, {
-          "content-type": "application/json",
+          'content-type': 'application/json',
           ...current.headers,
         });
         res.end(body);
@@ -83,7 +83,7 @@ export async function startMockProviderServer(port = 0): Promise<MockProviderSer
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
   const { port: boundPort } = server.address() as AddressInfo;
 
   return {
@@ -96,7 +96,7 @@ export async function startMockProviderServer(port = 0): Promise<MockProviderSer
     close: async () => {
       await new Promise<void>((resolve, reject) =>
         server.close((err?: Error & { code?: string }) =>
-          err && err.code !== "ERR_SERVER_NOT_RUNNING" ? reject(err) : resolve(),
+          err && err.code !== 'ERR_SERVER_NOT_RUNNING' ? reject(err) : resolve(),
         ),
       );
     },

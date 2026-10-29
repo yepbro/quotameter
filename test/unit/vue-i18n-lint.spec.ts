@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
 /**
  * Guards the i18n linting contract (task 036): user-facing raw strings in
@@ -8,30 +8,30 @@ import { describe, expect, it } from "vitest";
  * placeholder content. Runs the project's real ESLint binary via stdin.
  */
 function lintVueStdin(filename: string, source: string): { status: number; stdout: string } {
-  const eslintBin = join(process.cwd(), "node_modules", ".bin", "eslint");
-  const result = spawnSync(eslintBin, ["--stdin", "--stdin-filename", filename], {
+  const eslintBin = join(process.cwd(), 'node_modules', '.bin', 'eslint');
+  const result = spawnSync(eslintBin, ['--stdin', '--stdin-filename', filename], {
     input: source,
-    encoding: "utf8",
+    encoding: 'utf8',
   });
-  return { status: result.status ?? -1, stdout: result.stdout ?? "" };
+  return { status: result.status ?? -1, stdout: result.stdout ?? '' };
 }
 
-describe("vue-i18n raw-text linting", () => {
-  it("catches a hardcoded UI label", () => {
+describe('vue-i18n raw-text linting', () => {
+  it('catches a hardcoded UI label', () => {
     const { status, stdout } = lintVueStdin(
       // The filename mimics the ui/ path so the scoped i18n rule applies.
-      "ui/SomePanel.vue",
-      "<script setup lang=\"ts\">\nconst enabled = true;\n</script>\n<template>\n  <button type=\"button\">Save changes</button>\n</template>\n",
+      'ui/SomePanel.vue',
+      '<script setup lang="ts">\nconst enabled = true;\n</script>\n<template>\n  <button type="button">Save changes</button>\n</template>\n',
     );
     expect(status).toBe(1);
     expect(stdout).toMatch(/no-raw-text/u);
     expect(stdout).toMatch(/Save changes/u);
   });
 
-  it("accepts catalog lookups instead of raw text", () => {
+  it('accepts catalog lookups instead of raw text', () => {
     const { status } = lintVueStdin(
-      "ui/SomePanel.vue",
-      "<script setup lang=\"ts\">\nconst t = (key: string) => key;\n</script>\n<template>\n  <button type=\"button\">{{ t('panel.save') }}</button>\n</template>\n",
+      'ui/SomePanel.vue',
+      '<script setup lang="ts">\nconst t = (key: string) => key;\n</script>\n<template>\n  <button type="button">{{ t(\'panel.save\') }}</button>\n</template>\n',
     );
     expect(status).toBe(0);
   });

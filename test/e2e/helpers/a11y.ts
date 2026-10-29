@@ -1,5 +1,5 @@
-import AxeBuilder from "@axe-core/playwright";
-import type { Page } from "@playwright/test";
+import AxeBuilder from '@axe-core/playwright';
+import type { Page } from '@playwright/test';
 
 /**
  * Accessibility checking helper (spec §14.1, §17.1).
@@ -18,14 +18,14 @@ export interface AccessibilityViolation {
 
 export async function scanPageAccessibility(page: Page): Promise<AccessibilityViolation[]> {
   const results = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
     .analyze();
 
   return results.violations.map((violation) => ({
     id: violation.id,
     impact: violation.impact ?? null,
     help: violation.help,
-    nodes: violation.nodes.map((node) => node.target.join(" ")),
+    nodes: violation.nodes.map((node) => node.target.join(' ')),
   }));
 }
 
@@ -33,8 +33,8 @@ export async function scanPageAccessibility(page: Page): Promise<AccessibilityVi
 export async function assertNoAccessibilityViolations(page: Page): Promise<void> {
   const violations = await scanPageAccessibility(page);
   const report = violations
-    .map((v) => `- [${v.impact ?? "unknown"}] ${v.id}: ${v.help} (${v.nodes.join(", ")})`)
-    .join("\n");
+    .map((v) => `- [${v.impact ?? 'unknown'}] ${v.id}: ${v.help} (${v.nodes.join(', ')})`)
+    .join('\n');
   if (violations.length > 0) {
     throw new Error(`Accessibility violations found:\n${report}`);
   }
