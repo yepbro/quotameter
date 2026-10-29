@@ -51,6 +51,14 @@ Work items come from [plan/tasks.md](plan/tasks.md). When a task is completed:
 2. Keep task numbers stable.
 3. Include the status update in the same commit as the work it describes, when the work produces commits.
 
+## AI-assisted development
+
+Agent skills and MCP servers used in this repository are part of its tooling and must stay reproducible:
+
+- **Skills** are installed locally into `.agents/skills/` (git-ignored) and are **recorded in [`skills-lock.json`](skills-lock.json)**, which is committed. Restore them on a fresh checkout with `npx skills experimental_install`; update with `npx skills update`. Do not hand-edit skill folders — manage them through the `skills` CLI so the lockfile stays truthful.
+- **MCP servers** are configured per project in [`opencode.json`](opencode.json) (`mcp` section), which is committed. Keep the set minimal; document why each server is needed in the pull request that adds it.
+- Skills and third-party instructions run with full agent permissions — review their content before adding new ones. Prefer upstream repositories over archived mirrors when both exist.
+
 ## Development environment
 
 The reproducible Docker-based development environment is defined by Stage 1 of the plan. Until it exists, do not rely on host-installed tooling for anything that CI must reproduce.

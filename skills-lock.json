@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "skills": {
+    "antfu": {
+      "source": "antfu/skills",
+      "sourceType": "github",
+      "skillPath": "skills/antfu/SKILL.md",
+      "computedHash": "46935e4dc837849a1df6fa968c3ec32c647bd0faecf34f7a3577503f85d7bc52"
+    },
+    "tsdown": {
+      "source": "rolldown/tsdown",
+      "sourceType": "github",
+      "skillPath": "skills/tsdown/SKILL.md",
+      "computedHash": "77e5f80fd74dd03f3d93e9d744833add021350f05ee0c267c14e22aa9eba6d81"
+    },
+    "ts-library": {
+      "source": "majiayu000/claude-skill-registry-data@design/ts-library-onmax-nuxt-skills#snapshot-2026-10-08",
+      "sourceType": "github-archive",
+      "skillPath": ".agents/skills/ts-library/SKILL.md",
+      "computedHash": "d1038cfb7893ffc78fe976bfe29cc32d51f638bbef4133487874f9e2c5cb88e8",
+      "note": "Archived snapshot of the ts-library skill removed from onmax/nuxt-skills; original blob: majiayu000/claude-skill-registry-data@a21980a5b576646393ed574f158d7dd92fae4c3f/design/ts-library-onmax-nuxt-skills/SKILL.md"
+    }
+  }
+}

@@ -48,6 +48,9 @@ config.local.json
 /data
 /var
 
+# --- AI agent skills (installed locally via `npx skills`; recorded in skills-lock.json) ---
+/.agents/
+
 # --- OS files ---
 .DS_Store
 Thumbs.db
