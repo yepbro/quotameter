@@ -37,6 +37,7 @@ export default defineConfig({
           name: "unit",
           environment: "node",
           include: ["test/unit/**/*.spec.ts"],
+          setupFiles: ["test/helpers/network-guard.ts"],
         },
       },
       {
@@ -44,6 +45,7 @@ export default defineConfig({
           name: "integration",
           environment: "node",
           include: ["test/integration/**/*.spec.ts"],
+          setupFiles: ["test/helpers/network-guard.ts"],
         },
       },
       {
@@ -52,6 +54,7 @@ export default defineConfig({
           name: "component",
           environment: "happy-dom",
           include: ["test/component/**/*.spec.ts"],
+          setupFiles: ["test/helpers/network-guard.ts"],
         },
       },
     ],
