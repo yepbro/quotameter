@@ -5,6 +5,15 @@
   "description": "Self-hosted web service that monitors usage quotas for AI subscriptions",
   "type": "module",
   "license": "MIT",
+  "bin": {
+    "quotameter": "bin/quotameter.mjs"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
   "engines": {
     "node": ">=22.13.0"
   },
@@ -24,6 +33,7 @@
     "typecheck:all": "npm run typecheck && npm run typecheck:ui",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "verify:build": "node scripts/verify-build.mjs",
+    "check:package": "node scripts/check-package.mjs",
     "license:check": "node scripts/check-licenses.mjs",
     "format": "prettier . --write",
     "format:check": "prettier . --check",

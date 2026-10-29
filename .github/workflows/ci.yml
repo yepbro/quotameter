@@ -161,11 +161,43 @@ jobs:
           test "$(node -v)" = "v22.13.0"
           node -e "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(':memory:'); db.close()"
 
+  # Package content check (task 052): the tarball must contain exactly the
+  # allowlisted files. The job is consumed by install smoke tests (task 053).
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check tarball contents against the allowlist
+        run: npm run check:package
+
+      - name: Pack the tarball for smoke tests
+        run: npm pack
+
+      - name: Upload the tarball artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-tarball
+          path: quotameter-*.tgz
+          retention-days: 7
+          if-no-files-found: error
+
   # Required gate: keeps the protected-branch configuration stable (the
   # required check is exactly `CI`) while the pipeline grows behind it.
   CI:
     name: CI
-    needs: [static, test, build, install]
+    needs: [static, test, build, install, package]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
