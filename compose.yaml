@@ -14,3 +14,17 @@ services:
     # Keep the container alive so `docker compose exec` / `run` can be used
     # for repeat commands without restarting the environment.
     command: ["sleep", "infinity"]
+    volumes:
+      # Live-editable source tree; changes are visible immediately without
+      # rebuilding the image.
+      - .:/app
+      # Shadow the host node_modules with a container-local named volume so
+      # host and container dependency trees never conflict (different Node
+      # versions, native modules, and platforms).
+      - node_modules:/app/node_modules
+      # Persist package caches (npm, Playwright browsers) between rebuilds.
+      - dev-cache:/home/node/.cache
+
+volumes:
+  node_modules:
+  dev-cache:
