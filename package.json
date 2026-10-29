@@ -21,6 +21,7 @@
     "preview:ui": "vite preview ui --port 4173 --strictPort --host 127.0.0.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
     "@playwright/test": "^1.64.1",
     "@vitejs/plugin-vue": "^6.0.10",
     "@vitest/coverage-v8": "^5.0.5",
