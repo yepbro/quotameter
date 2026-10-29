@@ -14,6 +14,7 @@ Brief rules and pointers. Details live in separate documents under `docs/agents/
 - **English only** for every repository artifact: commits, code comments, docs, UI strings, CLI output, logs (spec §4.1).
 - **Conventional Commits** (`feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`); imperative subject ≤72 chars.
 - **Plan before code**: before implementing any plan task — design first via the `plan` skill (architecture, affected files, scope of changes). No code is written until the design is complete.
+- **Skills before writing code**: before writing or reviewing TypeScript (implementation and tests), load the `antfu` and `ts-library` skills — this applies to the main session and to subagents alike. Follow their conventions where they do not conflict with the specification, `DECISIONS.md`, or the project's existing files; on conflict the project's own rules win.
 - **Tests are mandatory**: new or changed logic ships with tests (happy path + errors + edge cases) in the same commit. A failing test is fixed within the task that broke it, never deferred. Green `make check` before committing; green `make check-all` before landing in `master`.
 - **Task statuses are dual-mode**: in the subagent cycle only the main session changes statuses in `plan/tasks.md` (`[done]` = green `make check-all` on `master`); in solo mode the `[x] + [done]` flip is part of the task commit.
 - A task's **done-condition must be genuinely verified**; describe the verification in the commit body.
