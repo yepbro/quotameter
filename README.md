@@ -16,6 +16,7 @@ Designed to be installed and operated by one person on their own Linux VPS: dist
 - [Implementation Task Plan](plan/tasks.md) — staged, independently reviewable task breakdown with acceptance conditions
 - [Decision Log](DECISIONS.md) — key technical and business decisions, their reasons, and consequences
 - [Contributing guide](CONTRIBUTING.md) — commit convention, pull-request rules, and repository workflow
+- [Configuration JSON Schema](docs/config-schema.md) — the published `config.json` schema, editor validation, and regeneration
 - [Package layout](docs/architecture/package-layout.md) — module map and dependency rules for `src/`, `ui/`, and `bin/`
 
 ## Project status

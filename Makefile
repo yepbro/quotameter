@@ -150,6 +150,14 @@ mutation: deps ## Run Stryker mutation testing
 package: deps ## Check npm tarball contents against the allowlist
 	@$(RUN) npm run check:package
 
+.PHONY: schema
+schema: deps ## Regenerate the published JSON config schema (schema/)
+	@set -e; \
+	$(RUN) env SCHEMA_DIR=/var/lib/quotameter/schema npm run schema:generate; \
+	mkdir -p schema; \
+	$(RUN) cat /var/lib/quotameter/schema/config.schema.json > schema/config.schema.json; \
+	echo "regenerated schema/config.schema.json"
+
 .PHONY: build
 build: deps ## Build the UI and verify expected artifacts
 	@set -e; \

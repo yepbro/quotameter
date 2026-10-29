@@ -13,9 +13,18 @@ import { readFileSync } from 'node:fs';
 /**
  * Exact entries allowed in the tarball. `npm` always adds `package.json`
  * and the README automatically; LICENSE/NOTICE are listed here and packed
- * once they exist (they are §18 deliverables of the plan).
+ * once they exist (they are §18 deliverables of the plan). The published
+ * JSON Schema (task 062, D-015) is listed and required: it is committed,
+ * so a tarball without it means the allowlist stopped matching reality.
  */
-const ALLOWED = ['package.json', 'README.md', 'bin/quotameter.mjs', 'LICENSE', 'NOTICE'];
+const ALLOWED = [
+  'package.json',
+  'README.md',
+  'bin/quotameter.mjs',
+  'schema/config.schema.json',
+  'LICENSE',
+  'NOTICE',
+];
 
 const stdout = execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8' });
 const packed = JSON.parse(stdout)
@@ -23,7 +32,7 @@ const packed = JSON.parse(stdout)
   .filter((path) => path !== 'package'); // npm's root directory marker
 
 const unexpected = packed.filter((path) => !ALLOWED.includes(path));
-const missingRequired = ['package.json', 'bin/quotameter.mjs'].filter(
+const missingRequired = ['package.json', 'bin/quotameter.mjs', 'schema/config.schema.json'].filter(
   (path) => !packed.includes(path),
 );
 

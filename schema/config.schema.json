@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quotameter configuration (config.json)",
+  "description": "Configuration file format of the Quotameter service. Structural validation only: cross-field rules (secret-source exclusivity, unique ids, IANA time zones, peak-window ordering and overlap, password requirements) are additionally enforced by the application at startup and reload.",
+  "additionalProperties": false,
+  "type": "object",
+  "required": ["app"],
+  "properties": {
+    "server": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "host": {
+          "minLength": 1,
+          "default": "127.0.0.1",
+          "description": "Bind address; a non-loopback value requires a password (spec §15.1).",
+          "type": "string"
+        },
+        "port": {
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8787,
+          "description": "TCP port (spec §5.3).",
+          "type": "integer"
+        }
+      }
+    },
+    "app": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": ["timezone"],
+      "properties": {
+        "timezone": {
+          "minLength": 1,
+          "description": "IANA display time zone; mandatory and never inherited (spec §10).",
+          "type": "string"
+        },
+        "pollingIntervalSeconds": {
+          "minimum": 60,
+          "maximum": 3600,
+          "default": 300,
+          "description": "Collection interval in seconds, 60–3600 (spec §7.1).",
+          "type": "integer"
+        },
+        "historyRetentionDays": {
+          "minimum": 7,
+          "maximum": 3650,
+          "default": 180,
+          "description": "History retention in days, 7–3650 (spec §11.3).",
+          "type": "integer"
+        }
+      }
+    },
+    "auth": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "auto",
+          "description": "Password policy: \"auto\" (loopback may skip it) or \"required\".",
+          "anyOf": [
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "const": "required",
+              "type": "string"
+            }
+          ]
+        },
+        "passwordHash": {
+          "minLength": 1,
+          "description": "scrypt password hash (spec §15.2).",
+          "type": "string"
+        }
+      }
+    },
+    "logging": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "level": {
+          "default": "warn",
+          "description": "Log level: error, warn, info, or debug (spec §16).",
+          "anyOf": [
+            {
+              "const": "error",
+              "type": "string"
+            },
+            {
+              "const": "warn",
+              "type": "string"
+            },
+            {
+              "const": "info",
+              "type": "string"
+            },
+            {
+              "const": "debug",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "providers": {
+      "additionalProperties": false,
+      "type": "object",
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": ["peakHours"],
+          "properties": {
+            "peakHours": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": ["timezone", "windows"],
+              "properties": {
+                "timezone": {
+                  "minLength": 1,
+                  "description": "IANA time zone the schedule is expressed in (spec §9.2).",
+                  "type": "string"
+                },
+                "offPeakMultiplier": {
+                  "exclusiveMinimum": 0,
+                  "default": 1,
+                  "description": "Multiplier outside windows; defaults to 1.0 (spec §9.2).",
+                  "type": "number"
+                },
+                "windows": {
+                  "description": "Peak windows in local schedule time.",
+                  "type": "array",
+                  "items": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": ["id", "name", "days", "start", "end"],
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "description": "Stable window identifier.",
+                        "type": "string"
+                      },
+                      "name": {
+                        "minLength": 1,
+                        "description": "Human-readable window name.",
+                        "type": "string"
+                      },
+                      "days": {
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "description": "Days of week, a non-empty subset of mon–sun.",
+                        "type": "array",
+                        "items": {
+                          "anyOf": [
+                            {
+                              "const": "mon",
+                              "type": "string"
+                            },
+                            {
+                              "const": "tue",
+                              "type": "string"
+                            },
+                            {
+                              "const": "wed",
+                              "type": "string"
+                            },
+                            {
+                              "const": "thu",
+                              "type": "string"
+                            },
+                            {
+                              "const": "fri",
+                              "type": "string"
+                            },
+                            {
+                              "const": "sat",
+                              "type": "string"
+                            },
+                            {
+                              "const": "sun",
+                              "type": "string"
+                            }
+                          ]
+                        }
+                      },
+                      "start": {
+                        "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                        "description": "Local start, HH:mm.",
+                        "type": "string"
+                      },
+                      "end": {
+                        "pattern": "^(([01][0-9]|2[0-3]):[0-5][0-9]|24:00)$",
+                        "description": "Local end, HH:mm or 24:00.",
+                        "type": "string"
+                      },
+                      "multiplier": {
+                        "exclusiveMinimum": 0,
+                        "default": 1,
+                        "description": "Credit-rate multiplier during the window; positive (spec §9.2).",
+                        "type": "number"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "requestTimeoutSeconds": {
+              "minimum": 5,
+              "maximum": 60,
+              "default": 15,
+              "description": "Provider HTTP timeout in seconds, 5–60 (spec §7.2).",
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "accounts": {
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["id", "providerId", "label"],
+        "properties": {
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+            "description": "Stable account id.",
+            "type": "string"
+          },
+          "providerId": {
+            "minLength": 1,
+            "description": "Provider adapter id.",
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "description": "Display label.",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "description": "Polling on/off.",
+            "type": "boolean"
+          },
+          "apiKey": {
+            "minLength": 1,
+            "description": "API key stored in the config file.",
+            "type": "string"
+          },
+          "apiKeyEnv": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "Environment variable name supplying the key (spec §6.3).",
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

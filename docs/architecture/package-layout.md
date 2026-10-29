@@ -130,7 +130,8 @@ components → `component`, browser flows → `e2e`.
 
 Spec §3 fixes the packaging shape the layout must support: no install-time
 build, no `postinstall`, no native modules; the tarball ships the built
-frontend `dist/` and a ready-to-run CLI. Concretely: `bin/quotameter.mjs`
+frontend `dist/`, a ready-to-run CLI, and the published JSON Schema
+(`schema/config.schema.json`, task 062). Concretely: `bin/quotameter.mjs`
 stays plain JavaScript; the TypeScript under `src/` is compiled at publish
 time; `ui/dist` is the served frontend output. The `files` allowlist, export
 paths, and build-artifact checks are finalized by tasks 184–186, which extend

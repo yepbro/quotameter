@@ -18,6 +18,7 @@ The container runs as `node` (uid 1000); the host user is uid 1001. The containe
 | `E2E_OUTPUT_DIR` | Playwright artifacts                            | `/var/lib/quotameter/e2e-results` |
 | `REPORTS_DIR`    | JUnit, license reports, Stryker HTML            | `/var/lib/quotameter/reports`     |
 | `DIST_DIR`       | Vite build output (`ui`), verify-build, preview | `/var/lib/quotameter/ui-dist`     |
+| `SCHEMA_DIR`     | `scripts/generate-schema.mjs` (JSON Schema)     | `/var/lib/quotameter/schema`      |
 
 **Rule: any new tool that writes files must follow this pattern** (env-configured output directory with a host-friendly default), otherwise host/container runs fight over ownership and CI-parity checks break.
 

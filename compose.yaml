@@ -29,6 +29,10 @@ services:
       REPORTS_DIR: /var/lib/quotameter/reports
       # Same isolation for the built UI (vite outDir and preview server).
       DIST_DIR: /var/lib/quotameter/ui-dist
+      # Same isolation for the generated JSON config schema (task 062):
+      # `make schema` regenerates into the volume and streams the file back
+      # to the repository from the host side.
+      SCHEMA_DIR: /var/lib/quotameter/schema
     volumes:
       # Live-editable source tree; changes are visible immediately without
       # rebuilding the image.

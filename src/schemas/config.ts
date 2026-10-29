@@ -323,6 +323,42 @@ export const ConfigSchema = Type.Object(
   { additionalProperties: false },
 );
 
+/* ── Published JSON Schema document ───────────────────────────────────── */
+
+/**
+ * The public JSON Schema document of `config.json`, distributed as
+ * `schema/config.schema.json` in the repository and the npm tarball
+ * (spec §6.2, §18; task 062, decision D-015).
+ *
+ * TypeBox schemas are plain JSON Schema, and the object spread keeps every
+ * enumerable string-keyed option (`type`, `properties`, `required`,
+ * `additionalProperties`, `patternProperties`, …). The symbol-keyed TypeBox
+ * kind markers that ride along in memory never serialize, so the emitted
+ * document is pure JSON Schema data. The spread aliases the contract's
+ * nodes — `CONFIG_SCHEMA_DOCUMENT.properties` *is* `ConfigSchema.properties`
+ * — so the document and the contract are treated as immutable together.
+ * `scripts/generate-schema.mjs` serializes this object;
+ * `test/unit/config-schema-published.spec.ts` keeps the committed file
+ * identical to it as JSON data.
+ *
+ * Structural rules only. The cross-field invariants of `findConfigProblems`
+ * (exactly one secret source per account, unique ids, IANA time zones, peak
+ * window ordering and overlap, the password rules of §15.1) are deliberately
+ * absent — JSON Schema cannot express them readably (decision D-014) — so a
+ * file that passes this schema may still be rejected by the application at
+ * startup or reload.
+ */
+export const CONFIG_SCHEMA_DOCUMENT = Object.freeze({
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  title: 'Quotameter configuration (config.json)',
+  description:
+    'Configuration file format of the Quotameter service. Structural validation only: ' +
+    'cross-field rules (secret-source exclusivity, unique ids, IANA time zones, peak-window ' +
+    'ordering and overlap, password requirements) are additionally enforced by the application ' +
+    'at startup and reload.',
+  ...ConfigSchema,
+});
+
 /* ── Derived types ─────────────────────────────────────────────────────── */
 
 /** Validated `server` section (spec §5.3, §15.1). */
