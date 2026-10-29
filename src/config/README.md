@@ -65,3 +65,48 @@ for deterministic integration tests; production callers never pass it.
 
 **Rule:** may import only `src/schemas/` and `src/util/` — no services,
 storage, providers, or server code.
+
+## `load.ts` — loading and validation (spec §6.2, §6.3, §15.4, decision D-018)
+
+`loadConfigFile(targetPath)` is the only sanctioned way to turn the file on
+disk into a configuration object. The file name is pinned here:
+`CONFIG_FILE_NAME` is `config.json` (spec §6.1), and
+`configFilePath(configDir)` composes it with the directory resolved by
+`paths.ts`. Pipeline, first failure wins:
+
+1. **Read** the file. A missing file (`configuration file not found: <path>`)
+   is reported distinctly from an unreadable one
+   (`cannot read configuration file <path>: EACCES`); nothing ever throws.
+2. **Parse JSON** (`parseJson`, pure and exported). V8's parser errors can
+   embed a quoted snippet of the input — a secret sitting on the broken line
+   would land in the message — so the snippet is stripped and only
+   `invalid JSON: <context>` remains (spec §15.4).
+3. **Validate structurally** (`parseConfig`, pure and exported) against the
+   TypeBox contract compiled once with the 2020-12 variant of Ajv (spec §3
+   "TypeBox + Ajv"; the contract's numeric `exclusiveMinimum` needs it).
+   Errors are re-worded into field-addressed English problems
+   (`server.port: must be >= 1`, `auth.mode: must be one of: 'auto',
+'required'`, `providers: property name 'za i' must match the pattern …`);
+   failed literal unions collapse their per-branch errors into one line.
+   Data values are never echoed — only paths, schema constants, and, for
+   type errors, the JSON type the data had.
+4. **Complete defaults** from `CONFIG_DEFAULTS` (drift-locked to the schema
+   annotations): every optional section is materialized, so the returned
+   configuration is canonical (`providers: {}`, `accounts: []` when absent)
+   and consumers never re-implement fallbacks. Absent secrets stay absent
+   rather than becoming `undefined` keys. Ajv's own `useDefaults` is not
+   used: it documents default insertion only for `properties`/`items`
+   schemas, it mutates the validated input, and it cannot materialize
+   absent whole sections.
+5. **Check cross-field rules** via `findConfigProblems` (D-014): its
+   problems are returned verbatim after structural validation passes.
+
+Failures are `{ ok: false, problems }` — the `BoundaryParser` vocabulary of
+`src/schemas/boundary.ts`; `configBoundaryParser` exposes step 3–5 in that
+shape. Startup refuses to start on problems, reload keeps the last valid
+configuration and reports them (spec §6.2, tasks 066/068); `doctor` reuses
+`formatSchemaError` for schema problems. Environment overrides (067) compose
+between `parseJson` and `parseConfig`; the atomic writer (065) takes the
+same path via `configFilePath` — loading never writes or creates anything.
+The optional second parameter (`ConfigReadFilesystem`) injects the read
+primitive for deterministic tests; production callers never pass it.
