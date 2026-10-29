@@ -121,11 +121,48 @@ jobs:
       - name: Build
         run: npm run build:ui
 
+  # Clean-distribution installation containers (spec §4.4, §17.2): Ubuntu
+  # 22.04, Ubuntu 24.04, and Debian stable, each with the pinned minimum
+  # Node.js runtime installed from the official binaries. These jobs verify
+  # the declared minimum runtime on the target distributions and are the
+  # base for the package install smoke tests (task 053).
+  install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ["ubuntu:22.04", "ubuntu:24.04", "debian:stable"]
+    container: ${{ matrix.container }}
+    steps:
+      - name: Install container prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl xz-utils
+
+      - name: Install Node.js 22.13.0 from official binaries
+        run: |
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) arch=x64 ;;
+            aarch64) arch=arm64 ;;
+          esac
+          curl -fsSL "https://nodejs.org/dist/v22.13.0/node-v22.13.0-linux-${arch}.tar.xz" -o /tmp/node.tar.xz
+          mkdir -p /usr/local/lib/nodejs
+          tar -xJf /tmp/node.tar.xz -C /usr/local/lib/nodejs
+          for bin in node npm npx; do
+            ln -sf "/usr/local/lib/nodejs/node-v22.13.0-linux-${arch}/bin/$bin" "/usr/local/bin/$bin"
+          done
+
+      - name: Verify the declared minimum runtime
+        run: |
+          test "$(node -v)" = "v22.13.0"
+          node -e "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(':memory:'); db.close()"
+
   # Required gate: keeps the protected-branch configuration stable (the
   # required check is exactly `CI`) while the pipeline grows behind it.
   CI:
     name: CI
-    needs: [static, test, build]
+    needs: [static, test, build, install]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
