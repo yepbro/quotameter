@@ -1,5 +1,11 @@
 # Quotameter
 
+[![CI](https://github.com/yepbro/quotameter/actions/workflows/ci.yml/badge.svg)](https://github.com/yepbro/quotameter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%E2%89%A5%2022.13.0-brightgreen.svg)](https://nodejs.org/en/about/previous-releases)
+[![Platform: Linux](https://img.shields.io/badge/platform-linux-blue.svg)](https://github.com/yepbro/quotameter#development-environment)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 Self-hosted personal web service that monitors usage quotas for AI subscriptions. Quotameter periodically retrieves quota snapshots from supported providers, stores history locally in SQLite, detects reset events and collection gaps, and visualizes current values and historical changes in a bundled web UI.
 
 Designed to be installed and operated by one person on their own Linux VPS: distributed as a public npm package with a CLI and a bundled responsive web interface. Version 1.0 supports **Z.ai Coding Plan**; the adapter architecture allows future providers to be added without touching the polling engine, persistence, or charts.
