@@ -8,6 +8,7 @@ Designed to be installed and operated by one person on their own Linux VPS: dist
 
 - [Technical Specification](plan/SPECIFICATION.md) — full requirements: architecture, providers, persistence, security, testing, and release process
 - [Implementation Task Plan](plan/tasks.md) — staged, independently reviewable task breakdown with acceptance conditions
+- [Decision Log](DECISIONS.md) — key technical and business decisions, their reasons, and consequences
 - [Contributing guide](CONTRIBUTING.md) — commit convention, pull-request rules, and repository workflow
 
 ## Project status
