@@ -23,19 +23,38 @@ The project is in the bootstrapping stage: the specification and the task plan a
 
 ## Development environment
 
-All routine work runs inside a Docker container with the pinned minimum runtime (Node.js 22.13.0); no host-installed Node.js is required. The command surface is the [`Makefile`](Makefile): every project command runs in the container, brings it up automatically, and synchronizes dependencies from the lockfile when it changes. On a fresh checkout run `make image up` once; afterwards any target works on its own.
+All routine work runs inside a Docker container with the pinned minimum runtime (Node.js 22.13.0); no host-installed Node.js is required. Environments are managed by [docktree](docktree.yml): **each git worktree gets its own isolated compose project** — unique container names, unique volumes (including `node_modules`), and its own port allocations — so parallel worktrees never interfere with each other. The command surface is the [`Makefile`](Makefile): every project command runs in the worktree's container, brings it up automatically, and synchronizes dependencies from the lockfile when it changes. On a fresh checkout run `make image up` once; afterwards any target works on its own.
 
 `make help` prints the same list with one-line descriptions.
 
+### Parallel worktrees
+
+Work on multiple tasks at once by creating a git worktree and starting it the same way:
+
+```bash
+git worktree add -b my-feature ~/worktrees/quotamonitor/my-feature
+cd ~/worktrees/quotamonitor/my-feature
+make up        # isolated containers + volumes for this worktree only
+```
+
+Everything works inside the worktree exactly as in the main tree (`make check`, `make test`, …), simultaneously with other worktrees. Useful docktree commands alongside the Make targets:
+
+| Command                           | Effect                                               |
+| --------------------------------- | ---------------------------------------------------- |
+| `docktree --json status`          | Is anything running for this worktree?               |
+| `docktree --json ports [--all]`   | Allocated ports for this (or all) worktree(s)        |
+| `docktree --json clean --dry-run` | Preview removal of stale worktree instances          |
+| `docktree --json down --volumes`  | Tear down this worktree's containers **and volumes** |
+
 ### Container lifecycle
 
-| Command                 | Effect                                                                     |
-| ----------------------- | -------------------------------------------------------------------------- |
-| `make image`            | Build (or rebuild) the development image                                   |
-| `make up` / `make down` | Start / stop the container (volumes are kept)                              |
-| `make restart`          | Recreate the container after image or Compose changes                      |
-| `make status`           | Show development container status                                          |
-| `make clean`            | Stop the container and remove **all** volumes (dependencies, caches, data) |
+| Command                 | Effect                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `make image`            | Build (or rebuild) the development image                                               |
+| `make up` / `make down` | Start / stop this worktree's container (volumes are kept)                              |
+| `make restart`          | Recreate the container after image or Compose changes                                  |
+| `make status`           | Show this worktree's container status                                                  |
+| `make clean`            | Stop this worktree's container and remove **its** volumes (dependencies, caches, data) |
 
 ### Interactive
 
@@ -78,8 +97,8 @@ Layout inside the container:
 
 Data-volume handling:
 
-- `make down` keeps the dependency, cache, and data volumes; `make up` afterwards restores the previous state.
-- `make clean` removes all volumes, including development configuration and any local SQLite history. This is the supported way to reset the environment to a pristine state; it never touches files outside Docker volumes.
+- `make down` keeps this worktree's dependency, cache, and data volumes; `make up` afterwards restores the previous state.
+- `make clean` removes this worktree's volumes, including development configuration and any local SQLite history. This is the supported way to reset the environment to a pristine state; it never touches other worktrees or files outside Docker volumes.
 - To point the development data elsewhere, copy [`.env.example`](.env.example) to `.env` and adjust the paths (container-side only; the volumes must stay out of the source tree).
 
 Run `make verify-runtime` after the first build to confirm the minimum runtime: it checks Node.js `>= 22.13.0` and that `node:sqlite` imports without `--experimental-sqlite`.
