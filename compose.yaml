@@ -20,6 +20,9 @@ services:
       # directories (spec §6, §11). Override per environment via .env.
       QUOTAMETER_CONFIG_DIR: ${QUOTAMETER_CONFIG_DIR:-/var/lib/quotameter/config}
       QUOTAMETER_DATA_DIR: ${QUOTAMETER_DATA_DIR:-/var/lib/quotameter/data}
+      # Coverage reports stay inside the data volume to avoid ownership
+      # conflicts with host-generated reports on the bind mount.
+      COVERAGE_DIR: /var/lib/quotameter/coverage
     volumes:
       # Live-editable source tree; changes are visible immediately without
       # rebuilding the image.

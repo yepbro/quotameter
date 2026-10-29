@@ -14,9 +14,11 @@
     "test:integration": "vitest run test/integration",
     "test:component": "vitest run test/component",
     "test:watch": "vitest",
-    "test:ci": "vitest run --reporter=default --reporter=junit --outputFile.junit=reports/junit.xml"
+    "test:coverage": "vitest run --coverage",
+    "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile.junit=reports/junit.xml"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^5.0.5",
     "vitest": "^5.0.5"
   }
 }
