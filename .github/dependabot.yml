@@ -1,0 +1,28 @@
+# Dependabot dependency updates (spec §4.4, task 056).
+#
+# npm packages and GitHub Actions are checked weekly on Monday. Update PRs
+# follow the project conventions (Conventional Commits, English) and must
+# pass the required CI check like any other pull request.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'chore(ci)'
+    labels:
+      - dependencies
