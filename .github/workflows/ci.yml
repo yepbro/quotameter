@@ -210,11 +210,42 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Unsupported runtime behavior (task 054): a Node.js below the declared
+  # minimum must fail with an actionable message naming the required version.
+  unsupported-node:
+    needs: package
+    runs-on: ubuntu-latest
+    container: node:20-bookworm-slim
+    steps:
+      - name: Download the packed tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: package-tarball
+
+      - name: Install the package globally from the tarball
+        run: npm install --global ./quotameter-*.tgz
+
+      - name: Expect a clear version error from the CLI
+        run: |
+          set +e
+          output="$(quotameter --version 2>&1)"
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::CLI unexpectedly succeeded on Node $(node -v)"
+            exit 1
+          fi
+          echo "$output" | grep -F "22.13.0" >/dev/null || {
+            echo "::error::Error message does not name the required Node.js version"
+            exit 1
+          }
+
   # Required gate: keeps the protected-branch configuration stable (the
   # required check is exactly `CI`) while the pipeline grows behind it.
   CI:
     name: CI
-    needs: [static, test, build, install, package]
+    needs: [static, test, build, install, package, unsupported-node]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
