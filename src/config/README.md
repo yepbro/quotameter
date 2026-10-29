@@ -240,3 +240,68 @@ itself start with `QUOTAMETER_` — the schema's variable-name pattern permits
 it, but the moment such a variable is actually set in the service
 environment, the scan rejects it as unsupported; point `apiKeyEnv` at a
 name outside the reserved prefix.
+
+## `reload.ts` — the reload operation (spec §5.2, §6.2, §6.4, decision D-026)
+
+`createConfigReloader(options)` owns the reload side of trust boundary 3.
+Constructed from the startup load's success result (§6.2's refuse-to-start
+on an invalid startup configuration is the composition root's policy — the
+reloader only ever exists with a valid incumbent), it exposes:
+
+- `current()` — the effective configuration (`config`, `sources`,
+  `fileAbsent`), deep-frozen on adoption: consumers may read, never mutate.
+- `startup` — the configuration the process began with; the baseline the
+  restart half of the §6.4 diff measures against.
+- `reload()` — re-runs `loadConfigWithEnv` (the D-023 pipeline seam) against
+  the current file and returns the result contract the future CLI `reload`
+  command (task 141) and the SIGHUP wiring consume:
+  `{ ok: true, outcome: 'applied' | 'pending-restart', effective, applied,
+restartRequired }` or `{ ok: false, outcome: 'rejected', problems }`.
+
+Semantics, pinned in D-026:
+
+- **§6.4 classification.** `RELOAD_FIELDS` maps every configuration setting
+  to `live` or `restart`. The restart set is exactly the spec's closed list
+  — `server.host`, `server.port`, `auth.mode` (also exported flat as
+  `RESTART_REQUIRED_FIELDS` for the UI's "restart required" labels,
+  §14.5). §6.4's live list covers the polling interval, display time zone,
+  retention, `accounts`, and `providers` (peak-hours schedule and request
+  timeout, wholesale); the two settings the spec does not name are decided
+  live: `logging.level` (the logger's `setLevel` exists for the reload path,
+  D-025) and `auth.passwordHash` (checked per authentication attempt, not
+  wired into a listener).
+- **Wholesale atomic swap, two diff baselines.** A successful reload
+  replaces the effective configuration in one synchronous step (the
+  effective object mirrors the file; consumers label reported fields, not
+  half-apply them). `applied` diffs against the _previous effective_
+  configuration — the live settings this reload activated; `restartRequired`
+  diffs against _startup_ — what the running process actually bound, so
+  repeated reloads keep reporting `pending-restart` until a real restart.
+- **Failure keeps the incumbent (spec §6.2).** A missing, unreadable,
+  malformed, or invalid file yields `rejected` with the pipeline's
+  field-addressed, value-free problems; the effective configuration does not
+  move. `reload()` never rejects for configuration problems — only a fault
+  in an injected dependency can reject, and the incumbent stays.
+- **Environment overrides re-apply on every reload** from a one-time
+  shallow snapshot of the construction-time environment (a later in-process
+  `process.env` mutation cannot flip a pinned field), so an
+  environment-pinned field never flips across reloads and never enters
+  `restartRequired` (D-023). A file that disappeared rebuilds the
+  configuration environment-only (`fileAbsent: true`) exactly as at startup.
+- **Serialized reloads.** Overlapping calls queue on an internal chain in
+  invocation order; every caller gets its own result, each run re-reads the
+  file — a SIGHUP burst applies every time.
+- **Logging (spec §16).** With an injected redacting logger: success is one
+  `info` lifecycle event (`configuration reloaded`, with `outcome`,
+  `applied`, `restartRequired`), rejection one `warn`
+  (`configuration reload rejected; keeping the last valid configuration`,
+  with `problems`); data logged is value-free by construction. Every
+  successful reload applies `logging.level` through `logger.setLevel` —
+  the level is schema-guaranteed, so it cannot throw.
+
+Signal installation is deliberately absent: `src/server/main.ts` leaves
+SIGHUP unhandled, and the later assembly task wires
+`process.on('SIGHUP', …)` to `reload()` (the D-024 readiness discipline).
+The optional `env`, `filesystem`, and `logger` parameters are seams for
+deterministic tests and composition wiring; production passes `targetPath`,
+`initial`, and `logger` only.
