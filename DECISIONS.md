@@ -130,6 +130,16 @@ This file records important technical and business decisions made during develop
 
 **Consequences.** `src/config/paths.ts` returns an absolute path in every branch or throws. Environments with a relative `HOME` and no usable OS lookup fail with an explanation instead of writing secrets relative to the working directory. The `init`/config documentation (tasks 064, 128) should state that override values are taken verbatim and that `~` is not expanded.
 
+## D-013 — Provider registry semantics and log-safe AccountContext (spec §8.1)
+
+**Date:** 2026-10-29 · **Status:** Accepted · **Spec:** [§8.1](plan/SPECIFICATION.md#81-provider-interface) · **Tasks:** [070](plan/tasks.md)
+
+**Decision.** `src/providers/registry.ts` pins four interpretations the spec leaves open: (1) `ProviderRegistry.register` **throws** on a duplicate provider id — and on a blank or whitespace-padded id, a blank name, or non-function methods — instead of replacing or ignoring: registration happens once in the composition root, so a wiring bug must fail at startup rather than silently route accounts to the wrong adapter or surface at the first poll; (2) `get` throws for an unknown id with the registered ids listed, and `has`/`list` support the non-exceptional paths — `list()` returns a fresh array in registration order, giving polling a deterministic sequence; (3) `AccountContext` is a **branded** type (the `Validated<T>` pattern from `src/schemas/boundary.ts`) constructible only through `createAccountContext`, which rejects blank fields, defines `secret` as non-enumerable and read-only, and freezes the object; (4) `QuotaProvider.fetchSnapshot` returns the §8.4 `ProviderSnapshot` from `src/schemas/metrics.ts` unchanged, and the registry performs no runtime validation of snapshot contents — that is the polling service's job (task 093+).
+
+**Reasons.** (1)/(2) The registry's only writers are trusted, compile-time-checked call sites, so its runtime checks target startup wiring mistakes and diagnosability, not untrusted input. (3) Spec §8.1 requires that secrets "remain in process memory and must not be logged": non-enumerability defeats the accidental leak vectors (`JSON.stringify`, `util.inspect`, object spread), branding makes the factory the only construction path so the guarantee cannot be bypassed by building a plain object literal, and error messages never echo values. This is defense at the type/object layer; the exit-side counterpart is the redacting logger (task 072, §15.4). (4) Keeps the registry pure — a mock provider registers and runs through it without any polling, storage, or transport code existing (the task-070 done-condition).
+
+**Consequences.** Future adapters implement `QuotaProvider` and are registered by the composition root; nothing else changes (D-003). Services build `AccountContext` values from validated configuration (boundary 3) via the factory and may hand the object to log calls or spread it — only safe fields travel. Registry error messages are part of the English-only contract and are pinned by tests.
+
 ## D-014 — Configuration contract interpretations (spec §6.2)
 
 **Date:** 2026-10-29 · **Status:** Accepted · **Spec:** [§6.2](plan/SPECIFICATION.md#6-configuration-and-secrets) · **Tasks:** [061](plan/tasks.md)
