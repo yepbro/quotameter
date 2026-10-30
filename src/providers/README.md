@@ -112,3 +112,48 @@ cross-cutting request concerns so adapters stay pure parsing:
 `fetchImpl` is injectable for tests that pin classification against exact
 runtime failure shapes (the logger-destination pattern); production always
 uses the Node 22 global.
+
+## The Z.ai Coding Plan adapter (task 098, spec §8.3)
+
+`zai-coding-plan/` is the first adapter island. Task 098 delivers its
+credential validation; `fetchSnapshot` (task 099) and the §8.4 metric
+mapping (task 100) follow. The implementation contract is the
+[adapter-contract section of the provider dossier](../../docs/providers/zai-coding-plan.md)
+(task 096, decision D-047); the task-098 specifics are decision D-052.
+
+- **The check** — `ZaiCodingPlanProvider.validateCredentials(account)` sends
+  exactly one signal-less `Authorization: Bearer <key>` GET to the dossier's
+  endpoint 4 — `{codingBaseUrl}/models`, production default
+  `https://api.z.ai/api/coding/paas/v4/models` — through `providerFetch`
+  (never `fetch` directly, never retried; D-042). No other header is sent
+  (dossier assumption A7). The response body is never parsed: it was never
+  captured, so the check reads only the status the verified flow delivers
+  (fixture `synthetic/zai-models.json` exists purely as a stand-in).
+- **Three distinct results (status-based, dossier A3)** — a delivered 2xx
+  resolves (credentials valid); HTTP 401/403 rejects with
+  `CredentialsRejectedError` (`kind: 'credentials-rejected'`, the only
+  rejection statuses — Z.ai's real auth-rejection shape is an assumption);
+  every other transport failure of any kind (network, timeout, DNS, 5xx,
+  429, other statuses, and 2xx responses the transport gates refused —
+  wrong content type, over the byte cap) rejects with
+  `ProviderUnavailableError` (`kind: 'provider-unavailable'`): the check
+  was inconclusive, which callers must not read as a verdict on the key.
+  Both extend `CredentialCheckError`, whose `kind` field is the structural
+  discriminator — consumers that cannot import adapter types (services)
+  discriminate on it without an `instanceof` against the island, per the 070
+  contract's "provider-neutral error" wording.
+- **Key discipline (§8.1, §15.4)** — `account.secret` is read exactly once,
+  into the `Authorization` header. Errors are composed only from static
+  English and transport fields D-042 already scrubbed against the request's
+  own credential material; marker tests pin every failure path key-free
+  while proving the key actually traveled.
+- **Options** — `ZaiCodingPlanProviderOptions` carries `codingBaseUrl`
+  (injectable so tests point the adapter at the loopback mock provider
+  server) and `timeoutMs` (§7.2's per-request deadline; the 5–60 s
+  configuration range is enforced where configuration enters). Both are
+  validated at construction with echo-free `TypeError`s — wiring mistakes
+  fail fast (D-013's spirit).
+- **Not yet** — `fetchSnapshot` is a loud stub rejecting with a pinned
+  message (task 099 owns the method, but the 070 contract requires it to
+  exist for registry assembly); registration in the composition root is a
+  later assembly task — nothing in this island edits `src/server/**`.
