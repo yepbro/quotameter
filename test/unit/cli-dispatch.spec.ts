@@ -375,3 +375,179 @@ describe('help renderers (pure)', () => {
     }
   });
 });
+
+describe('dispatch-table pinning (U-006 mutation triage)', () => {
+  /**
+   * The table is the CLI's public shape: `toContain`-style checks derived
+   * from the table itself cannot catch a mutated name or summary, because
+   * the expected value mutates with it. These tests pin the literals.
+   */
+  it('pins every command kind, name, and summary of the §5.2 table', () => {
+    const rows = buildCommandTable().map((command) =>
+      command.kind === 'group'
+        ? [
+            command.kind,
+            command.name,
+            command.summary,
+            command.subcommands.map((sub) => [sub.name, sub.summary]),
+          ]
+        : [command.kind, command.name, command.summary],
+    );
+    expect(rows).toEqual([
+      ['leaf', 'init', 'First-time configuration and service setup'],
+      ['leaf', 'run', 'Foreground execution for systemd and debugging'],
+      ['leaf', 'start', 'Start an installed service through systemd'],
+      ['leaf', 'stop', 'Stop an installed service through systemd'],
+      ['leaf', 'restart', 'Restart an installed service through systemd'],
+      ['leaf', 'reload', 'Reload configuration on SIGHUP without restarting where supported'],
+      ['leaf', 'status', 'Show service status, latest collection, and last error for each account'],
+      ['leaf', 'logs', 'Convenient journalctl wrapper for system or user service'],
+      [
+        'group',
+        'service',
+        'Install or remove the service independently of init',
+        [
+          ['install', 'Install the systemd service unit'],
+          ['uninstall', 'Remove the installed systemd service unit'],
+        ],
+      ],
+      ['leaf', 'passwd', 'Set or change the web password'],
+      [
+        'leaf',
+        'doctor',
+        'Diagnose runtime, configuration, database, network, credentials, and service issues',
+      ],
+    ]);
+  });
+
+  it('reports every stubbed command with its exact full command path', async () => {
+    for (const path of [
+      ['init'],
+      ['run'],
+      ['start'],
+      ['stop'],
+      ['restart'],
+      ['reload'],
+      ['status'],
+      ['logs'],
+      ['service', 'install'],
+      ['service', 'uninstall'],
+      ['passwd'],
+      ['doctor'],
+    ] as const) {
+      const result = await cli([...path]);
+      expect(result.code, `exit 1 for ${path.join(' ')}`).toBe(1);
+      expect(result.err).toBe(`quotameter ${path.join(' ')}: not implemented yet\n`);
+    }
+  });
+});
+
+describe('help renderer exact output (U-006 mutation triage)', () => {
+  /** A leaf with one short option, one string option, and one undocumented. */
+  function optionedLeaf(): LeafCommand {
+    return {
+      kind: 'leaf',
+      name: 'serve',
+      summary: 'Serve something',
+      options: {
+        port: { type: 'string', short: 'p', description: 'Port to listen on' },
+        verbose: { type: 'boolean' },
+      },
+      maxPositionals: 0,
+      run: async () => 0,
+    };
+  }
+
+  it('pins the exact command help, alignment included', () => {
+    expect(renderCommandHelp(optionedLeaf(), ['serve'])).toBe(
+      [
+        'Usage: quotameter serve [options]',
+        '',
+        'Serve something.',
+        '',
+        'Options:',
+        '  -h, --help          Show this help',
+        '  -p, --port <value>  Port to listen on',
+        '      --verbose',
+      ].join('\n'),
+    );
+  });
+
+  it('pins the exact general help for a synthetic table', () => {
+    const leaf = (name: string, summary: string): LeafCommand => ({
+      kind: 'leaf',
+      name,
+      summary,
+      options: {},
+      maxPositionals: 0,
+      run: async () => 0,
+    });
+    const text = renderGeneralHelp([
+      leaf('probe', 'Short probe'),
+      leaf('longer-name', 'A longer one'),
+      {
+        kind: 'group',
+        name: 'service',
+        summary: 'Grouped things',
+        subcommands: [leaf('install', 'Install it'), leaf('uninstall', 'Remove it')],
+      },
+    ]);
+    expect(text).toBe(
+      [
+        'Usage: quotameter <command> [options]',
+        '       quotameter service <subcommand> [options]',
+        '',
+        'Quotameter — self-hosted usage quota monitoring for AI subscriptions.',
+        '',
+        'Commands:',
+        '  probe        Short probe',
+        '  longer-name  A longer one',
+        '  service      Grouped things (subcommands: install, uninstall)',
+        '',
+        'Options:',
+        '  -h, --help     Show this help; after a command name, help for that command',
+        '  -v, --version  Print the CLI version',
+      ].join('\n'),
+    );
+  });
+
+  it('pins the exact group help', () => {
+    const text = renderGroupHelp({
+      kind: 'group',
+      name: 'service',
+      summary: 'Grouped things',
+      subcommands: [
+        {
+          kind: 'leaf',
+          name: 'install',
+          summary: 'Install it',
+          options: {},
+          maxPositionals: 0,
+          run: async () => 0,
+        },
+        {
+          kind: 'leaf',
+          name: 'uninstall',
+          summary: 'Remove it',
+          options: {},
+          maxPositionals: 0,
+          run: async () => 0,
+        },
+      ],
+    });
+    expect(text).toBe(
+      [
+        'Usage: quotameter service <subcommand> [options]',
+        '',
+        'Grouped things.',
+        '',
+        'Subcommands:',
+        '  install    Install it',
+        '  uninstall  Remove it',
+        '',
+        'Options:',
+        '  -h, --help  Show this help',
+      ].join('\n'),
+    );
+  });
+});

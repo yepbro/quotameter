@@ -55,6 +55,13 @@ export function isProcessAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
+    // Equivalent mutant (U-006 triage): process.kill only ever throws Error
+    // objects, never null/undefined, so the optional chain never short-circuits.
+    // The ConditionalExpression variants stay armed: the 'false' one is killed
+    // by the pid-1 test wherever kill(1, 0) yields EPERM (the GitHub runners;
+    // this dev container's namespace permits it, so scoped local runs may
+    // show it as an environment-dependent survivor).
+    // Stryker disable next-line OptionalChaining
     return (error as NodeJS.ErrnoException | null)?.code !== 'ESRCH';
   }
 }
@@ -118,6 +125,12 @@ export function createSingleInstanceLock(options: SingleInstanceOptions): Lifecy
       held = await acquireLock(deps);
     },
     async stop() {
+      // Equivalent mutant (U-006 triage): without the early return,
+      // releaseLock(undefined) throws synchronously inside its own try/catch
+      // and is swallowed — externally identical. The co-excluded 'true'
+      // variant (never releases) is killable and stays pinned by the release
+      // tests.
+      // Stryker disable next-line ConditionalExpression
       if (held === undefined) return;
       const current = held;
       held = undefined;
@@ -208,14 +221,28 @@ async function publishLock(
 ): Promise<HeldLock | null> {
   const scratch = `${lockPath}.tmp.${deps.pid}.${randomUUID()}`;
   try {
+    // Equivalent mutants (U-006 triage): an empty encoding falls back to
+    // utf8 for string payloads (the JSON payload is pure ASCII), and the
+    // scratch name embeds this pid plus a fresh UUID, so the exclusive 'wx'
+    // flag can never collide with an existing file.
     await fs.writeFile(scratch, `${JSON.stringify({ pid: deps.pid, id: token })}\n`, {
+      // Stryker disable next-line StringLiteral
       encoding: 'utf8',
       mode: 0o600,
+      // Stryker disable next-line StringLiteral
       flag: 'wx',
     });
     try {
       await fs.link(scratch, lockPath);
     } catch (error) {
+      // Untestable-here mutant (U-006 triage): the 'true' variant needs a
+      // non-EEXIST link failure, which is not producible deterministically —
+      // the scratch write in the same directory fails first for every
+      // permission/ROFS cause, and a directory at the lock path yields EEXIST
+      // (overlayfs) or EPERM (ext4) before any test can pin the difference.
+      // The co-excluded 'false' variant (EEXIST rethrown, contention breaks)
+      // is killable and stays pinned by the contender tests.
+      // Stryker disable next-line ConditionalExpression
       if (errnoIs(error, 'EEXIST')) return null;
       throw error;
     }
@@ -253,6 +280,14 @@ async function inspectLock(lockPath: string): Promise<InspectedLock | null> {
 }
 
 /** Extracts the holder pid from lock content; `null` when it is not ours. */
+// Equivalent mutants (U-006 triage): an emptied catch leaves `value`
+// undefined, which the object check below rejects exactly like the explicit
+// return. The block-scoped directive also covers the try block and the
+// function body itself — both killable, and their behavior (valid lock
+// payloads parse; damaged ones refuse) stays pinned by the damaged-lock and
+// stale-recovery tests whenever the directive is removed. A
+// `disable next-line` cannot reach a one-line `} catch {`.
+// Stryker disable BlockStatement
 function parseHolderPid(content: string): number | null {
   let value: unknown;
   try {
@@ -260,11 +295,22 @@ function parseHolderPid(content: string): number | null {
   } catch {
     return null;
   }
+  // Equivalent mutant (U-006 triage): the 'false' variant lets non-object,
+  // non-null payloads fall through to `.pid === undefined`, which the pid
+  // check rejects the same way. The co-excluded 'true' variant (every payload
+  // rejected) is killable and stays pinned by the stale-lock tests.
+  // Stryker disable next-line ConditionalExpression
   if (typeof value !== 'object' || value === null) return null;
   const pid = (value as { pid?: unknown }).pid;
+  // Equivalent mutant (U-006 triage): the 'false' variant skips the typeof
+  // test, but Number.isInteger is only ever true for numbers, so the same
+  // inputs are rejected. The co-excluded 'true' variant (every pid rejected)
+  // is killable and stays pinned by the stale-lock tests.
+  // Stryker disable next-line ConditionalExpression
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
   return pid;
 }
+// Stryker restore BlockStatement
 
 /**
  * Removes the lock file iff `identifiesOurs` accepts the captured content,
@@ -285,12 +331,18 @@ async function removeIfIdentifiedBy(
     await fs.rename(lockPath, aside);
   } catch {
     // Nothing to take (or the path is unreachable) — the caller retries or
-    // reports; never throw past a component hook.
+    // reports; never throw past a component hook. Equivalent mutant (U-006
+    // triage): no caller reads this boolean, so its exact value is dead.
+    // Stryker disable next-line BooleanLiteral
     return false;
   }
   const isOurs = identifiesOurs(await fs.readFile(aside, 'utf8'));
   if (isOurs) {
+    // Equivalent mutants (U-006 triage): `aside` was just read successfully,
+    // so it exists and force is moot; the return value is read by no caller.
+    // Stryker disable next-line ObjectLiteral, BooleanLiteral
     await fs.rm(aside, { force: true });
+    // Stryker disable next-line BooleanLiteral
     return true;
   }
   try {
@@ -298,10 +350,14 @@ async function removeIfIdentifiedBy(
     // the path is taken, the file stays aside — deleting it could destroy a
     // live holder's only artefact.
     await fs.link(aside, lockPath);
+    // Equivalent mutants (U-006 triage): as above — the file exists, and no
+    // caller reads the outcome.
+    // Stryker disable next-line ObjectLiteral, BooleanLiteral
     await fs.rm(aside, { force: true });
   } catch {
     // Best effort: the path is owned by a newer lock.
   }
+  // Stryker disable next-line BooleanLiteral
   return false;
 }
 
@@ -319,19 +375,40 @@ async function releaseLock(held: HeldLock): Promise<void> {
 }
 
 /** Extracts the acquisition token from lock content; `null` when absent. */
+// Equivalent mutants (U-006 triage): an emptied catch returns undefined,
+// which compares unequal to every token exactly like null does. The
+// block-scoped directive also covers the try block and the function body
+// itself — both killable, and their behavior (token extraction from valid
+// payloads) stays pinned by the release and foreign-lock tests whenever the
+// directive is removed. A `disable next-line` cannot reach a one-line
+// `} catch {`.
+// Stryker disable BlockStatement
 function lockTokenOf(content: string): string | null {
   try {
     const parsed: unknown = JSON.parse(content);
+    // Equivalent mutants (U-006 triage): non-object, non-null payloads fall
+    // through to `.id === undefined`, which the id check rejects identically;
+    // a null payload crashes on `.id` inside this try, and the catch returns
+    // the same unusable null — no caller-visible difference exists.
+    // Stryker disable next-line ConditionalExpression, LogicalOperator
     if (typeof parsed !== 'object' || parsed === null) return null;
     const id = (parsed as { id?: unknown }).id;
+    // Equivalent mutants (U-006 triage): the result only ever feeds
+    // `=== held.token`; every non-token outcome (null, undefined, another
+    // string) compares unequal to the token exactly like null does.
+    // Stryker disable next-line ConditionalExpression, LogicalOperator, StringLiteral
     return typeof id === 'string' && id !== '' ? id : null;
   } catch {
     return null;
   }
 }
+// Stryker restore BlockStatement
 
 /** True when the thrown value carries the given filesystem error code. */
 function errnoIs(error: unknown, code: string): boolean {
+  // Equivalent mutant (U-006 triage): fs errors are always Error objects,
+  // never null/undefined, so the optional chain never short-circuits here.
+  // Stryker disable next-line OptionalChaining
   return (error as NodeJS.ErrnoException | null)?.code === code;
 }
 

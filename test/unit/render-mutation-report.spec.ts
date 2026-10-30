@@ -114,7 +114,8 @@ describe('renderMutationReport', () => {
         'Daily mutation report — 2026-10-30',
         '',
         '- Verdict: within the configured thresholds',
-        '- Mutation score: 44.4% (4 detected of 9 mutants — killed 3, timed out 1)',
+        '- Mutation score: 57.1% (4 detected of 7 scoreable mutants — killed 3, ' +
+          'timed out 1; ignored and error-status mutants are excluded, see D-055)',
         '- Survived: 2, no coverage: 1, runtime errors: 1, compile errors: 0, ignored: 1',
         '- Error-status mutants (broke the test run itself — neither detected nor survived): `src/b.ts` (1)',
         '- Thresholds and scope: `stryker.config.mjs` (scope and cadence decision: DECISIONS.md D-045)',
@@ -124,7 +125,7 @@ describe('renderMutationReport', () => {
         '| File | Mutants | Detected | Survived | Score |',
         '| --- | ---: | ---: | ---: | ---: |',
         '| `src/a.ts` | 3 | 1 | 1 | 33.3% |',
-        '| `src/b.ts` | 6 | 3 | 1 | 50% |',
+        '| `src/b.ts` | 6 | 3 | 1 | 75% |',
         '',
         '## Survived mutants (triage list)',
         '',
@@ -222,7 +223,8 @@ describe('renderMutationReport', () => {
     const empty: MiniReport = { files: { 'src/empty.ts': { mutants: [] } } };
     const markdown = render(empty, { date: '2026-10-30' });
     expect(markdown).toContain(
-      '- Mutation score: — (0 detected of 0 mutants — killed 0, timed out 0)',
+      '- Mutation score: — (0 detected of 0 scoreable mutants — killed 0, ' +
+        'timed out 0; ignored and error-status mutants are excluded, see D-055)',
     );
     expect(markdown).toContain('None — every generated mutant was detected.');
     expect(markdown).not.toContain('| `src/empty.ts`');
@@ -231,7 +233,34 @@ describe('renderMutationReport', () => {
   it('renders a report with no files at all', () => {
     const markdown = render({ files: {} }, { date: '2026-10-30' });
     expect(markdown).toContain(
-      '- Mutation score: — (0 detected of 0 mutants — killed 0, timed out 0)',
+      '- Mutation score: — (0 detected of 0 scoreable mutants — killed 0, ' +
+        'timed out 0; ignored and error-status mutants are excluded, see D-055)',
     );
+  });
+
+  it('excludes ignored and error-status mutants from the score (D-055)', () => {
+    // 50 killed + 50 survived are scoreable; the ignored and error-status
+    // mutants must leave the denominator, matching Stryker's own metrics.
+    const ignoredHeavy: MiniReport = {
+      files: {
+        'src/i.ts': {
+          mutants: [
+            ...Array.from({ length: 50 }, (_, i) => mutant('Killed', i + 1, 'StringLiteral')),
+            ...Array.from({ length: 50 }, (_, i) => mutant('Survived', i + 100, 'StringLiteral')),
+            ...Array.from({ length: 30 }, (_, i) => mutant('Ignored', i + 200, 'StringLiteral')),
+            ...Array.from({ length: 20 }, (_, i) =>
+              mutant('RuntimeError', i + 300, 'StringLiteral'),
+            ),
+          ],
+        },
+      },
+    };
+    const markdown = render(ignoredHeavy, { date: '2026-10-30' });
+    expect(markdown).toContain(
+      '- Mutation score: 50% (50 detected of 100 scoreable mutants — killed 50, ' +
+        'timed out 0; ignored and error-status mutants are excluded, see D-055)',
+    );
+    // The raw mutant count stays visible in the per-file table.
+    expect(markdown).toContain('| `src/i.ts` | 150 | 50 | 50 | 50% |');
   });
 });

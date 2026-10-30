@@ -240,6 +240,11 @@ function isSensitiveHeaderName(name: string): boolean {
 function scrub(value: string, secrets: readonly string[]): string {
   let scrubbed = value;
   for (const secret of secrets) {
+    // Equivalent mutant (U-006 triage): the 'true' variant is equivalent —
+    // split/join over an absent needle is the identity transform. The
+    // co-excluded 'false' variant (scrubbing disabled, secrets leak) is
+    // killable and stays pinned by the '[REDACTED]' tests.
+    // Stryker disable next-line ConditionalExpression
     if (scrubbed.includes(secret)) {
       // split/join instead of RegExp: secrets are arbitrary strings whose
       // regex metacharacters must be matched literally.
@@ -257,7 +262,11 @@ function scrub(value: string, secrets: readonly string[]): string {
  * well, because a provider echoing the credential back echoes it alone.
  */
 function sensitiveHeaderValues(headers: Readonly<Record<string, string>> | undefined): string[] {
+  // Equivalent mutants (U-006 triage): both empty-array seeds, if pre-filled,
+  // only add a needle no scrubbed text ever contains.
+  // Stryker disable next-line ArrayDeclaration
   if (headers === undefined) return [];
+  // Stryker disable next-line ArrayDeclaration
   const values: string[] = [];
   for (const [name, value] of Object.entries(headers)) {
     if (value === '' || !isSensitiveHeaderName(name)) continue;
@@ -308,9 +317,18 @@ function causeCodeOf(error: unknown): string | undefined {
  */
 function classifyNetworkFailure(error: unknown): TransportError {
   const causeCode = causeCodeOf(error);
+  // The `?? ''` fallbacks below are equivalent mutants (U-006 triage): the
+  // sets never contain the fallback string, so its exact spelling is
+  // unobservable when no cause code exists.
+  // Stryker disable next-line StringLiteral
   if (DNS_CODES.has(causeCode ?? '')) return new TransportDnsError(causeCode);
+  // Stryker disable next-line StringLiteral
   if (CONNECTION_CODES.has(causeCode ?? '')) return new TransportConnectionError(causeCode);
+  // Stryker disable next-line StringLiteral
   if (SOCKET_CODES.has(causeCode ?? '')) return new TransportSocketError(causeCode);
+  // Equivalent mutant (U-006 triage): the fallback fires only for a missing
+  // message, and neither '' nor any marker string contains "terminated".
+  // Stryker disable next-line StringLiteral
   if (/terminated/iu.test(String((error as Error | null)?.message ?? ''))) {
     return new TransportSocketError(causeCode);
   }

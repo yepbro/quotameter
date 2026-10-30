@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Mutation-report markdown renderer (spec §17.3, docs/mutation-testing.md;
- * U-005, decision D-054).
+ * U-005 decision D-054, score formula D-055).
  *
  * Turns Stryker's `reports/mutation/mutation.json` into the markdown body of
  * the rolling `mutation-report` issue. This script is the single renderer:
@@ -65,10 +65,21 @@ export function normalizeStatus(status, where = 'the report') {
 /** @returns {Record<string, number>} a zeroed tally with one key per canonical status */
 const freshTally = () => Object.fromEntries(STATUSES.map((status) => [status, 0]));
 
-// Mutants that broke the harness itself. They count in the score denominator
-// but as neither detected nor survived; the summary lists their files so a
-// crashing mutant is triaged instead of hiding behind the score.
+// Mutants that broke the harness itself. They are excluded from the score
+// denominator (D-055) but surface as neither detected nor survived; the
+// summary lists their files so a crashing mutant is triaged instead of hiding
+// behind the score.
 const ERROR_STATUSES = ['RuntimeError', 'CompileError'];
+
+/**
+ * Stryker's own score formula (decision D-055, verified against
+ * `mutation-testing-metrics`' `calculateMetrics`): detected divided by the
+ * scoreable mutants — every status except Ignored and the error statuses.
+ * Ignored mutants are deliberate exclusions reviewed in code (U-006), and
+ * error-status mutants broke the run itself, so neither belongs in the
+ * denominator of the number the issue's verdict line is judged against.
+ */
+const scoreable = (tally) => tally.Killed + tally.Timeout + tally.Survived + tally.NoCoverage;
 
 /** One decimal place, the precision the report has always shown. */
 const percent = (detected, total) =>
@@ -109,13 +120,12 @@ export function renderMutationReport(report, { outcome, date }) {
       total,
       detected,
       survived: fileTally.Survived,
-      score: percent(detected, total),
+      score: percent(detected, scoreable(fileTally)),
     });
   }
 
-  const total = Object.values(tally).reduce((sum, count) => sum + count, 0);
   const detected = tally.Killed + tally.Timeout;
-  const score = percent(detected, total);
+  const score = percent(detected, scoreable(tally));
   const errorStatusTotal = ERROR_STATUSES.reduce((sum, status) => sum + tally[status], 0);
   const belowThreshold = outcome === 'failure';
 
@@ -130,7 +140,9 @@ export function renderMutationReport(report, { outcome, date }) {
   );
   lines.push(
     `- Mutation score: ${score === null ? '—' : `${score}%`} ` +
-      `(${detected} detected of ${total} mutants — killed ${tally.Killed}, timed out ${tally.Timeout})`,
+      `(${detected} detected of ${scoreable(tally)} scoreable mutants — ` +
+      `killed ${tally.Killed}, timed out ${tally.Timeout}; ignored and ` +
+      `error-status mutants are excluded, see D-055)`,
   );
   lines.push(
     `- Survived: ${tally.Survived}, no coverage: ${tally.NoCoverage}, ` +

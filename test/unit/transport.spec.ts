@@ -288,3 +288,276 @@ describe('providerFetch response handling (injectable fetch)', () => {
     expect(errorSurface(error)).not.toContain(MARKER);
   });
 });
+
+describe('exact taxonomy messages (U-006 mutation triage)', () => {
+  /** Runs providerFetch against a fixed rejection and returns the error. */
+  async function failureOf(error: unknown): Promise<unknown> {
+    return providerFetch(markerRequest(), {
+      timeoutMs: 5000,
+      fetchImpl: failingFetch(error),
+    }).catch((thrown: unknown) => thrown);
+  }
+
+  it('pins the dns, connection, and socket messages with their cause code', async () => {
+    const dns = await failureOf(fetchFailed('ENOTFOUND', 'getaddrinfo ENOTFOUND x.invalid'));
+    expect((dns as Error).message).toBe('provider hostname could not be resolved (ENOTFOUND)');
+    const connection = await failureOf(
+      fetchFailed('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:46597'),
+    );
+    expect((connection as Error).message).toBe('connection to the provider failed (ECONNREFUSED)');
+    const socket = await failureOf(fetchFailed('UND_ERR_SOCKET', 'other side closed'));
+    expect((socket as Error).message).toBe(
+      'provider connection was reset or terminated (UND_ERR_SOCKET)',
+    );
+  });
+
+  it('pins the network message without a cause-code suffix', async () => {
+    const network = await failureOf(new TypeError('fetch failed'));
+    expect((network as Error).message).toBe('provider network request failed');
+    expect((network as TransportNetworkError).causeCode).toBeUndefined();
+  });
+
+  it('pins the aborted message', async () => {
+    const controller = new AbortController();
+    const promise = providerFetch(
+      { ...markerRequest(), signal: controller.signal },
+      {
+        timeoutMs: 5000,
+        fetchImpl: abortRejectingFetch(
+          () => new DOMException('This operation was aborted', 'AbortError'),
+        ),
+      },
+    );
+    controller.abort();
+    const error = await promise.catch((thrown: unknown) => thrown);
+    expect((error as Error).message).toBe('provider request was aborted by the caller');
+  });
+
+  it('pins the response-too-large message', async () => {
+    const fetchImpl = (async () =>
+      new Response('123456789', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof globalThis.fetch;
+    const error = await providerFetch(markerRequest(), { fetchImpl, maxResponseBytes: 8 }).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect((error as Error).message).toBe('provider response exceeded the 8-byte limit');
+  });
+
+  it('ignores a non-string cause code instead of suffixing it', async () => {
+    const cause = Object.assign(new Error('weird runtime'), { code: 42 });
+    const error = await failureOf(Object.assign(new TypeError('fetch failed'), { cause }));
+    expect(error).toBeInstanceOf(TransportNetworkError);
+    expect((error as Error).message).toBe('provider network request failed');
+  });
+
+  it('classifies a thrown non-Error (null) as a plain network failure', async () => {
+    const error = await failureOf(null);
+    expect(error).toBeInstanceOf(TransportNetworkError);
+    expect((error as TransportNetworkError).causeCode).toBeUndefined();
+  });
+});
+
+describe('status and content-type rendering (U-006 mutation triage)', () => {
+  it('pins the HTTP status message with status text, space included', async () => {
+    const fetchImpl = (async () =>
+      new Response('x', { status: 500, statusText: 'Server Error' })) as typeof globalThis.fetch;
+    const error = await providerFetch({ url: 'http://127.0.0.1:1/' }, { fetchImpl }).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(TransportStatusError);
+    expect((error as Error).message).toBe('provider responded with HTTP 500 Server Error');
+  });
+
+  it('pins the HTTP status message without status text, no trailing space', async () => {
+    const fetchImpl = (async () =>
+      new Response('x', { status: 500, statusText: '' })) as typeof globalThis.fetch;
+    const error = await providerFetch({ url: 'http://127.0.0.1:1/' }, { fetchImpl }).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect((error as Error).message).toBe('provider responded with HTTP 500');
+  });
+
+  it('pins the content-type message with the observed type', async () => {
+    const fetchImpl = (async () =>
+      new Response('<html/>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      })) as typeof globalThis.fetch;
+    const error = await providerFetch({ url: 'http://127.0.0.1:1/' }, { fetchImpl }).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(TransportContentTypeError);
+    expect((error as Error).message).toBe(
+      'provider response content type was not application/json (observed: text/html)',
+    );
+  });
+
+  it('accepts application/json with parameters, keeping the raw header', async () => {
+    const fetchImpl = (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      })) as typeof globalThis.fetch;
+    const result = await providerFetch({ url: 'http://127.0.0.1:1/' }, { fetchImpl });
+    expect(result.contentType).toBe('application/json; charset=utf-8');
+    expect(result.body).toBe('{"ok":true}');
+  });
+
+  it('trims padding around the media type before comparing it', async () => {
+    // A space before the parameter separator keeps the media type
+    // "application/json " after the split — only the trim makes it match.
+    const fetchImpl = (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json ; charset=utf-8' },
+      })) as typeof globalThis.fetch;
+    const result = await providerFetch({ url: 'http://127.0.0.1:1/' }, { fetchImpl });
+    expect(result.contentType).toBe('application/json ; charset=utf-8');
+    expect(result.body).toBe('{"ok":true}');
+  });
+});
+
+describe('header scrubbing scope (U-006 mutation triage)', () => {
+  /** A fetch double answering 500 with the given status text. */
+  function echoFetch(statusText: string): typeof globalThis.fetch {
+    return (async () => new Response('', { status: 500, statusText })) as typeof globalThis.fetch;
+  }
+
+  it('leaves non-sensitive header text and empty sensitive values alone', async () => {
+    const error = await providerFetch(
+      {
+        url: 'http://127.0.0.1:1/',
+        headers: { 'x-note': 'plain-value', accept: 'text/plain', 'x-api-key': '' },
+      },
+      { fetchImpl: echoFetch('plain-value') },
+    ).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportStatusError);
+    // No [REDACTED] and no per-character mangling: the empty value is skipped
+    // and the non-sensitive names are outside the scrub set.
+    expect((error as Error).message).toBe('provider responded with HTTP 500 plain-value');
+  });
+
+  it('scrubs X-Api-Key whole values but not scheme-stripped halves', async () => {
+    const error = await providerFetch(
+      { url: 'http://127.0.0.1:1/', headers: { 'x-api-key': 'Bearer sk-cred' } },
+      { fetchImpl: echoFetch('sk-cred') },
+    ).catch((thrown: unknown) => thrown);
+    // The whole header value is a secret; the bare credential after a scheme
+    // is extracted only for Authorization-style headers (D-025 vocabulary).
+    expect((error as Error).message).toBe('provider responded with HTTP 500 sk-cred');
+  });
+
+  it('keeps the x-prefix rule narrow: a PAuthorization header is not sensitive', async () => {
+    const error = await providerFetch(
+      { url: 'http://127.0.0.1:1/', headers: { PAuthorization: 'sk-cred' } },
+      { fetchImpl: echoFetch('sk-cred') },
+    ).catch((thrown: unknown) => thrown);
+    // 'pauthorization' is not in the D-025 set and does not start with 'x';
+    // its value must stay visible verbatim.
+    expect((error as Error).message).toBe('provider responded with HTTP 500 sk-cred');
+  });
+
+  it('extracts and scrubs the bare credential of Authorization headers', async () => {
+    const cases: ReadonlyArray<{ header: string; headerValue: string; echo: string }> = [
+      { header: 'authorization', headerValue: 'Bearer sk-cred', echo: 'sk-cred' },
+      { header: 'Authorization', headerValue: '  Bearer sk-pad  ', echo: 'sk-pad' },
+      { header: 'Authorization', headerValue: 'Bearer  sk-wide', echo: 'sk-wide' },
+      { header: 'Authorization', headerValue: 'Bearer sk two', echo: 'sk two' },
+      { header: 'Proxy-Authorization', headerValue: 'Basic sk-proxy', echo: 'sk-proxy' },
+    ];
+    for (const { header, headerValue, echo } of cases) {
+      const error = await providerFetch(
+        { url: 'http://127.0.0.1:1/', headers: { [header]: headerValue } },
+        { fetchImpl: echoFetch(echo) },
+      ).catch((thrown: unknown) => thrown);
+      expect(error as Error, `echo of ${JSON.stringify(echo)}`).toBeInstanceOf(
+        TransportStatusError,
+      );
+      expect((error as Error).message).toBe('provider responded with HTTP 500 [REDACTED]');
+    }
+  });
+
+  it('does not extract a scheme from a single-token Authorization value', async () => {
+    const error = await providerFetch(
+      { url: 'http://127.0.0.1:1/', headers: { authorization: 'sk-only' } },
+      { fetchImpl: echoFetch('Oops') },
+    ).catch((thrown: unknown) => thrown);
+    expect((error as Error).message).toBe('provider responded with HTTP 500 Oops');
+  });
+});
+
+describe('protocol and body-shape handling (U-006 mutation triage)', () => {
+  it('accepts https URLs', async () => {
+    const fetchImpl = (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof globalThis.fetch;
+    const result = await providerFetch({ url: 'https://provider.example/api' }, { fetchImpl });
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('{"ok":true}');
+  });
+
+  it('handles bodyless error and content-type responses without touching a null body', async () => {
+    const statusError = await providerFetch(
+      { url: 'http://127.0.0.1:1/' },
+      { fetchImpl: (async () => new Response(null, { status: 500 })) as typeof globalThis.fetch },
+    ).catch((thrown: unknown) => thrown);
+    expect(statusError).toBeInstanceOf(TransportStatusError);
+    expect((statusError as Error).message).toBe('provider responded with HTTP 500');
+
+    const contentTypeError = await providerFetch(
+      { url: 'http://127.0.0.1:1/' },
+      {
+        fetchImpl: (async () =>
+          new Response(null, {
+            status: 200,
+            headers: { 'content-type': 'text/plain' },
+          })) as typeof globalThis.fetch,
+      },
+    ).catch((thrown: unknown) => thrown);
+    expect(contentTypeError).toBeInstanceOf(TransportContentTypeError);
+    expect((contentTypeError as Error).message).toBe(
+      'provider response content type was not application/json (observed: text/plain)',
+    );
+  });
+
+  it('delivers a bodyless 2xx application/json response as an empty body', async () => {
+    const fetchImpl = (async () =>
+      new Response(null, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof globalThis.fetch;
+    const result = await providerFetch({ url: 'http://127.0.0.1:1/' }, { fetchImpl });
+    expect(result).toEqual({ status: 200, contentType: 'application/json', body: '', bytes: 0 });
+  });
+
+  it('enforces the declared content-length before reading, exactly at the cap', async () => {
+    const fetchImpl = (async () =>
+      new Response('123456789', {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'content-length': '9' },
+      })) as typeof globalThis.fetch;
+    const atCap = await providerFetch(
+      { url: 'http://127.0.0.1:1/' },
+      { fetchImpl, maxResponseBytes: 9 },
+    );
+    expect(atCap.bytes).toBe(9);
+  });
+
+  it('rejects a lying content-length before a single body byte is read', async () => {
+    const fetchImpl = (async () =>
+      new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'content-length': '999' },
+      })) as typeof globalThis.fetch;
+    const error = await providerFetch(
+      { url: 'http://127.0.0.1:1/' },
+      { fetchImpl, maxResponseBytes: 64 },
+    ).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportResponseTooLargeError);
+    expect((error as TransportResponseTooLargeError).limitBytes).toBe(64);
+  });
+});

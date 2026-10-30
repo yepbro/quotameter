@@ -601,3 +601,397 @@ function deepFreeze(value: unknown): void {
   for (const child of Object.values(value)) deepFreeze(child);
   Object.freeze(value);
 }
+
+/* ── U-006 mutation-triage pins ─────────────────────────────────────────── */
+
+/** A base configuration with every section carrying non-default values. */
+function richBase(): Validated<Config> {
+  return parsed({
+    server: { host: '127.0.0.1', port: 9000 },
+    app: { timezone: 'Europe/Berlin', pollingIntervalSeconds: 900, historyRetentionDays: 90 },
+    auth: { mode: 'required', passwordHash: 'scrypt$old' },
+    logging: { level: 'debug' },
+    providers: {
+      'zai-coding-plan': {
+        peakHours: { timezone: 'UTC', windows: [] },
+        requestTimeoutSeconds: 15,
+      },
+    },
+    accounts: [
+      { id: 'zai-main', providerId: 'zai-coding-plan', label: 'Main', apiKey: SYNTHETIC_KEY },
+    ],
+  });
+}
+
+describe('the plaintext password boundary (spec §15.2, U-006 triage)', () => {
+  it('accepts a password of exactly the minimum length', () => {
+    const exactly = 'a'.repeat(MIN_PASSWORD_LENGTH);
+    const result = validateSettings({
+      app: { timezone: 'UTC' },
+      server: { host: '0.0.0.0' },
+      auth: { password: exactly },
+    });
+    expect(result).toMatchObject({ ok: true, pendingPassword: exactly });
+  });
+});
+
+describe('non-object section shapes reach the parser verbatim (U-006 triage)', () => {
+  it('passes non-object sections through for the parser to type-name', () => {
+    expect(problemsOf({ app: 5 })).toEqual(['app: expected an object, got a number']);
+    expect(problemsOf({ app: { timezone: 'UTC' }, auth: 5 })).toEqual([
+      'auth: expected an object, got a number',
+    ]);
+    expect(problemsOf({ app: { timezone: 'UTC' }, logging: 5 })).toEqual([
+      'logging: expected an object, got a number',
+    ]);
+    expect(problemsOf({ app: { timezone: 'UTC' }, providers: 5 })).toEqual([
+      'providers: expected an object, got a number',
+    ]);
+  });
+
+  it('drops undefined provider entries instead of materializing them', () => {
+    const dropped = validateSettings({
+      app: { timezone: 'UTC' },
+      providers: { 'zai-coding-plan': undefined },
+    });
+    expect(dropped).toMatchObject({ ok: true });
+    expect(problemsOf({ app: { timezone: 'UTC' }, providers: { 'zai-coding-plan': 5 } })).toEqual([
+      'providers.zai-coding-plan: expected an object, got a number',
+    ]);
+  });
+
+  it('passes a non-object peakHours, window, and account through', () => {
+    expect(
+      problemsOf({
+        app: { timezone: 'UTC' },
+        providers: { 'zai-coding-plan': { peakHours: 5 } },
+      }),
+    ).toEqual(['providers.zai-coding-plan.peakHours: expected an object, got a number']);
+    expect(
+      problemsOf({
+        app: { timezone: 'UTC' },
+        providers: {
+          'zai-coding-plan': { peakHours: { timezone: 'UTC', windows: [5] } },
+        },
+      }),
+    ).toEqual(['providers.zai-coding-plan.peakHours.windows[0]: expected an object, got a number']);
+    expect(problemsOf({ app: { timezone: 'UTC' }, accounts: [5] })).toEqual([
+      'accounts[0]: expected an object, got a number',
+    ]);
+  });
+
+  it('passes non-string day elements through instead of crashing on trim', () => {
+    const problems = problemsOf({
+      app: { timezone: 'UTC' },
+      providers: {
+        'zai-coding-plan': {
+          peakHours: {
+            timezone: 'UTC',
+            windows: [{ id: 'w', name: 'W', days: ['mon', 5], start: '01:00', end: '02:00' }],
+          },
+        },
+      },
+    });
+    expect(problems.some((problem) => problem.includes('days[1]: expected a string'))).toBe(true);
+  });
+
+  it('passes a non-string apiKey and passwordHash through for the parser', () => {
+    expect(
+      problemsOf({
+        app: { timezone: 'UTC' },
+        accounts: [{ id: 'a1', providerId: 'p', label: 'L', apiKey: 5 }],
+      }),
+    ).toEqual(['accounts[0].apiKey: expected a string, got a number']);
+    expect(problemsOf({ app: { timezone: 'UTC' }, auth: { passwordHash: 5 } })).toEqual([
+      'auth.passwordHash: expected a string, got a number',
+    ]);
+  });
+});
+
+describe('unknown-key pass-through per section (U-006 triage)', () => {
+  it('drops undefined-valued unknown keys instead of forwarding them', () => {
+    // JSON cannot carry undefined, but the future API path can; forwarding
+    // such keys would invent parser problems the caller never wrote.
+    expect(validateSettings({ app: { timezone: 'UTC' }, srv: undefined })).toMatchObject({
+      ok: true,
+    });
+    const withServer = validateSettings({
+      app: { timezone: 'UTC' },
+      server: { host: '127.0.0.1', ghost: undefined },
+    });
+    expect(withServer).toMatchObject({ ok: true });
+    if (!withServer.ok) throw new Error('unreachable');
+    expect(withServer.config.server).toEqual({ host: '127.0.0.1', port: 8787 });
+  });
+
+  it('forwards unknown keys of every section with the parser message', () => {
+    expect(problemsOf({ app: { timezone: 'UTC', bogus: 1 } })).toEqual([
+      "app: unknown property 'bogus'",
+    ]);
+    expect(problemsOf({ app: { timezone: 'UTC' }, auth: { mode: 'auto', bogus: 1 } })).toEqual([
+      "auth: unknown property 'bogus'",
+    ]);
+    expect(problemsOf({ app: { timezone: 'UTC' }, logging: { level: 'debug', bogus: 1 } })).toEqual(
+      ["logging: unknown property 'bogus'"],
+    );
+    expect(
+      problemsOf({
+        app: { timezone: 'UTC' },
+        providers: {
+          'zai-coding-plan': { peakHours: { timezone: 'UTC', windows: [], bogus: 1 } },
+        },
+      }),
+    ).toEqual(["providers.zai-coding-plan.peakHours: unknown property 'bogus'"]);
+    expect(
+      problemsOf({
+        app: { timezone: 'UTC' },
+        providers: {
+          'zai-coding-plan': {
+            peakHours: {
+              timezone: 'UTC',
+              windows: [
+                { id: 'w', name: 'W', days: ['mon'], start: '01:00', end: '02:00', bogus: 1 },
+              ],
+            },
+          },
+        },
+      }),
+    ).toEqual(["providers.zai-coding-plan.peakHours.windows[0]: unknown property 'bogus'"]);
+    expect(
+      problemsOf({
+        app: { timezone: 'UTC' },
+        accounts: [{ id: 'a1', providerId: 'p', label: 'L', apiKey: 'k', bogus: 1 }],
+      }),
+    ).toEqual(["accounts[0]: unknown property 'bogus'"]);
+  });
+});
+
+describe('blank and padded answers (U-006 triage)', () => {
+  it('trims every trimmed field of every section', () => {
+    const config = configOf({
+      app: {
+        timezone: ' UTC ',
+        pollingIntervalSeconds: ' 240 ',
+        historyRetentionDays: ' 90 ',
+      },
+      auth: { mode: ' auto ' },
+      logging: { level: ' debug ' },
+      providers: {
+        'zai-coding-plan': {
+          peakHours: {
+            timezone: ' Asia/Singapore ',
+            offPeakMultiplier: ' 0.5 ',
+            windows: [{ id: ' w ', name: ' W ', days: ['mon'], start: ' 09:00 ', end: ' 12:00 ' }],
+          },
+        },
+      },
+      accounts: [
+        { id: ' a1 ', providerId: ' zai-coding-plan ', label: ' L ', apiKeyEnv: ' QM_KEY ' },
+      ],
+    });
+    expect(config.app).toEqual({
+      timezone: 'UTC',
+      pollingIntervalSeconds: 240,
+      historyRetentionDays: 90,
+    });
+    expect(config.auth).toStrictEqual({ mode: 'auto' });
+    expect(config.logging).toEqual({ level: 'debug' });
+    const peak = config.providers['zai-coding-plan']?.peakHours;
+    expect(peak).toMatchObject({ timezone: 'Asia/Singapore', offPeakMultiplier: 0.5 });
+    expect(peak?.windows[0]).toMatchObject({
+      id: 'w',
+      name: 'W',
+      start: '09:00',
+      end: '12:00',
+    });
+    expect(config.accounts[0]).toMatchObject({
+      id: 'a1',
+      providerId: 'zai-coding-plan',
+      label: 'L',
+      apiKeyEnv: 'QM_KEY',
+    });
+  });
+
+  it('treats a whitespace-only passwordHash as not supplied', () => {
+    const config = configOf({ app: { timezone: 'UTC' }, auth: { passwordHash: '   ' } });
+    expect(config.auth).toStrictEqual({ mode: 'auto' });
+  });
+
+  it('keeps the auth section exact when no hash is supplied', () => {
+    const config = configOf({ app: { timezone: 'UTC' }, auth: { mode: 'auto' } });
+    expect(config.auth).toStrictEqual({ mode: 'auto' });
+  });
+
+  it('treats a whitespace-only apiKey as not supplied', () => {
+    const config = configOf({
+      app: { timezone: 'UTC' },
+      accounts: [
+        { id: 'a1', providerId: 'zai-coding-plan', label: 'L', apiKey: '   ', apiKeyEnv: 'QM_KEY' },
+      ],
+    });
+    expect(config.accounts).toStrictEqual([
+      { id: 'a1', providerId: 'zai-coding-plan', label: 'L', enabled: true, apiKeyEnv: 'QM_KEY' },
+    ]);
+  });
+
+  it('keeps the account shape exact for an apiKeyEnv-sourced account', () => {
+    const config = configOf({
+      app: { timezone: 'UTC' },
+      accounts: [{ id: 'a1', providerId: 'zai-coding-plan', label: 'L', apiKeyEnv: 'QM_KEY' }],
+    });
+    expect(config.accounts).toStrictEqual([
+      { id: 'a1', providerId: 'zai-coding-plan', label: 'L', enabled: true, apiKeyEnv: 'QM_KEY' },
+    ]);
+  });
+
+  it('keeps an explicit enabled: false', () => {
+    const config = configOf({
+      app: { timezone: 'UTC' },
+      accounts: [
+        {
+          id: 'a1',
+          providerId: 'zai-coding-plan',
+          label: 'L',
+          apiKey: SYNTHETIC_KEY,
+          enabled: false,
+        },
+      ],
+    });
+    expect(config.accounts[0]?.enabled).toBe(false);
+  });
+});
+
+describe('numeric-string coercion boundaries (U-006 triage)', () => {
+  /** A submission carrying the given window-multiplier string. */
+  const withMultiplier = (multiplier: string): Record<string, unknown> => ({
+    app: { timezone: 'UTC' },
+    providers: {
+      'zai-coding-plan': {
+        peakHours: {
+          timezone: 'UTC',
+          windows: [
+            { id: 'w', name: 'W', days: ['mon'], start: '01:00', end: '02:00', multiplier },
+          ],
+        },
+      },
+    },
+  });
+
+  it.each([
+    ['12.5', 12.5],
+    ['5', 5],
+    ['5.', 5],
+    ['.5', 0.5],
+    ['.55', 0.55],
+    ['+0.5', 0.5],
+  ])('coerces the multiplier string %s', (given, expected) => {
+    const config = configOf(withMultiplier(given));
+    const window = config.providers['zai-coding-plan']?.peakHours.windows[0];
+    expect(window?.multiplier).toBe(expected);
+  });
+
+  it.each(['x0.5', '0.5x', 'x.5', 'high'])(
+    'rejects the multiplier string %s with one coercion problem',
+    (given) => {
+      expect(problemsOf(withMultiplier(given))).toEqual([
+        'providers.zai-coding-plan.peakHours.windows[0].multiplier: expected a number',
+      ]);
+    },
+  );
+
+  it('treats a blank multiplier answer as not supplied', () => {
+    const config = configOf(withMultiplier('   '));
+    const window = config.providers['zai-coding-plan']?.peakHours.windows[0];
+    expect(window?.multiplier).toBe(1);
+  });
+
+  it('rejects a non-numeric offPeakMultiplier with its exact field path', () => {
+    expect(
+      problemsOf({
+        app: { timezone: 'UTC' },
+        providers: {
+          'zai-coding-plan': {
+            peakHours: { timezone: 'UTC', windows: [], offPeakMultiplier: 'high' },
+          },
+        },
+      }),
+    ).toEqual(['providers.zai-coding-plan.peakHours.offPeakMultiplier: expected a number']);
+  });
+
+  it('rejects a numerically-tailed integer string with one coercion problem', () => {
+    expect(problemsOf({ app: { timezone: 'UTC' }, server: { port: 'x300' } })).toEqual([
+      'server.port: expected an integer',
+    ]);
+  });
+
+  it('names the retention field in its coercion problem', () => {
+    expect(problemsOf({ app: { timezone: 'UTC', historyRetentionDays: 'many' } })).toEqual([
+      'app.historyRetentionDays: expected an integer',
+    ]);
+  });
+});
+
+describe('merge over base — section preservation (U-006 triage)', () => {
+  it('keeps every base section the submission does not mention', () => {
+    const config = configOf({ app: { timezone: ' UTC ' } }, richBase());
+    expect(config.server).toEqual({ host: '127.0.0.1', port: 9000 });
+    expect(config.auth).toStrictEqual({ mode: 'required', passwordHash: 'scrypt$old' });
+    expect(config.logging).toEqual({ level: 'debug' });
+    expect(config.providers['zai-coding-plan']).toMatchObject({ requestTimeoutSeconds: 15 });
+    expect(config.accounts).toHaveLength(1);
+  });
+
+  it('merges the auth section field-wise over the base', () => {
+    const config = configOf({ auth: { mode: 'auto' } }, richBase());
+    expect(config.auth).toStrictEqual({ mode: 'auto', passwordHash: 'scrypt$old' });
+  });
+
+  it('re-checks the password rule against the merged auth (base auto, answer required)', () => {
+    expect(problemsOf({ auth: { mode: 'required' } }, validBase())).toEqual([
+      'auth: a password is required when auth.mode is "required" or server.host is not loopback (spec §15.1)',
+    ]);
+  });
+
+  it('passes a non-object auth section through with the base present', () => {
+    expect(problemsOf({ auth: 5 }, richBase())).toEqual(['auth: expected an object, got a number']);
+  });
+
+  it('passes a non-object server section through with the base present', () => {
+    expect(problemsOf({ server: 5 }, validBase())).toEqual([
+      'server: expected an object, got a number',
+    ]);
+  });
+
+  it('still forwards unknown submission keys to the parser when a base exists', () => {
+    expect(problemsOf({ app: { timezone: 'UTC' }, srv: 1 }, validBase())).toEqual([
+      "configuration: unknown property 'srv'",
+    ]);
+  });
+
+  it('rejects a non-object providers section with the base present', () => {
+    expect(problemsOf({ providers: 5 }, richBase())).toEqual([
+      'providers: expected an object, got a number',
+    ]);
+  });
+
+  it('keeps sibling providers when the submission adds another one', () => {
+    const config = configOf(
+      { providers: { beta: { peakHours: { timezone: 'UTC', windows: [] } } } },
+      richBase(),
+    );
+    expect(config.providers['zai-coding-plan']).toMatchObject({ requestTimeoutSeconds: 15 });
+    expect(config.providers.beta).toMatchObject({ requestTimeoutSeconds: 15 });
+  });
+
+  it('rejects a non-object provider entry with the base present', () => {
+    expect(problemsOf({ providers: { 'zai-coding-plan': 5 } }, richBase())).toEqual([
+      'providers.zai-coding-plan: expected an object, got a number',
+    ]);
+  });
+
+  it('rejects a non-object peakHours with the base present', () => {
+    expect(problemsOf({ providers: { 'zai-coding-plan': { peakHours: 5 } } }, richBase())).toEqual([
+      'providers.zai-coding-plan.peakHours: expected an object, got a number',
+    ]);
+  });
+});

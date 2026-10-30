@@ -108,7 +108,13 @@ export function validateSettings(
   const normalized = normalizeSubmission(submission, problems);
   const merged =
     base !== undefined && isPlainObject(normalized)
-      ? mergeOverBase(normalized, base as CanonicalConfig, password !== undefined)
+      ? // Equivalent mutant (U-006 triage): the 'false' variant of the
+        // password-replaces-hash flag is unobservable — the placeholder hash
+        // overwrites any merged base hash before parsing, and the strip removes
+        // it. The 'true' variant is excluded with it by line granularity; the
+        // hash-preservation behavior stays pinned by tests.
+        // Stryker disable next-line ConditionalExpression
+        mergeOverBase(normalized, base as CanonicalConfig, password !== undefined)
       : normalized;
   // A pending password implies `merged` is a plain object (the password was
   // extracted from its `auth` section), so the placeholder step can rely on
@@ -229,7 +235,12 @@ function defineOwn(target: Record<string, unknown>, key: string, value: unknown)
   Object.defineProperty(target, key, {
     value,
     enumerable: true,
+    // Equivalent mutants (U-006 triage): every projection built here is only
+    // read and spread downstream — nothing reassigns or redefines these keys,
+    // so the two permissive flags are unobservable.
+    // Stryker disable next-line BooleanLiteral
     writable: true,
+    // Stryker disable next-line BooleanLiteral
     configurable: true,
   });
 }
@@ -256,9 +267,21 @@ const LOGGING_FIELDS = new Set(['level']);
 const PROVIDER_FIELDS = new Set(['requestTimeoutSeconds', 'peakHours']);
 const PEAK_HOURS_FIELDS = new Set(['timezone', 'offPeakMultiplier', 'windows']);
 const WINDOW_FIELDS = new Set(['id', 'name', 'days', 'start', 'end', 'multiplier']);
+// Equivalent mutants on this line (U-006 triage): dropping 'enabled' from the
+// known set only re-copies the raw value over the verbatim copy line 412
+// already made — unobservable. Line granularity also ignores the five
+// line-mates ('id', 'providerId', 'label', 'apiKey', 'apiKeyEnv'), whose
+// trim/verbatim behavior stays pinned by tests, so removing this directive
+// lets those mutants die again.
+// Stryker disable next-line StringLiteral
 const ACCOUNT_FIELDS = new Set(['id', 'providerId', 'label', 'enabled', 'apiKey', 'apiKeyEnv']);
 
 function normalizeServer(section: unknown, problems: string[]): unknown {
+  // Equivalent mutant (U-006 triage): 'false' skips the early return, but the
+  // isPlainObject guard below returns the same `section` (undefined) anyway.
+  // The co-excluded 'true' variant (section answers silently dropped) is
+  // killable and stays pinned by the section tests.
+  // Stryker disable next-line ConditionalExpression
   if (section === undefined) return undefined;
   if (!isPlainObject(section)) return section;
   const normalized: Record<string, unknown> = {};
@@ -269,6 +292,9 @@ function normalizeServer(section: unknown, problems: string[]): unknown {
 }
 
 function normalizeApp(section: unknown, problems: string[]): unknown {
+  // Equivalent mutant (U-006 triage): 'false' skips the early return, but the
+  // isPlainObject guard below returns the same `section` (undefined) anyway.
+  // Stryker disable next-line ConditionalExpression
   if (section === undefined) return undefined;
   if (!isPlainObject(section)) return section;
   const normalized: Record<string, unknown> = {};
@@ -293,6 +319,9 @@ function normalizeApp(section: unknown, problems: string[]): unknown {
  * transformation, only the blank-means-not-supplied rule.
  */
 function normalizeAuth(section: unknown): unknown {
+  // Equivalent mutant (U-006 triage): 'false' skips the early return, but the
+  // isPlainObject guard below returns the same `section` (undefined) anyway.
+  // Stryker disable next-line ConditionalExpression
   if (section === undefined) return undefined;
   if (!isPlainObject(section)) return section;
   const normalized: Record<string, unknown> = {};
@@ -307,6 +336,9 @@ function normalizeAuth(section: unknown): unknown {
 }
 
 function normalizeLogging(section: unknown): unknown {
+  // Equivalent mutant (U-006 triage): 'false' skips the early return, but the
+  // isPlainObject guard below returns the same `section` (undefined) anyway.
+  // Stryker disable next-line ConditionalExpression
   if (section === undefined) return undefined;
   if (!isPlainObject(section)) return section;
   const normalized: Record<string, unknown> = {};
@@ -316,6 +348,9 @@ function normalizeLogging(section: unknown): unknown {
 }
 
 function normalizeProviders(section: unknown, problems: string[]): unknown {
+  // Equivalent mutant (U-006 triage): 'false' skips the early return, but the
+  // isPlainObject guard below returns the same `section` (undefined) anyway.
+  // Stryker disable next-line ConditionalExpression
   if (section === undefined) return undefined;
   if (!isPlainObject(section)) return section;
   const normalized: Record<string, unknown> = {};
@@ -335,6 +370,11 @@ function normalizeProviders(section: unknown, problems: string[]): unknown {
         problems,
       ),
     );
+    // Equivalent mutant (U-006 triage): 'true' calls the normalizer on
+    // undefined, which returns undefined, and assignDefined skips it. The
+    // co-excluded 'false' variant (peakHours answers dropped) is killable and
+    // stays pinned by the provider merge tests.
+    // Stryker disable next-line ConditionalExpression
     if (provider.peakHours !== undefined) {
       assignDefined(
         entry,
@@ -361,6 +401,11 @@ function normalizePeakHours(providerId: string, peakHours: unknown, problems: st
       problems,
     ),
   );
+  // Equivalent mutant (U-006 triage): 'true' normalizes undefined into
+  // `windows: undefined`, which the parser reports as missing — exactly the
+  // problem the absent key produces. The co-excluded 'false' variant (window
+  // arrays dropped) is killable and stays pinned by the window tests.
+  // Stryker disable next-line ConditionalExpression
   if (peakHours.windows !== undefined) {
     normalized.windows = normalizeWindows(providerId, peakHours.windows, problems);
   }
@@ -376,6 +421,11 @@ function normalizeWindows(providerId: string, windows: unknown, problems: string
     const normalized: Record<string, unknown> = {};
     assignDefined(normalized, 'id', trimmedString(window.id));
     assignDefined(normalized, 'name', trimmedString(window.name));
+    // Equivalent mutant (U-006 triage): 'true' assigns `days: undefined`,
+    // which the parser reports as missing — exactly the problem the absent
+    // key produces. The co-excluded 'false' variant (days dropped) is killable
+    // and stays pinned by the days tests.
+    // Stryker disable next-line ConditionalExpression
     if (window.days !== undefined) {
       // A blank day string stays: the parser's closed-enum message addresses
       // it by index, which omitting would silently re-index.
@@ -401,6 +451,9 @@ function normalizeWindows(providerId: string, windows: unknown, problems: string
  * parser.
  */
 function normalizeAccounts(section: unknown): unknown {
+  // Equivalent mutant (U-006 triage): 'false' skips the early return, but the
+  // Array.isArray guard below returns the same `section` (undefined) anyway.
+  // Stryker disable next-line ConditionalExpression
   if (section === undefined) return undefined;
   if (!Array.isArray(section)) return section;
   return section.map((account) => {
@@ -409,6 +462,11 @@ function normalizeAccounts(section: unknown): unknown {
     assignDefined(normalized, 'id', trimmedString(account.id));
     assignDefined(normalized, 'providerId', trimmedString(account.providerId));
     assignDefined(normalized, 'label', trimmedString(account.label));
+    // Equivalent mutant (U-006 triage): 'true' copies `enabled: undefined`,
+    // which the parser treats as absent and completes with the default. The
+    // co-excluded 'false' variant (enabled answers dropped) is killable and
+    // stays pinned by the enabled tests.
+    // Stryker disable next-line ConditionalExpression
     if (account.enabled !== undefined) normalized.enabled = account.enabled;
     if (typeof account.apiKey === 'string' && account.apiKey.trim() !== '') {
       normalized.apiKey = account.apiKey;
@@ -485,8 +543,18 @@ function mergeOverBase(
   base: CanonicalConfig,
   passwordReplacesHash: boolean,
 ): Record<string, unknown> {
+  // Equivalent mutant (U-006 triage): the spread is fully shadowed — the six
+  // known sections are all reassigned below, and a validated base carries no
+  // other top-level keys (the schema closes the object).
+  // Stryker disable next-line ObjectLiteral
   const merged: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(normalized)) {
+    // Equivalent mutants (U-006 triage): the six known sections are all
+    // reassigned below, and unknown entries never carry undefined values, so
+    // both operand tweaks are unobservable. The co-excluded 'false' variant and
+    // the negated operand (unknown submission keys dropped or mis-forwarded)
+    // are killable and stay pinned by the unknown-key tests.
+    // Stryker disable next-line ConditionalExpression, LogicalOperator
     if (!KNOWN_SECTIONS.has(key) && value !== undefined) defineOwn(merged, key, value);
   }
   merged.server = mergeObjectSection(base.server, normalized.server);
@@ -518,6 +586,12 @@ function mergeAuthSection(
   if (normalizedSection === undefined && !passwordReplacesHash) return base.auth;
   if (!isPlainObject(normalizedSection)) return normalizedSection;
   const merged: Record<string, unknown> = { ...base.auth, ...normalizedSection };
+  // Equivalent mutant (U-006 triage): the 'false' variant keeps the base
+  // hash under a pending password, which the placeholder then overwrites and
+  // the strip removes — unobservable. The co-excluded 'true' variant (base
+  // hash dropped without a pending password) is killable and stays pinned by
+  // the field-wise auth merge test.
+  // Stryker disable next-line ConditionalExpression
   if (passwordReplacesHash) delete merged.passwordHash;
   return merged;
 }

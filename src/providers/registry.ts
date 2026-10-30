@@ -67,7 +67,11 @@ export function createAccountContext(
   Object.defineProperty(context, 'secret', {
     value: secret,
     enumerable: false,
+    // Equivalent mutants (U-006 triage): Object.freeze below re-asserts both
+    // flags before the context escapes, so each is unobservable alone.
+    // Stryker disable next-line BooleanLiteral
     writable: false,
+    // Stryker disable next-line BooleanLiteral
     configurable: false,
   });
   return Object.freeze(context);

@@ -85,13 +85,17 @@ its diff — the most convenient view while triaging.
 - **Verdict** — `within the configured thresholds` or `below the
 configured break threshold`. Thresholds live in
   `stryker.config.mjs` (`high: 80`, `low: 60`, `break: 60` today).
-- **Mutation score** — `detected / total`, where detected = `killed` +
-  `timed out`. The break threshold is what fails the daily job.
+- **Mutation score** — `detected / scoreable`, where detected = `killed` +
+  `timed out` and scoreable = killed + timed out + survived + noCoverage —
+  Stryker's own formula (decision D-055). Deliberately ignored mutants
+  (in-code `// Stryker disable` exclusions) and error-status mutants leave
+  the denominator but stay visible as counts. The break threshold is what
+  fails the daily job.
 - **Per-file table** — where the survivors concentrate; start triage with
   the file that has the lowest score, not the first line.
 - **Runtime/compile errors** — mutants that broke the test run itself; they
-  count in the score denominator but as neither detected nor survived, and
-  the summary lists their files when any exist.
+  are excluded from the score (D-055) and surface as neither detected nor
+  survived, and the summary lists their files when any exist.
 - **Survived mutants** — `file:line — MutatorName`. Each is a concrete
   behavioral change the current tests failed to detect.
 
@@ -105,7 +109,11 @@ configured break threshold`. Thresholds live in
      behavior is intentionally unspecified, exclude it next to the line
      with Stryker's ignore comments (`// Stryker disable next-line …`,
      see the [Stryker exclusion docs](https://stryker-mutator.io/docs/configuration/mutator-exclusions/))
-     so the exclusion is visible in the code and reviewed with it.
+     so the exclusion is visible in the code and reviewed with it. Keep the
+     reason short and English; Stryker's ignore granularity is one line per
+     mutator, so an exclusion may also cover line-mates — say so in the
+     reason when it does. Ignored mutants leave the score denominator
+     (D-055) but stay visible as a count in the report.
 2. **`noCoverage` mutants** — no test executes the line at all; add the
    missing test before anything finer-grained.
 3. **Job red (below break threshold)** — treat as a regression of the

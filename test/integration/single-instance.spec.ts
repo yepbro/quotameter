@@ -674,3 +674,137 @@ describe('real processes (child, via singleInstanceRunner)', () => {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+describe('createSingleInstanceLock (U-006 mutation triage)', () => {
+  it('carries the documented component name', async () => {
+    const dir = await createTempDir('quotameter-lock-name-');
+    try {
+      const lock = createSingleInstanceLock({ dataDir: dir.path });
+      expect(lock.name).toBe('single-instance-lock');
+      await lock.start();
+      await lock.stop();
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('creates the lock file with owner-only permissions (0600)', async () => {
+    const dir = await createTempDir('quotameter-lock-mode-');
+    try {
+      const lock = createSingleInstanceLock({ dataDir: dir.path });
+      await lock.start();
+      const stat = await fs.stat(lockFilePath(dir.path));
+      expect(stat.mode & 0o777).toBe(0o600);
+      await lock.stop();
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('states the full attempt-limit remedy in the refusal message', async () => {
+    const dir = await createTempDir('quotameter-lock-limit-tail-');
+    try {
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        isAlive: () => false,
+        maxAttempts: 1,
+      });
+      await expect(lock.start()).rejects.toThrow(
+        new RegExp(
+          `refusing to start: the attempt limit \\(1\\) for acquiring the single-instance lock ` +
+            `of data directory ${escapeRegExp(dir.path)} was reached; concurrent contention ` +
+            `persists; retry once the other starter has settled$`,
+        ),
+      );
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('reports the errno of a failed publish and keeps the cause', async () => {
+    const dir = await createTempDir('quotameter-lock-publish-errno-');
+    try {
+      // A directory at the lock path: the publish cannot take the path, and
+      // inspecting the "holder" then fails reading a directory — a
+      // filesystem failure, not contention, so it must surface with the
+      // errno and the original error as `cause` (the exact errno differs by
+      // filesystem: EPERM from link(2) on ext4, EISDIR from the read on
+      // overlayfs).
+      await fs.mkdir(lockFilePath(dir.path));
+      const lock = createSingleInstanceLock({ dataDir: dir.path });
+      const error = await lock.start().catch((thrown: unknown) => thrown);
+      expect((error as Error).message).toMatch(
+        new RegExp(
+          `cannot acquire the single-instance lock for data directory ` +
+            `${escapeRegExp(dir.path)}: \\((EPERM|EISDIR)\\)`,
+        ),
+      );
+      expect((error as Error).cause).toBeInstanceOf(Error);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('keeps the errno and cause of a data-directory creation failure', async () => {
+    const root = await createTempDir('quotameter-lock-mkdir-cause-');
+    try {
+      const blocker = join(root.path, 'blocker');
+      writeFileSync(blocker, 'not a directory\n');
+      const lock = createSingleInstanceLock({ dataDir: join(blocker, 'nested') });
+      const error = await lock.start().catch((thrown: unknown) => thrown);
+      expect((error as Error).message).toMatch(/\(EEXIST\)|\(ENOTDIR\)/);
+      expect((error as Error).cause).toBeInstanceOf(Error);
+    } finally {
+      await root.remove();
+    }
+  });
+
+  it('reports the write errno, not the cleanup errno, on a read-only directory', async () => {
+    const dir = await createTempDir('quotameter-lock-readonly-');
+    try {
+      await fs.chmod(dir.path, 0o500);
+      const lock = createSingleInstanceLock({ dataDir: dir.path });
+      // The scratch write fails with EACCES; the force-rm of the never-created
+      // scratch file must not replace that errno with ENOENT.
+      await expect(lock.start()).rejects.toThrow(/\(EACCES\)/);
+    } finally {
+      await fs.chmod(dir.path, 0o700);
+      await dir.remove();
+    }
+  });
+
+  it('closes the inspection handle before refusing a live holder', async () => {
+    const dir = await createTempDir('quotameter-lock-fd-');
+    try {
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+      const lock = createSingleInstanceLock({ dataDir: dir.path, isAlive: () => true });
+      await expect(lock.start()).rejects.toThrow(/is using data directory/);
+      // No file descriptor may remain open on the inspected lock file.
+      const openOnLock = [] as string[];
+      for (const entry of await fs.readdir('/proc/self/fd')) {
+        const target = await fs.readlink(`/proc/self/fd/${entry}`).catch(() => '');
+        if (target === lockFilePath(dir.path)) openOnLock.push(entry);
+      }
+      expect(openOnLock).toEqual([]);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('puts a foreign null-payload lock back in place when releasing', async () => {
+    const dir = await createTempDir('quotameter-lock-foreign-null-');
+    try {
+      const lock = createSingleInstanceLock({ dataDir: dir.path });
+      await lock.start();
+      // A recovery race left a payload whose token cannot even be extracted —
+      // release must treat it as not-ours and restore it, never drop it.
+      rmSync(lockFilePath(dir.path));
+      writeFileSync(lockFilePath(dir.path), 'null');
+      await expect(lock.stop()).resolves.toBeUndefined();
+      expect(await fs.readFile(lockFilePath(dir.path), 'utf8')).toBe('null');
+    } finally {
+      await dir.remove();
+    }
+  });
+});

@@ -151,6 +151,70 @@ describe('ProviderRegistry.register', () => {
   });
 });
 
+describe('createAccountContext (exact refusal messages)', () => {
+  it('rejects non-string arguments with the exact field message', () => {
+    // A non-string that is not blank: only the typeof operand rejects it, so
+    // the message must come from the intended check, not a crash on `.trim`.
+    expect(() => createAccountContext(123 as unknown as string, 'Work plan', 'sk-live')).toThrow(
+      'AccountContext: accountId must be a non-empty string',
+    );
+    expect(() => createAccountContext('acc-1', 42 as unknown as string, 'sk-live')).toThrow(
+      'AccountContext: label must be a non-empty string',
+    );
+    expect(() => createAccountContext('acc-1', 'Work plan', 42 as unknown as string)).toThrow(
+      'AccountContext: secret must be a non-empty string',
+    );
+  });
+
+  it('rejects whitespace-blank arguments with the exact field message', () => {
+    expect(() => createAccountContext('   ', 'Work plan', 'sk-live')).toThrow(
+      'AccountContext: accountId must be a non-empty string',
+    );
+    expect(() => createAccountContext('acc-1', '   ', 'sk-live')).toThrow(
+      'AccountContext: label must be a non-empty string',
+    );
+    expect(() => createAccountContext('acc-1', 'Work plan', '   ')).toThrow(
+      'AccountContext: secret must be a non-empty string',
+    );
+  });
+});
+
+describe('ProviderRegistry.register (exact refusal messages)', () => {
+  it('rejects null and non-object registrations with the exact message', () => {
+    const registry = new ProviderRegistry();
+    expect(() => registry.register(null as unknown as QuotaProvider)).toThrow(
+      'ProviderRegistry: provider must be an object',
+    );
+    expect(() => registry.register(42 as unknown as QuotaProvider)).toThrow(
+      'ProviderRegistry: provider must be an object',
+    );
+  });
+
+  it('rejects a non-string id with the exact message, not a crash', () => {
+    const registry = new ProviderRegistry();
+    expect(() => registry.register(mockProvider({ id: 42 as unknown as string }))).toThrow(
+      'ProviderRegistry: provider id must be a non-empty string',
+    );
+  });
+
+  it('rejects a blank or padded id with the blank-id message', () => {
+    const registry = new ProviderRegistry();
+    expect(() => registry.register(mockProvider({ id: '  ' }))).toThrow(
+      'ProviderRegistry: provider id must be a non-empty string',
+    );
+  });
+
+  it('rejects a non-string or blank name with the exact message', () => {
+    const registry = new ProviderRegistry();
+    expect(() => registry.register(mockProvider({ name: 42 as unknown as string }))).toThrow(
+      'ProviderRegistry: provider name must be a non-empty string',
+    );
+    expect(() => registry.register(mockProvider({ name: '  ' }))).toThrow(
+      'ProviderRegistry: provider name must be a non-empty string',
+    );
+  });
+});
+
 describe('ProviderRegistry.get and has', () => {
   it('throws a diagnostic error for an unknown id', () => {
     const registry = new ProviderRegistry();

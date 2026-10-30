@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Mutation-report score now follows Stryker's own formula (decision D-055): `detected / scoreable` per file and overall, with ignored and error-status mutants excluded from the denominator but still visible as counts — the issue's score can no longer disagree with the verdict line once deliberate in-code Stryker ignore comments exist (U-006).
+
 ### Fixed
 
 - The rolling mutation-report issue no longer shows a self-contradictory 0% report: the renderer (extracted to `scripts/render-mutation-report.mjs`, now callable by the workflow and by hand against any artifact JSON) normalizes Stryker's PascalCase mutant statuses, so the score, per-file table, and survived triage list match the report JSON, with runtime/compile-error mutants surfaced as counts and files (U-005, decision D-054).
