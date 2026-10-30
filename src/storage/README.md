@@ -360,3 +360,73 @@ Pinned interpretations (D-039):
 - **No range CHECKs on `window_seconds`/`resets_at`** — the §8.4 boundary
   validates only finiteness for them; invented bounds would reject states
   the domain can produce.
+
+## The `quota_events` table — migration `0005-quota-events` (task 085, spec §11.2, §12.1, decision D-046)
+
+The fifth entry of the canonical `MIGRATIONS` list (schema version 5). One
+row per recorded quota event — `RESET` in version 1 (§11.2) — written in
+the same transaction as the snapshot that produced it (§11.1). Reset
+**detection** is tasks 117/118's and the typed access is task 088's; this
+is the storage shape. Exercised directly in
+`test/integration/quota-events.spec.ts`.
+
+| Column       | Type      | Rules                                                                                         |
+| ------------ | --------- | --------------------------------------------------------------------------------------------- |
+| `account_id` | `TEXT`    | `NOT NULL`, `quota_events_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE`   |
+| `metric_key` | `TEXT`    | `NOT NULL`, `quota_events_metric_key_nonempty` — same semantics as `metric_values.metric_key` |
+| `event_type` | `TEXT`    | `NOT NULL`, `quota_events_type`: `'RESET'` only (the §11.2 version-1 set)                     |
+| `event_at`   | `INTEGER` | `NOT NULL`, §11.1 epoch ms, writer-supplied (no SQL default)                                  |
+| `run_id`     | `INTEGER` | nullable — the optional §11.2 snapshot id, the D-036 identity; composite-FK carrier below     |
+| `details`    | `TEXT`    | `NOT NULL`, JSON object carrying §12.1's evidence; the shape CHECKs below                     |
+
+Structural constraints beyond the columns:
+
+- `quota_events_details_json` / `_object` / `_reason` / `_points` — the
+  SQL-enforced audit minimum for `details`: valid JSON, a top-level object,
+  a non-empty-text `$.reason`, and object `$.previous`/`$.current` (the
+  §12.1 compared points). `json_valid` is declared first so malformed JSON
+  fails by constraint name before the shape checks' `json_type` throws; the
+  path checks coalesce a missing key's NULL to a mismatch because a NULL
+  CHECK result passes in SQLite (verified on the pinned runtime).
+- Composite FK `(account_id, run_id)` →
+  `snapshots (account_id, run_id)` `ON DELETE CASCADE` — a parent key this
+  migration exposes by adding the unique index `snapshots_account_run`.
+  One constraint proves the snapshot exists and the event's account matches
+  it; the parent-side NO ACTION default freezes a referenced snapshot's
+  identity against post-hoc UPDATEs (the D-036/D-039 technique). The direct
+  `account_id → accounts` FK stays alongside it (the both-foreign-keys
+  shape).
+
+Index (§11.2 "events by account/metric/time"):
+`quota_events_account_metric_time (account_id, metric_key, event_at)` —
+the spec's wording, named the D-034 way; its leading `account_id` serves
+both cascade scans, so no extra foreign-key index.
+
+Pinned interpretations (D-046):
+
+- **`event_at` is deliberately not the snapshot's time** — §12.1's rule
+  makes it the previous point's `resetsAt` when that timestamp lies between
+  the two snapshots, else the new snapshot's time. It is writer-supplied
+  and unpinned (the two legitimately differ; cross-table CHECKs are
+  impossible anyway).
+- **The metric reference is the key string only** — §11.2 lists no window
+  or enum columns for events (D-032 exact-set rule); window evidence
+  belongs in `details`.
+- **`details`'s deeper vocabulary is a writer contract** — camelCase point
+  fields (`runId`, `collectedAt`, `used`, `resetsAt`, …), `tolerance`,
+  `eventTimeSource` are produced by detection (117/118) and encoded by the
+  repository (088); CHECKs cannot validate per-key membership of arbitrary
+  objects (the D-039 JSON-rejection rationale), so SQL pins the audit
+  minimum only.
+- **The reason is a free non-empty string, not a CHECK enum** — the reason
+  vocabulary is detection policy (§12.1's conservative approach), not a
+  stated record property (the D-034 rule of encoding exactly what the spec
+  states).
+- **No primary key, no UNIQUE constraint** — no query references an event
+  id, and §12.1 states no per-snapshot event uniqueness; duplicate
+  prevention is the writer's (one comparison per metric per snapshot).
+- **Deletion behavior** — deleting an account removes its events on both FK
+  paths (§8.2 purge); deleting a run removes its snapshot and with it the
+  events referencing it; archiving an account is an UPDATE and retains the
+  events (§8.2). A NULL `run_id` satisfies the composite FK while the
+  direct FK still proves the account exists.

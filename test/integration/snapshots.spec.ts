@@ -45,10 +45,13 @@ const EXPECTED_COLUMNS = [
  * and the autoindex of the `run_id UNIQUE` constraint — the structural
  * at-most-one-snapshot-per-run enforcement (origin 'u' = UNIQUE constraint).
  * `snapshots_account_run_time` is the parent key task 084's `metric_values`
- * migration adds for its denormalization-pinning composite FK (D-036's
- * precedent for a later migration's parent key).
+ * migration adds for its denormalization-pinning composite FK, and
+ * `snapshots_account_run` the one task 085's `quota_events` migration adds
+ * for its account-pinning composite FK (D-036's precedent for a later
+ * migration's parent key).
  */
 const EXPECTED_INDEXES = [
+  { name: 'snapshots_account_run', unique: 1, origin: 'c' },
   { name: 'snapshots_account_run_time', unique: 1, origin: 'c' },
   { name: 'snapshots_account_time', unique: 0, origin: 'c' },
   { name: 'sqlite_autoindex_snapshots_1', unique: 1, origin: 'u' },
@@ -192,7 +195,9 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
       // snapshots table 0003 creates.
       const schemaTwoSet = MIGRATIONS.filter(
         (migration) =>
-          migration.name !== '0003-snapshots' && migration.name !== '0004-metric-values',
+          migration.name !== '0003-snapshots' &&
+          migration.name !== '0004-metric-values' &&
+          migration.name !== '0005-quota-events',
       );
       const db = new DatabaseSync(dbPath);
       await createMigrationRunner({
@@ -201,29 +206,29 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
         migrations: schemaTwoSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 4,
+        supportedVersion: 5,
         appliedVersion: 2,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The canonical set, grown by tasks 083–084, completes it: both newer
-      // migrations apply in order.
+      // The canonical set, grown by tasks 083–085, completes it: the three
+      // newer migrations apply in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0003-snapshots', '0004-metric-values']);
+      expect(applied).toEqual(['0003-snapshots', '0004-metric-values', '0005-quota-events']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 4,
-        appliedVersion: 4,
+        supportedVersion: 5,
+        appliedVersion: 5,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: all four entries
+      // Journal proven through an independent connection: all five entries
       // with their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
@@ -234,6 +239,7 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
         { name: '0002-collection-runs', applied_at: T0 },
         { name: '0003-snapshots', applied_at: T0 + 1 },
         { name: '0004-metric-values', applied_at: T0 + 1 },
+        { name: '0005-quota-events', applied_at: T0 + 1 },
       ]);
       reader.close();
 
@@ -369,10 +375,13 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
       insertSnapshot(db, successfulSnapshot({ planName: 'first' }));
 
       // The structural one-snapshot-per-run guarantee: a second row for the
-      // same run — whatever its other fields — cannot exist.
+      // same run — whatever its other fields — cannot exist. Since task
+      // 085's `snapshots_account_run` parent key (D-046) is checked before
+      // the `run_id` autoindex, the reported constraint is the two-column
+      // one; either form proves the duplicate is unrepresentable.
       expect(() =>
         insertSnapshot(db, successfulSnapshot({ collectedAt: T0 + 600_000, planName: 'second' })),
-      ).toThrow(/UNIQUE constraint failed: snapshots.run_id/);
+      ).toThrow(/UNIQUE constraint failed: snapshots\.(account_id, snapshots\.run_id|run_id)/);
 
       // NULL run_id is rejected, not auto-assigned: on the pinned runtime a
       // NOT NULL *rowid alias* would silently invent a fresh id and attach

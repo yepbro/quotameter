@@ -186,30 +186,35 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         migrations: schemaOneSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 4,
+        supportedVersion: 5,
         appliedVersion: 1,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The canonical set, grown by tasks 082–084, completes it: the three
+      // The canonical set, grown by tasks 082–085, completes it: the four
       // newer migrations apply in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0002-collection-runs', '0003-snapshots', '0004-metric-values']);
+      expect(applied).toEqual([
+        '0002-collection-runs',
+        '0003-snapshots',
+        '0004-metric-values',
+        '0005-quota-events',
+      ]);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 4,
-        appliedVersion: 4,
+        supportedVersion: 5,
+        appliedVersion: 5,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: all entries with
-      // their own §11.1 epoch-ms timestamps.
+      // Journal proven through an independent connection: all five entries
+      // with their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
         .prepare(`SELECT name, applied_at FROM ${MIGRATIONS_TABLE} ORDER BY name ASC`)
@@ -219,6 +224,7 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         { name: '0002-collection-runs', applied_at: T0 + 1 },
         { name: '0003-snapshots', applied_at: T0 + 1 },
         { name: '0004-metric-values', applied_at: T0 + 1 },
+        { name: '0005-quota-events', applied_at: T0 + 1 },
       ]);
       reader.close();
 

@@ -126,22 +126,23 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
       const dbPath = dir.sqlitePath('accounts-migration.sqlite');
       const db = new DatabaseSync(dbPath);
 
-      // The canonical set, grown by task 084: accounts remains the first
-      // migration; the newest version is now 4.
+      // The canonical set, grown by task 085: accounts remains the first
+      // migration; the newest version is now 5.
       expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
         '0001-accounts',
         '0002-collection-runs',
         '0003-snapshots',
         '0004-metric-values',
+        '0005-quota-events',
       ]);
       expect(migrationVersion('0001-accounts')).toBe(1);
-      expect(supportedSchemaVersion(MIGRATIONS)).toBe(4);
+      expect(supportedSchemaVersion(MIGRATIONS)).toBe(5);
 
       // §11.4's forward test: a database at schema 0 (the pre-081 state —
       // an empty journal) is behind, and applying the set brings it
       // up-to-date at the newest version.
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 4,
+        supportedVersion: 5,
         appliedVersion: 0,
         relation: 'behind',
         newerThanSupported: [],
@@ -156,10 +157,11 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         '0002-collection-runs',
         '0003-snapshots',
         '0004-metric-values',
+        '0005-quota-events',
       ]);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 4,
-        appliedVersion: 4,
+        supportedVersion: 5,
+        appliedVersion: 5,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
@@ -175,6 +177,7 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         'accounts',
         'collection_runs',
         'metric_values',
+        'quota_events',
         MIGRATIONS_TABLE,
         'snapshots',
       ]);
@@ -186,6 +189,7 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         { name: '0002-collection-runs', applied_at: T0 },
         { name: '0003-snapshots', applied_at: T0 },
         { name: '0004-metric-values', applied_at: T0 },
+        { name: '0005-quota-events', applied_at: T0 },
       ]);
       reader.close();
 

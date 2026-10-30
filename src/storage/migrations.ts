@@ -55,6 +55,13 @@
  * index and the parent key its denormalization-pinning foreign key needs —
  * growing the supported schema version to 4. Tasks 085–087 append theirs
  * after it.
+ *
+ * Task 085 (decision D-046) appends the fifth schema migration — the §11.2
+ * `quota_events` row per §12.1 reset event with its spec-named
+ * account/metric/time index, the SQL-enforced JSON evidence contract for
+ * `details`, and the parent key its account-pinning snapshot foreign key
+ * needs — growing the supported schema version to 5. Tasks 086–087 append
+ * theirs after it.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -715,19 +722,140 @@ const METRIC_VALUES_MIGRATION: Migration = {
 };
 
 /**
+ * The `quota_events` table, its spec-named index, and the parent key its
+ * account-pinning snapshot foreign key needs (spec §11.2, §12.1; task 085,
+ * decision D-046). One row per recorded quota event — `RESET` in version 1
+ * (§11.2) — written in the same transaction as the snapshot that produced
+ * it (§11.1). Reset **detection** is tasks 117/118's; the repository is
+ * 088's; this is only the storage shape.
+ *
+ * - **Column set exactly §11.2's row** — the account reference, the metric
+ *   key (the same non-empty string semantics as `metric_values.metric_key`;
+ *   §11.2 lists no window or enum columns for events, and the D-032
+ *   exact-set rule keeps them out — window evidence belongs in `details`),
+ *   the event type, the event time, the optional snapshot reference, and
+ *   the JSON details. Names refined per §11.2's "may refine physical
+ *   details": `event_type` (the spec's "type", qualified the way
+ *   `accounts.status` and `collection_runs.outcome` carry their spec words
+ *   — a bare `type` column reads as `sqlite_master.type` in ad-hoc SQL),
+ *   `event_at` (the house `_at` suffix, §11.1 epoch milliseconds).
+ * - **Event time follows §12.1's rule and is deliberately its own value** —
+ *   either the previous point's `resetsAt` (it lay between the two
+ *   snapshots) or the new snapshot's collection time. It is writer-supplied
+ *   from the injected clock's data (D-021, no SQL default) and is not
+ *   pinned to the referenced snapshot's `collected_at`: the two legitimately
+ *   differ, and cross-table CHECKs are impossible anyway (the D-032/D-034
+ *   clock-skew leniency).
+ * - **The snapshot reference is the D-036 identity (`run_id`), nullable.**
+ *   §11.2 says "optional snapshot id"; in practice every v1 RESET event has
+ *   an evidence snapshot (§12.1 detects on a new one), but the column keeps
+ *   the spec's optionality — no presence CHECK (the D-034 rule of encoding
+ *   exactly what the spec states). It references the snapshot the new point
+ *   came from, not the historical previous point.
+ * - **`details` carries §12.1's detection evidence as a JSON object** — the
+ *   SQL-enforced audit minimum is the trio every reset event is meaningless
+ *   without: `$.reason` (non-empty text — which §12.1 condition fired and
+ *   any conservative-approach exception; a free string, not a CHECK enum,
+ *   because the reason vocabulary is detection policy, not a stated record
+ *   property) and the compared points `$.previous`/`$.current` (objects —
+ *   §12.1's "compare each new snapshot with the previous **valid** point").
+ *   `quota_events_details_json` is declared first so malformed JSON fails
+ *   there by name before the shape checks' `json_type` would throw; the
+ *   shape checks reject JSON the domain cannot produce (scalars, arrays, a
+ *   missing or blank reason, missing points). The path checks coalesce a
+ *   missing key's NULL `json_type` to a mismatch — in SQLite a NULL CHECK
+ *   result passes, so the plain `= 'text'` form would admit an absent
+ *   reason (verified on the pinned runtime). The deeper vocabulary —
+ *   camelCase point fields (`runId`, `collectedAt`, `used`, `resetsAt`, …),
+ *   `tolerance`, `eventTimeSource` — is the D-046 writer contract the
+ *   repository (088) encodes and the detector (117/118) produces; CHECKs
+ *   cannot validate per-key membership of arbitrary objects, the same
+ *   limitation that made D-039 reject JSON for `derived_fields`.
+ * - **Account/snapshot linkage = the D-036/D-039 both-foreign-keys shape.**
+ *   `(account_id, run_id)` references `snapshots (account_id, run_id)` — a
+ *   parent key this migration exposes through the `snapshots_account_run`
+ *   unique index — so an event can never claim an account its snapshot does
+ *   not belong to: one constraint proves the snapshot exists and the account
+ *   matches, and the parent-side default (ON UPDATE NO ACTION) freezes a
+ *   referenced snapshot's identity against post-hoc UPDATEs. The direct
+ *   `account_id → accounts` FK stays alongside it; §11.2 names the account
+ *   path of the consistent cascade policy explicitly. A NULL `run_id`
+ *   satisfies the composite FK (SQLite treats any NULL child key as
+ *   satisfied) while the direct FK still proves the account exists.
+ * - **Cascading linkage mirrors 082–084.** Deleting an account removes its
+ *   events (both FK paths — §8.2 purge); deleting a run removes its
+ *   snapshot and with it the events that referenced it; archiving an
+ *   account is an UPDATE and retains history (§8.2). The index's leading
+ *   `account_id` serves both cascade scans — the D-034
+ *   one-index-two-jobs pattern; no extra foreign-key index.
+ * - **No primary key, no UNIQUE constraint.** No query references an event
+ *   id (§13 returns event lists), so none is minted — the D-036/D-039
+ *   no-second-identity rule; and §12.1 states no per-snapshot uniqueness
+ *   for events, so none is invented. Duplicate prevention is the writer's
+ *   (one comparison per metric per snapshot, task 117).
+ * - **Index naming.** `quota_events_account_metric_time
+ *   (account_id, metric_key, event_at)` is §11.2's "events by
+ *   account/metric/time" wording, named the D-034 way.
+ */
+const QUOTA_EVENTS_MIGRATION: Migration = {
+  name: '0005-quota-events',
+  up: ({ database }) => {
+    database.exec(`
+      CREATE UNIQUE INDEX snapshots_account_run
+        ON snapshots (account_id, run_id);
+
+      CREATE TABLE quota_events (
+        account_id TEXT NOT NULL,
+        metric_key TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        event_at INTEGER NOT NULL,
+        run_id INTEGER,
+        details TEXT NOT NULL,
+        CONSTRAINT quota_events_account_charset CHECK (
+          account_id GLOB '[A-Za-z0-9]*'
+          AND account_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          AND length(account_id) BETWEEN 1 AND 64
+          AND instr(account_id, char(0)) = 0
+        ),
+        CONSTRAINT quota_events_metric_key_nonempty CHECK (metric_key <> ''),
+        CONSTRAINT quota_events_type CHECK (event_type IN ('RESET')),
+        CONSTRAINT quota_events_details_json CHECK (json_valid(details)),
+        CONSTRAINT quota_events_details_object CHECK (json_type(details) = 'object'),
+        CONSTRAINT quota_events_details_reason CHECK (
+          coalesce(json_type(details, '$.reason'), '') = 'text'
+          AND json_extract(details, '$.reason') <> ''
+        ),
+        CONSTRAINT quota_events_details_points CHECK (
+          coalesce(json_type(details, '$.previous'), '') = 'object'
+          AND coalesce(json_type(details, '$.current'), '') = 'object'
+        ),
+        FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE,
+        FOREIGN KEY (account_id, run_id)
+          REFERENCES snapshots (account_id, run_id) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX quota_events_account_metric_time
+        ON quota_events (account_id, metric_key, event_at);
+    `);
+  },
+};
+
+/**
  * The application's canonical migration set (§11.4, D-031): the one ordered
  * list the composition root hands to {@link createMigrationRunner}, grown by
  * one entry per schema change — `0001-accounts` since task 081 (D-032),
  * `0002-collection-runs` since task 082 (D-034), `0003-snapshots` since
- * task 083 (D-036), `0004-metric-values` since task 084 (D-039); tasks
- * 085–087 append theirs after it. The journal table itself comes from the
- * storage adapter, not from a migration.
+ * task 083 (D-036), `0004-metric-values` since task 084 (D-039),
+ * `0005-quota-events` since task 085 (D-046); tasks 086–087 append theirs
+ * after it. The journal table itself comes from the storage adapter, not
+ * from a migration.
  */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   ACCOUNTS_MIGRATION,
   COLLECTION_RUNS_MIGRATION,
   SNAPSHOTS_MIGRATION,
   METRIC_VALUES_MIGRATION,
+  QUOTA_EVENTS_MIGRATION,
 ];
 
 /**
