@@ -1,8 +1,9 @@
 # `src/storage/` — the only database access layer
 
 All `node:sqlite` access is isolated here (spec §3, §11): the connection and
-pragmas (079), forward-only migrations with backups (078, 080–092), and
-`QuotaRepository` — the typed facade the application consumes (088). Rows are
+pragmas (079), forward-only migrations with backups (078, 080–092),
+`QuotaRepository` — the typed facade the application consumes (088) — and
+the atomic collection-cycle write composed over it (089). Rows are
 mapped to typed domain records from `src/schemas/` before leaving this layer.
 
 **Rule:** may import only `src/schemas/` and `src/util/`. No SQL is issued
@@ -649,3 +650,47 @@ and the no-silent-widening rule). The per-table integration specs under
 remain sanctioned direct-SQL users. `test/integration/repository.spec.ts`
 pins the facade itself: round-trips per table, the structural rejections,
 transaction commit/rollback/nesting, and the bitmask round-trip.
+
+## `collection-cycles.ts` — the atomic cycle write (task 089, spec §11.1, decision D-060)
+
+`persistCollectionCycle(repository, cycle)` is §11.1's sentence as code: one
+call writes the run row every cycle leaves behind — successful or not — and,
+for a successful cycle, the snapshot, its metric rows, and its reset events
+inside the repository's `withTransaction` seam (D-058); a parse-failure cycle
+carries its §7.4 sanitized payload beside the run instead. Everything commits
+together or vanishes together: any failure — a named CHECK rejecting a row, a
+UNIQUE collision, or a driver-level throw — rolls the whole cycle back and
+propagates unchanged, so a run row never survives without its snapshot, a
+snapshot never without its metric rows, and an event never without the
+snapshot it evidences. `test/integration/collection-cycles.spec.ts` verifies
+that at **every insert position** with injected failures (§17.1): SQL-level
+rejections (FK at the run insert, `snapshots_plan_nonempty`,
+`metric_values_valid_has_value`, a mid-batch duplicate key,
+`quota_events_details_reason`, `raw_responses_body_size`) plus driver-level
+throws through a delegating proxy — each asserting zero residue across runs,
+snapshots, events, and raw payloads, and the connection staying usable.
+
+- **A sibling module, not a facade method** (D-060): D-058 designed the
+  repository surface so this orchestration composes it without extension;
+  composing the public methods is also what makes position-targeted failure
+  injection testable through a proxy — a facade method would call its sibling
+  closures directly.
+- **The writer supplies identity**: metric, event, and raw-payload inputs are
+  the facade row types minus `accountId`/`runId`/`collectedAt` (`Omit`, kept
+  in lockstep); the function injects the cycle's account, the assigned run
+  id, and the snapshot's collection time into each row — D-039
+  denormalization drift and a wrong-account event (D-046) are unrepresentable
+  in the input, not merely rejected. `eventAt` stays writer-supplied per
+  §12.1 (deliberately its own value, D-046).
+- **The input is a classified cycle** — a discriminated union on `outcome`
+  in D-048's vocabulary: the success branch carries the snapshot and cannot
+  express `errorMessage`/`retryAfterSeconds` (`collection_runs_success_clean`
+  by construction); only a parse-failure branch can carry a raw payload (the
+  sole outcome §7.4 sanctions — the D-051 linkage is structural too); the
+  other five failure outcomes carry only run evidence. Either snapshot array
+  may be empty — §11.1 stores a snapshot for every successful collection,
+  and the §8.4 boundary admits zero-metric snapshots.
+- **No pre-validation, no wrapping** — the named CHECK constraints remain the
+  write gate (D-058); the function validates nothing beforehand and swallows
+  nothing. Task 110's poller hands classified cycles to this seam; reset-event
+  detection (§12.1, tasks 117/118) and scheduling happen before the call.
