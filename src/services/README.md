@@ -48,3 +48,25 @@ persists (task 110); a caller abort interrupts the backoff and surfaces as
 `TransportAbortError` (105's `'cancelled'`). The randomness and sleep seams
 are injectable; the per-attempt §7.2 timeout stays with the transport
 (D-042) — a timed-out attempt is just another retryable failure.
+
+Landed: [`polling-retry-after.ts`](./polling-retry-after.ts) — the §7.2
+`Retry-After` half of the HTTP 429 row (task 107, decision D-062): after a
+rate-limited cycle — which 106's wrapper already leaves un-retried —
+`deferNextPoll(classified, nowEpochMs)` defers the account's next poll to
+the provider-indicated time, capped at one hour
+(`RETRY_AFTER_MAX_SECONDS`, the same bound `collection_runs`'
+`retry_after_seconds` CHECK enforces). The pure
+`parseRetryAfter(raw, nowEpochMs)` underneath parses RFC 9110's two forms —
+delta-seconds (`1*DIGIT`, ASCII-only) or HTTP-date (IMF-fixdate plus the two
+legacy obs-date formats, via Luxon `fromHTTP` in UTC, with §5.6.7's sliding
+50-year rule applied to RFC 850 two-digit years) — after stripping HTTP
+whitespace (SP/HTAB/CR/LF; wider Unicode whitespace is malformed).
+The three §7.2 failure modes are decisions, not crashes: malformed values
+produce no deferral (normal interval, `NULL` persisted), past HTTP-dates
+clamp to zero seconds, and excessive values — including magnitudes no double
+can represent — cap at 3600 s with `capped: true`; date quantization rounds
+up so the wait never ends before the indicated instant. The eligibility gate
+lives inside the entry point (105's `retryAfterEligible`, 429-only — a 503
+carrying the header was retried in-cycle instead). Time is an argument
+(D-021); the scheduler (109) gates on `notBeforeEpochMs` and the run writer
+(110) persists `seconds` (NULL when not deferred).
