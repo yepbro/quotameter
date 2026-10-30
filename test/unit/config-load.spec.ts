@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { Value } from '@sinclair/typebox/value';
+import { fc } from '../helpers/property';
 import {
   CONFIG_FILE_NAME,
   type ConfigReadFilesystem,
@@ -101,6 +102,9 @@ describe('parseJson', () => {
   });
 
   it('never echoes the V8 error snippet, so secrets stay out of problems (spec §15.4)', () => {
+    // A trailing comma after a quoted secret makes Node 22.13 (V8 12.4)
+    // report a position-only message (no snippet at all); pinned here as the
+    // shape that must stay problem-free even before any stripping.
     const secret = 'sk-synthetic-secret-value-12345';
     const result = parseJson(`{"apiKey": "${secret}",}`);
     expect(result.ok).toBe(false);
@@ -110,19 +114,95 @@ describe('parseJson', () => {
     }
   });
 
-  it('strips a quote-free V8 snippet down to the token and context (spec §15.4)', () => {
-    // V8 quotes the offending region in `…, "<snippet>" is not valid JSON`;
-    // when the snippet carries no inner quotes (a bare token inside an array
-    // or scalar), the strip pattern removes it whole — the echoed region must
-    // not survive into the problem.
+  // V8 12.4 (Node 22.13) quotes a raw input region in every `Unexpected
+  // token` message: the whole input when it fits, or a window around the
+  // error position with `...` on each truncated side — inner quotes are
+  // never escaped, so the region can quote a secret fragment straight from
+  // the file (U-003). The tests pin each snippet shape with a marker secret
+  // and the exact problem it must collapse to: the token prefix alone.
+
+  it('drops the whole-input snippet shape, raw inner quotes included (spec §15.4)', () => {
+    // V8: `Unexpected token 'M', "{"a": MARKERSECRET}" is not valid JSON`.
+    const result = parseJson('{"a": MARKERSECRET}');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.problems).toEqual(["invalid JSON: Unexpected token 'M'"]);
+      expect(result.problems.join('\n')).not.toContain('MARKERSECRET');
+    }
+  });
+
+  it('drops the right-truncated snippet window shape (spec §15.4)', () => {
+    // V8: `Unexpected token 's', "{"a": sk-MARKERS"... is not valid JSON`.
+    const result = parseJson('{"a": sk-MARKERSECRETXYZ}');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.problems).toEqual(["invalid JSON: Unexpected token 's'"]);
+      expect(result.problems.join('\n')).not.toContain('MARKERSECRET');
+    }
+  });
+
+  it('drops the both-sides-truncated snippet window shape (spec §15.4)', () => {
+    // V8: `Unexpected token 's', ...""apiKey": sk-MARKERS"... is not valid JSON`
+    // — the shape U-003 observed: an unquoted secret inside an object literal.
+    const result = parseJson('{"apiKey": sk-MARKERSECRETXYZ}');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.problems).toEqual(["invalid JSON: Unexpected token 's'"]);
+      expect(result.problems.join('\n')).not.toContain('MARKERSECRET');
+    }
+  });
+
+  it('drops the left-truncated snippet window shape (spec §15.4)', () => {
+    // V8: `Unexpected token 's', ...": 1, "a": sk-MARKER}" is not valid JSON`.
+    const result = parseJson('{"paddingpad": 1, "a": sk-MARKER}');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.problems).toEqual(["invalid JSON: Unexpected token 's'"]);
+      expect(result.problems.join('\n')).not.toContain('MARKER');
+    }
+  });
+
+  it('drops the quote-free whole-input snippet shape (spec §15.4)', () => {
+    // V8: `Unexpected token 's', "[1, 2, s3cret]" is not valid JSON` — the
+    // snippet carries no inner quotes, but it is still an input region.
     const result = parseJson('[1, 2, s3cret]');
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.problems).toHaveLength(1);
-      expect(result.problems[0]).toMatch(/^invalid JSON: Unexpected token/);
-      expect(result.problems[0]).not.toContain('is not valid JSON');
+      expect(result.problems).toEqual(["invalid JSON: Unexpected token 's'"]);
       expect(result.problems.join('\n')).not.toContain('s3cret');
     }
+  });
+
+  it('keeps position-only messages verbatim, with no input echo (spec §15.4)', () => {
+    // The `Expected …`/`Unterminated …` families name the construct and the
+    // position but never quote the input; the strip must not touch them.
+    const result = parseJson('{"apiKey": "sk-MARKERSECRETXYZ" "x": 1}');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.problems).toEqual([
+        "invalid JSON: Expected ',' or '}' after property value in JSON at position 32 (line 1 column 33)",
+      ]);
+      expect(result.problems.join('\n')).not.toContain('MARKERSECRET');
+    }
+  });
+
+  it('never echoes any marker fragment, whatever the malformed shape (property, spec §15.4)', () => {
+    // A tripwire beyond the pinned shapes: a marker secret is spliced into
+    // arbitrary input, and no five-character run of it may appear in a
+    // problem — so a future message family that echoes input without a
+    // double-quoted snippet fails here too (decision D-033).
+    const marker = 'MARKERSECRET';
+    fc.assert(
+      fc.property(fc.string({ minLength: 0, maxLength: 60 }), fc.nat(60), (base, at) => {
+        const cut = Math.min(at, base.length);
+        const result = parseJson(`${base.slice(0, cut)}${marker}${base.slice(cut)}`);
+        if (result.ok) return;
+        const problems = result.problems.join('\n');
+        for (let start = 0; start + 5 <= marker.length; start++) {
+          expect(problems).not.toContain(marker.slice(start, start + 5));
+        }
+      }),
+    );
   });
 });
 

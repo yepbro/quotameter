@@ -188,12 +188,23 @@ function completeAccount(account: AccountConfig): AccountConfig {
 /* ── JSON parsing with secret-safe errors (spec §15.4) ─────────────────── */
 
 /**
- * V8 embeds a quoted snippet of the input in some `JSON.parse` error
- * messages (`Unexpected token 's', "{"a": sec}" is not valid JSON`); on a
- * broken line that snippet can quote a secret straight from the file. The
- * prefix (token and context) is kept, the snippet is dropped.
+ * V8's `Unexpected token` errors quote a raw region of the input: the whole
+ * input when it fits (`Unexpected token 's', "[1, 2, s]" is not valid
+ * JSON`) or a window around the error position with `...` on each truncated
+ * side (`Unexpected token 's', ...""apiKey": sk-secr"... is not valid
+ * JSON`) — inner quotes are never escaped, so the region can quote a secret
+ * fragment straight from the file (U-003). Every snippet region opens with
+ * a double quote, so everything from the first double quote on is dropped
+ * and the residual `, ` / `, ...` separator tail is trimmed; the token
+ * prefix that remains is V8's token-name vocabulary, not an input region.
+ * The position-only message families (`… in JSON at position N (line L
+ * column C)`) contain no double quotes and pass through unchanged.
  */
-const JSON_SNIPPET_TAIL = /^(.*), "(?:[^"\\]|\\.)*" is not valid JSON$/;
+function withoutInputSnippet(message: string): string {
+  const snippetStart = message.indexOf('"');
+  if (snippetStart === -1) return message;
+  return message.slice(0, snippetStart).replace(/,\s*(?:\.\.\.)?\s*$/, '');
+}
 
 /**
  * Parses configuration file text as JSON. Pure: `JSON.parse` on a string
@@ -207,8 +218,7 @@ export function parseJson(text: string): { ok: true; value: unknown } | ConfigRe
     value = JSON.parse(text);
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
-    const withoutSnippet = JSON_SNIPPET_TAIL.exec(raw);
-    return { ok: false, problems: [`invalid JSON: ${withoutSnippet ? withoutSnippet[1] : raw}`] };
+    return { ok: false, problems: [`invalid JSON: ${withoutInputSnippet(raw)}`] };
   }
   return { ok: true, value };
 }

@@ -42,4 +42,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Invalid-JSON configuration problems no longer echo raw input regions that may contain secrets: every V8 `JSON.parse` snippet shape is cut at the first double quote (U-003, decision D-033).
 - Intermittent child-process failures in the server lifecycle tests (U-001): the tests now wait for a `signals-ready` marker — emitted through the new `runServer` `onSignalsReady` seam — before sending SIGTERM/SIGINT, eliminating the kill-before-handler race (decision D-024).

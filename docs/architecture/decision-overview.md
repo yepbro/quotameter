@@ -183,7 +183,7 @@ under a umask like `0177`), and refuses on the uncorrectable — foreign ownersh
 symlinked final objects, a filesystem that ignores modes. Errors everywhere are
 field-addressed and **value-free**: paths, limits, and type names, never data — the
 loader even strips the input snippet V8 embeds in `JSON.parse` messages, because a
-broken line could quote a secret (D-018).
+broken line could quote a secret (D-018, D-033).
 
 **The environment joins through the same parser.** Exactly seven scalar settings are
 overridable, with variable names that mechanically mirror the field path

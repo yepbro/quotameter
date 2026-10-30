@@ -80,7 +80,7 @@ disk into a configuration object. The file name is pinned here:
 2. **Parse JSON** (`parseJson`, pure and exported). V8's parser errors can
    embed a quoted snippet of the input — a secret sitting on the broken line
    would land in the message — so the snippet is stripped and only
-   `invalid JSON: <context>` remains (spec §15.4).
+   `invalid JSON: <context>` remains (spec §15.4, decision D-033).
 3. **Validate structurally** (`parseConfig`, pure and exported) against the
    TypeBox contract compiled once with the 2020-12 variant of Ajv (spec §3
    "TypeBox + Ajv"; the contract's numeric `exclusiveMinimum` needs it).
