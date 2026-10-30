@@ -62,6 +62,21 @@ gh run download <run-id> -n mutation-report -D /tmp/mutation-report
 gh workflow run mutation.yml --ref master
 ```
 
+The issue body is rendered by
+[`scripts/render-mutation-report.mjs`](../scripts/render-mutation-report.mjs)
+— the workflow's render step just calls it — so any downloaded artifact can
+be re-rendered locally (also how renderer changes are verified against a
+real report before landing):
+
+```bash
+node scripts/render-mutation-report.mjs /tmp/mutation-report/mutation/mutation.json
+```
+
+The verdict line follows `STRYKER_OUTCOME` (`failure` means below the break
+threshold); prefix the command with `STRYKER_OUTCOME=failure` to preview a
+red run faithfully, since a hand run without the variable always reads as
+passing.
+
 The HTML report (`mutation.html` in the artifact) shows every mutant with
 its diff — the most convenient view while triaging.
 
@@ -74,6 +89,9 @@ configured break threshold`. Thresholds live in
   `timed out`. The break threshold is what fails the daily job.
 - **Per-file table** — where the survivors concentrate; start triage with
   the file that has the lowest score, not the first line.
+- **Runtime/compile errors** — mutants that broke the test run itself; they
+  count in the score denominator but as neither detected nor survived, and
+  the summary lists their files when any exist.
 - **Survived mutants** — `file:line — MutatorName`. Each is a concrete
   behavioral change the current tests failed to detect.
 

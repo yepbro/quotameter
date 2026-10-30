@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The rolling mutation-report issue no longer shows a self-contradictory 0% report: the renderer (extracted to `scripts/render-mutation-report.mjs`, now callable by the workflow and by hand against any artifact JSON) normalizes Stryker's PascalCase mutant statuses, so the score, per-file table, and survived triage list match the report JSON, with runtime/compile-error mutants surfaced as counts and files (U-005, decision D-054).
 - The daily mutation workflow now bootstraps its `mutation-report` label idempotently before first use: `gh issue create --label` requires the label to already exist and cannot create it, which failed the workflow's validation run at the issue-upsert step (U-004).
 - `npm audit` restored after the npm registry retired the quick-audit endpoint: the dev image and CI now pin npm 11 (bulk advisory endpoint) while Node stays at the 22.13.0 minimum.
 
