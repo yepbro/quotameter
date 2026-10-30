@@ -2,9 +2,10 @@
 
 All `node:sqlite` access is isolated here (spec §3, §11): the connection and
 pragmas (079), forward-only migrations with backups (078, 080–092),
-`QuotaRepository` — the typed facade the application consumes (088) — and
-the atomic collection-cycle write composed over it (089). Rows are
-mapped to typed domain records from `src/schemas/` before leaving this layer.
+`QuotaRepository` — the typed facade the application consumes (088) — the
+atomic collection-cycle write composed over it (089), and the §8.2 account
+archive/purge lifecycle operations (090). Rows are mapped to typed domain
+records from `src/schemas/` before leaving this layer.
 
 **Rule:** may import only `src/schemas/` and `src/util/`. No SQL is issued
 anywhere else; `QuotaRepository` satisfies the §8.1 "core services" list as
@@ -694,3 +695,49 @@ snapshots, events, and raw payloads, and the connection staying usable.
   write gate (D-058); the function validates nothing beforehand and swallows
   nothing. Task 110's poller hands classified cycles to this seam; reset-event
   detection (§12.1, tasks 117/118) and scheduling happen before the call.
+
+## `account-lifecycle.ts` — the §8.2 archive/purge operations (task 090, spec §8.2, §11.2, decision D-061)
+
+`retireAccount(repository, { accountId, archivedAt })` and
+`purgeAccount(repository, accountId)` are §8.2's lifecycle split as two
+composed operations: archiving is the **default retirement** — the account
+row is archived and stays queryable with every history row intact — and
+purging is the **separate explicit action** — the account row is deleted and
+the schema's cascading foreign keys take every history table with it
+(collection runs, snapshots, metric values, quota events, raw payloads),
+while `sessions` and `meta` survive as service state (D-056).
+`test/integration/account-lifecycle.spec.ts` pins the two paths as distinct
+suites (the done-condition's "distinct tests"), including the cascade across
+every table, cross-account isolation, the D-056 service-state survival, and
+a foreign-keys-off connection making the purge fail loudly instead of
+orphaning history.
+
+- **A sibling module, not facade methods** (D-061, the D-060 precedent):
+  D-058's growth rule designed the facade so this task composes
+  `archiveAccount`/`deleteAccount` and the read surface without extension;
+  the lifecycle-outcome vocabulary stays out of the per-table contract, and
+  no new SQL exists.
+- **Disambiguated retirement outcomes** — the facade primitive's boolean
+  cannot tell unknown from already-archived; `retireAccount` adds the
+  follow-up read and returns `unknown` / `archived` / `already-archived`
+  (the §13 API's 404-versus-idempotent-success distinction, task 159).
+  Re-retirement is a no-op keeping the original timestamp (D-058's
+  archive-once semantic).
+- **Purge works regardless of status** — §8.2 states no archive-first
+  requirement; an already-archived account purges identically (pinned by
+  test).
+- **The purge reports what it removed** — `PurgedHistoryCounts`, one count
+  per §11.2 account-history table, captured synchronously before the
+  single-statement delete (atomic alone, D-058); no transaction wrapping,
+  because nothing can interleave between the reads and the write on one
+  synchronous connection. The metric count rides the captured run ids —
+  `metric_values` has no account-level facade read, and every metric row
+  carries one.
+- **The purge self-verifies its post-condition** — after the delete, a
+  residue sweep through the facade reads throws loudly if any history row
+  survived (§11.2's cascading-deletion sentence enforced at runtime; the
+  defense targets foreign-keys-off connections, which raw `node:sqlite`
+  handles default to — D-056's note).
+- **Reactivation is out of scope** — §8.2 names no archived-to-active
+  transition and the facade has no primitive for it; the config-sync tasks
+  extend the surface when they need one.
