@@ -36,6 +36,10 @@
  * read-only applied-migrations query, and the schema-version status
  * (`up-to-date` / `behind` / `newer`) the startup wiring and task 092's
  * newer-schema refusal consume.
+ *
+ * Task 081 (decision D-032) appends the first schema migration — the §11.2
+ * `accounts` table — growing the canonical set and the supported schema
+ * version to 1. Tasks 082–087 append theirs after it.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -277,13 +281,84 @@ export function migrationVersion(name: string): number {
 }
 
 /**
+ * The `accounts` table (spec §11.2; task 081, decision D-032). One row per
+ * monitored account, synced from configuration — the stable id, provider,
+ * label, optional plan, and lifecycle every history table keys against:
+ *
+ * - **Id charsets in SQL.** `id` and `provider_id` carry the D-014 account-id
+ *   charset `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` as CHECK constraints encoded
+ *   with case-sensitive GLOB — first character alphanumeric, no character
+ *   outside `[A-Za-z0-9_-]`, length 1–64, no embedded NUL (SQLite's GLOB and
+ *   `length()` stop at NUL while the full bytes are stored, so the NUL guard
+ *   is what makes the encoding exact). This CHECK is the charset gate for
+ *   `provider_id`: configuration provider record keys are ID_PATTERN-bound
+ *   (D-014), but the field that lands here — `accounts[].providerId` — is
+ *   only `minLength: 1` in the configuration contract. A number bound for a
+ *   TEXT id is affinity-rendered with a decimal point (`'123.0'`) before the
+ *   CHECK runs, so numeric ids cannot slip through either.
+ * - **Archive, not delete (§8.2).** `status` is the closed
+ *   `active`/`archived` enum (§11.2 "constraints for enum values"), tied to
+ *   `archived_at` by a composite CHECK: an archived account always carries
+ *   its archive timestamp, an active one never does — the pair cannot drift.
+ * - **Plan non-blank when present.** §8.4's `planName` is absent-or-non-blank
+ *   at the domain boundary; `accounts_plan_nonempty` keeps the same three
+ *   states here (NULL or non-empty, never `''`).
+ * - **Named CHECK constraints.** SQLite reports a failed named constraint by
+ *   name (`CHECK constraint failed: accounts_status`), which keeps violations
+ *   self-explanatory in logs and precise in tests.
+ * - **No credential columns.** Secrets stay in the config file (§11.1,
+ *   §15.4); the structural guarantee is the exact pinned column set in
+ *   `test/integration/accounts.spec.ts`.
+ * - **No SQL-side defaults.** Timestamps are integer UTC epoch milliseconds
+ *   (§11.1) supplied by the writer from the injected clock (D-021) — the
+ *   journal's `applied_at` precedent — never computed by the database. The
+ *   explicit `NOT NULL` on `id` closes SQLite's rowid-table quirk that would
+ *   otherwise accept a NULL text primary key.
+ */
+const ACCOUNTS_MIGRATION: Migration = {
+  name: '0001-accounts',
+  up: ({ database }) => {
+    database.exec(`
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY NOT NULL,
+        provider_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        plan_name TEXT,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        archived_at INTEGER,
+        CONSTRAINT accounts_id_charset CHECK (
+          id GLOB '[A-Za-z0-9]*'
+          AND id NOT GLOB '*[^A-Za-z0-9_-]*'
+          AND length(id) BETWEEN 1 AND 64
+          AND instr(id, char(0)) = 0
+        ),
+        CONSTRAINT accounts_provider_charset CHECK (
+          provider_id GLOB '[A-Za-z0-9]*'
+          AND provider_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          AND length(provider_id) BETWEEN 1 AND 64
+          AND instr(provider_id, char(0)) = 0
+        ),
+        CONSTRAINT accounts_label_nonempty CHECK (label <> ''),
+        CONSTRAINT accounts_plan_nonempty CHECK (plan_name IS NULL OR plan_name <> ''),
+        CONSTRAINT accounts_status CHECK (status IN ('active', 'archived')),
+        CONSTRAINT accounts_archive_state CHECK (
+          (status = 'active' AND archived_at IS NULL)
+          OR (status = 'archived' AND archived_at IS NOT NULL)
+        )
+      ) STRICT;
+    `);
+  },
+};
+
+/**
  * The application's canonical migration set (§11.4, D-031): the one ordered
  * list the composition root hands to {@link createMigrationRunner}, grown by
- * one entry per schema change. Empty at task 080 — the journal table comes
- * from the storage adapter, not from a migration, so no schema-changing
- * migration exists yet; tasks 081–087 append the table migrations here.
+ * one entry per schema change — `0001-accounts` since task 081 (D-032);
+ * tasks 082–087 append theirs after it. The journal table itself comes from
+ * the storage adapter, not from a migration.
  */
-export const MIGRATIONS: ReadonlyArray<Migration> = [];
+export const MIGRATIONS: ReadonlyArray<Migration> = [ACCOUNTS_MIGRATION];
 
 /**
  * The schema version the given migration set supports — its newest

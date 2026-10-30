@@ -512,17 +512,20 @@ describe('migration metadata and version checks (task 080, D-031)', () => {
     });
   });
 
-  it('reports a brand-new database against the empty canonical set as up-to-date at version 0', async () => {
+  it('reports a brand-new database against an empty migration set as up-to-date at version 0', async () => {
     await withTempDir(async (dir) => {
       const dbPath = dir.sqlitePath('fresh-metadata.sqlite');
       const db = new DatabaseSync(dbPath);
 
-      // Task 080 ships no schema migration yet (D-031): the canonical set is
-      // empty, and a fresh database is exactly at the version it supports.
-      expect(MIGRATIONS).toEqual([]);
-      expect(supportedSchemaVersion(MIGRATIONS)).toBe(0);
+      // The empty set stays a legitimate input after task 081 grew the
+      // canonical list (D-031's planned growth): version 0 — "nothing
+      // applied yet" — is what an empty set supports, and a fresh database
+      // is exactly at it. The canonical set itself is pinned, non-empty,
+      // in test/integration/accounts.spec.ts.
+      const empty: ReadonlyArray<Migration> = [];
+      expect(supportedSchemaVersion(empty)).toBe(0);
       expect(appliedMigrations(db)).toEqual([]);
-      expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
+      expect(schemaVersionStatus(db, empty)).toEqual({
         supportedVersion: 0,
         appliedVersion: 0,
         relation: 'up-to-date',

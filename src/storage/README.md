@@ -127,3 +127,50 @@ the version semantics the startup wiring and task 092 consume:
 The schema tables themselves are tasks 081–087; backups (`VACUUM INTO`,
 retention) and the refuse-to-start behavior remain task 092, which builds
 them on `appliedMigrations()` and `schemaVersionStatus()`.
+
+## The `accounts` table — migration `0001-accounts` (task 081, spec §11.2, decision D-032)
+
+The first entry of the canonical `MIGRATIONS` list (schema version 1). One
+row per monitored account, synced from configuration — the stable id,
+provider, label, optional plan, and lifecycle every later history table keys
+against. The schema is exercised directly in
+`test/integration/accounts.spec.ts`; the typed data access is task 088's
+repository.
+
+| Column        | Type      | Rules                                                                  |
+| ------------- | --------- | ---------------------------------------------------------------------- |
+| `id`          | `TEXT`    | `PRIMARY KEY`, `NOT NULL`, `accounts_id_charset` (D-014 charset)       |
+| `provider_id` | `TEXT`    | `NOT NULL`, `accounts_provider_charset` (same charset)                 |
+| `label`       | `TEXT`    | `NOT NULL`, `accounts_label_nonempty` (mirrors the config minimum)     |
+| `plan_name`   | `TEXT`    | nullable; `accounts_plan_nonempty`: absent or non-blank (§8.4 shape)   |
+| `status`      | `TEXT`    | `NOT NULL`, `accounts_status`: `'active'` or `'archived'` only         |
+| `created_at`  | `INTEGER` | `NOT NULL`, §11.1 epoch ms, writer-supplied (no SQL default)           |
+| `archived_at` | `INTEGER` | nullable, §11.1 epoch ms; tied to `status` by `accounts_archive_state` |
+
+Pinned interpretations (D-032):
+
+- **No credential columns** — secrets stay in the config file (§11.1, §15.4).
+  The test pins the exact seven-column set and rejects column names carrying
+  credential fragments, so a future migration cannot add one silently.
+- **Archive, not delete (§8.2)** — `accounts_archive_state` makes
+  `status`/`archived_at` consistent by construction: archived always carries
+  a timestamp, active never does. Archiving is an `UPDATE`; the row (and its
+  history) stays queryable.
+- **Charsets in SQL** — `GLOB`-encoded `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`
+  (case-sensitive) plus a NUL guard: SQLite's `GLOB`/`length()` stop at an
+  embedded NUL while the stored bytes do not, so `instr(x, char(0)) = 0` is
+  what makes the encoding exact. The CHECK is also the charset **gate** for
+  `provider_id` — the config field that lands there (`accounts[].providerId`)
+  is only `minLength: 1`; D-014's ID_PATTERN binds provider record keys, a
+  different surface. A number bound for the TEXT id is affinity-rendered as
+  `'123.0'` before the CHECK runs, so numeric ids cannot slip through.
+- **No `enabled` column** — enable/disable is configuration state (§6.2), not
+  §11.2 storage state; a later migration can add it if the repository needs
+  it persisted.
+- **Named CHECK constraints** — SQLite reports failures by name
+  (`CHECK constraint failed: accounts_status`), keeping violations
+  self-explanatory.
+- **No SQL-side defaults and no indexes** — timestamps come from the injected
+  clock (D-021) at write time; §11.2 requires no accounts index (the table is
+  small and configuration-synced). `id` declares `NOT NULL` explicitly because
+  SQLite rowid tables would otherwise accept a NULL text primary key.
