@@ -70,3 +70,24 @@ lives inside the entry point (105's `retryAfterEligible`, 429-only — a 503
 carrying the header was retried in-cycle instead). Time is an argument
 (D-021); the scheduler (109) gates on `notBeforeEpochMs` and the run writer
 (110) persists `seconds` (NULL when not deferred).
+
+Landed: [`polling-suspension.ts`](./polling-suspension.ts) — the §7.2 HTTP
+401/403 row's pause half (task 108, decision D-064): a pure state machine
+that suspends an account's normal polling after an auth-rejected cycle
+(until the key changes or a manual test is requested) and paces the
+once-per-60-minutes verification probe (`AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS`).
+Transitions are `(state, event, nowEpochMs)` → `(next state, effect)`:
+`applyCycleOutcome` (an `auth_error` enters or re-arms suspension, a
+`success` releases, every other outcome is a pinned no-op — an inconclusive
+probe proves nothing about the key), `applyKeyIdentity` (the key-change
+release event: the caller reports an opaque key identity and the machine
+compares identities, never key material), and `applyManualTestRequest` (the
+manual-test release event). `admitVerification` is the gate the scheduler
+(109) requests automatic attempts through — granted only at/after the armed
+instant (the boundary admits), re-armed a full window at admission, monotone
+within an episode, and carried across releases as an admission floor, so
+two automatic attempts can never be closer than 60 minutes whatever the
+caller does (lost outcomes, duplicate rejections, clock regressions); the
+run writer (110) persists each probe cycle and the status derivation (111)
+consumes the `Auth rejected` contribution 105 already attaches. Time is an
+argument (D-021); the caller holds the (frozen) state object.
