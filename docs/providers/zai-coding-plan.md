@@ -6,14 +6,17 @@ verification round appends its own dated section and never rewrites older ones. 
 this file — 095 (sanitized live response), 096 (full request/response contract),
 112 (peak-schedule encoding), 127 (schedule-source verification).
 
-Current contents: the task 094 research snapshot (official documentation only) and the task 093
+Current contents: the task 094 research snapshot (official documentation only), the task 093
 verified-data-source section (the original prototype plus a sanitized live probe — the actual
-endpoints, authentication, and response shapes). The 094 snapshot records **only** what official
-Z.ai documentation says, with exact URLs and access dates; nothing there is inferred, and
-undocumented endpoints, fields, or samples are deliberately absent there (spec §8.3 forbids
-inventing them). The 093 section records what the prototype reads and what a live probe returned,
-with `<redacted>` markers in place of every account-linked value (spec §15/§17.1 forbid committing
-secrets or personal data).
+endpoints, authentication, and response shapes), and the task 095 contract-confirmation section
+(the sanitized samples approved for fixtures, the §8.3 availability statement, and the
+sanitization policy). The 094 snapshot records **only** what official Z.ai documentation says,
+with exact URLs and access dates; nothing there is inferred, and undocumented endpoints, fields,
+or samples are deliberately absent there (spec §8.3 forbids inventing them). The 093 section
+records what the prototype reads and what a live probe returned, with `<redacted>` markers in
+place of every account-linked value, and the 095 section turns that probe into committed
+fixtures under a re-invention policy (spec §15/§17.1 forbid committing secrets or personal
+data).
 
 ## Research snapshot — 2026-10-30 (task 094: official documentation)
 
@@ -731,3 +734,110 @@ for the request/response material. Task 093's own done-condition — a traceable
 not rely on an assumed model-completion endpoint — is met: every URL above is a dedicated
 monitor/biz path, and none of the three is `/api/coding/paas/v4`, `/api/anthropic`, or any
 chat-completions URL.
+
+## Contract confirmation — sanitized samples approved for fixtures (2026-10-30, task 095)
+
+### Method
+
+This task made **no live API call and read no secret** — the live verification already happened
+in the main session's 2026-10-30 probe (see
+[the 093 section](#verified-data-source-prototype--live-probe-2026-10-30--task-093)). Its input
+was the sanitized evidence bundle produced by that probe: one response per endpoint of
+[the verified trio](#verified-endpoints), with `<ID@…>`/`<TOKEN@…>`/`<NUM-ID@…>` markers at
+account-linked positions, held outside the repository permanently. The task reconciled the
+bundle against the 093 shapes and open questions, approved one safe sample per endpoint for
+fixtures, produced them, and records the §8.3 availability statement below. The policy is
+decision D-040; the fixtures' consumer-facing notes live in
+[`test/fixtures/README.md`](../../test/fixtures/README.md).
+
+### §8.3 availability statement
+
+Spec §8.3: _"If no officially documented statistics endpoint exists, clearly document the
+integration's verified source and limitations before claiming the adapter complete."_
+
+- **An officially documented sample does not exist.** The
+  [094 verdict](#quotausage-endpoint-status) stands: no quota/usage/statistics endpoint, request
+  contract, or example response is documented anywhere in official Z.ai documentation
+  (fourteen sources checked 2026-10-30; the official OpenAPI specification enumerates fourteen
+  model/tool paths only).
+- **What is available instead: one sanitized live response per endpoint**, captured 2026-10-30
+  by the probe of the 093 endpoint trio with the Coding Plan Bearer key. These samples are
+  approved for fixtures below. They are **observations of an undocumented surface, not an
+  official contract** — the integration's verified source is exactly the 093 trio (live-probed;
+  two of three paths corroborated inside the first-party ZCode client).
+- **Limitations of the approved samples:**
+  1. **One snapshot in time** — a single capture per endpoint on 2026-10-30. No second
+     observation exists, so the open semantic questions below remain open.
+  2. **One Pro-tier personal account** (`targetType=PERSONAL`). Other plan tiers (Lite/Max/team
+     seats), team scope, and non-empty reset-card arrays are unobserved.
+  3. **No error samples** — no non-200 HTTP status, no failure envelope (`code`/`msg` on error),
+     and no auth-rejection behavior was captured. Every error/edge fixture is synthetic by
+     necessity.
+  4. **The bundle's own redaction was partial** — two `agreementNo` values, the account-specific
+     dates, and the paid prices remained clear in it. This is the reason the fixtures re-invent
+     values instead of copying the bundle (D-038's rule; reinforced as D-040's policy).
+
+### Approved samples
+
+One fixture per endpoint, each holding the full observed response envelope:
+
+| Endpoint                                                       | Fixture                                                        |
+| -------------------------------------------------------------- | -------------------------------------------------------------- |
+| `GET /api/monitor/usage/quota/limit`                           | `test/fixtures/sanitized/zai-quota-limit.json`                 |
+| `GET /api/biz/subscription/list`                               | `test/fixtures/sanitized/zai-subscription-list.json`           |
+| `GET /api/biz/customer-package-reset/list?targetType=PERSONAL` | `test/fixtures/sanitized/zai-customer-package-reset-list.json` |
+
+Complementing them, three **synthetic** fixtures under `test/fixtures/synthetic/` cover the
+error/edge states the single capture lacks, so the parsing tests (tasks 099/100) have failure
+shapes to consume: `zai-quota-limit-empty-limits.json` (envelope-valid, `limits: []`),
+`zai-quota-limit-unknown-type.json` (a limit entry with an unrecognized `type`), and
+`zai-envelope-malformed.json` (envelope missing `code`/`data`). The remaining synthetic matrix
+(weekly `unit 6` entry, non-empty reset cards, error envelopes, HTTP errors, a
+percentage-less `TOKENS_LIMIT` entry) stays with task 097, per 093's hand-off.
+
+### Sanitization policy (bundle → fixture)
+
+**Kept verbatim** — contract material that carries no account linkage: the response structure
+and field names, JSON types, the envelope (`code: 200`, `msg`, `success`), closed vocabularies
+(`TIME_LIMIT`/`TOKENS_LIMIT`, window-unit enums, `VALID`, `WAIT_PAY`/`SUCCESS`,
+`annually`/`monthly`, `STRIPE`/`GIVE`, `V1`/`V2`, `PERSONAL`), the MCP `modelCode` names
+(`search-prime`, `web-reader`, `zread` — the 094-dossier MCP servers), and the public plan-level
+names (`level: "pro"`, `GLM Coding Pro`/`GLM Coding Plan`).
+
+**Re-invented** — every account-linked or account-specific value: identifiers (`id`,
+`customerId`, `agreementNo`, `orderNo`), all dates and times, all prices, the quota-state
+numbers (`usage`, `currentValue`, `remaining`, `percentage`, `usageDetails[].usage`), the
+`nextResetTime` epochs, and — as a bright-line extension beyond strict account linkage, for a
+cheap-to-audit rule — the `productId` SKUs and the marketing copy (`productSmallTitle`,
+`description`). Structural relations are preserved deliberately
+(`currentValue + remaining = usage`; `usageDetails` sum to `currentValue`; the subscription
+records' chained periods and shared identifiers, including the annual record's observed offset
+where `valid.start == nextRenewTime` and `currentRenewTime` sits one period earlier), and the
+monthly quota's consumed fraction
+sits at one per-mille of its allowance — the capture's exact ratio — so the fixtures exercise
+the percentage-scale question without resolving it. Full consumer notes (including the
+marker-position typing caveat) are in `test/fixtures/README.md`.
+
+### Open-questions status (carried to 096)
+
+093 listed what a second capture should settle; no second capture exists, so **all of 093's open
+questions remain open** and are decision material for 096 (D-038's candidate mappings):
+
+- `usage` vs `currentValue` arithmetic — unsettled; the bundle is the same single snapshot 093
+  already analyzed.
+- A weekly (`unit 6`) limits entry — still unobserved (absent from the capture).
+- The reset-card object shape — still unobserved (both card arrays empty); the prototype source
+  remains the only evidence for `available`/`expireTime`.
+- Whether a `TOKENS_LIMIT` entry ever carries absolute values — still unobserved
+  (percentage-only in the capture).
+
+### Leak audit
+
+The committed diff was audited by exact-string search for every clear value the bundle contains:
+both `agreementNo` hex strings, every observed date and time-of-day, every observed price, the
+observed product SKUs, the marketing tagline and description strings, the observed quota-state
+numbers, the redaction markers' payload paths, key material patterns (a `Bearer` header with a
+value, the `Authorization` header name, api-key shapes), and e-mail-shaped strings. All are
+absent from the diff; the audit's scope and result are described in the task commit body. The
+only `…@…` occurrences in this section are the marker-format descriptions (`<ID@…>` and
+alike), which name the redaction convention and carry no marker payload.

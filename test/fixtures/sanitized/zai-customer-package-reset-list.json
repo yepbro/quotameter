@@ -1,0 +1,15 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "customerId": 41002938,
+    "targetType": "PERSONAL",
+    "organizationId": null,
+    "projectId": null,
+    "lastFiveHourResetTime": "2026-10-26 19:42:07",
+    "lastWeekResetTime": null,
+    "fiveHourResets": [],
+    "weekResets": []
+  },
+  "success": true
+}

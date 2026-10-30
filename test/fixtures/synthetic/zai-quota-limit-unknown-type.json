@@ -1,0 +1,17 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": [
+      {
+        "type": "CONCURRENCY_LIMIT",
+        "unit": 3,
+        "number": 1,
+        "percentage": 4,
+        "nextResetTime": 1793356800000
+      }
+    ],
+    "level": "pro"
+  },
+  "success": true
+}
