@@ -126,20 +126,21 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
       const dbPath = dir.sqlitePath('accounts-migration.sqlite');
       const db = new DatabaseSync(dbPath);
 
-      // The canonical set, grown by task 082: accounts remains the first
-      // migration; the newest version is now 2.
+      // The canonical set, grown by task 083: accounts remains the first
+      // migration; the newest version is now 3.
       expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
         '0001-accounts',
         '0002-collection-runs',
+        '0003-snapshots',
       ]);
       expect(migrationVersion('0001-accounts')).toBe(1);
-      expect(supportedSchemaVersion(MIGRATIONS)).toBe(2);
+      expect(supportedSchemaVersion(MIGRATIONS)).toBe(3);
 
       // §11.4's forward test: a database at schema 0 (the pre-081 state —
       // an empty journal) is behind, and applying the set brings it
       // up-to-date at the newest version.
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 2,
+        supportedVersion: 3,
         appliedVersion: 0,
         relation: 'behind',
         newerThanSupported: [],
@@ -149,10 +150,10 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         clock: createFixedClock(T0),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0001-accounts', '0002-collection-runs']);
+      expect(applied).toEqual(['0001-accounts', '0002-collection-runs', '0003-snapshots']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 2,
-        appliedVersion: 2,
+        supportedVersion: 3,
+        appliedVersion: 3,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
@@ -168,6 +169,7 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         'accounts',
         'collection_runs',
         MIGRATIONS_TABLE,
+        'snapshots',
       ]);
       const journal = reader
         .prepare(`SELECT name, applied_at FROM ${MIGRATIONS_TABLE} ORDER BY name ASC`)
@@ -175,6 +177,7 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
       expect(journal).toEqual([
         { name: '0001-accounts', applied_at: T0 },
         { name: '0002-collection-runs', applied_at: T0 },
+        { name: '0003-snapshots', applied_at: T0 },
       ]);
       reader.close();
 

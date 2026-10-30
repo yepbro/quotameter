@@ -43,10 +43,14 @@ const EXPECTED_COLUMNS = [
   { name: 'retry_after_seconds', type: 'INTEGER', notnull: 0, pk: 0 },
 ] as const;
 
-/** The §11.2 indexes this migration owes: runs by account/start and by
- * account/outcome/start — the query plans below must use them. In name
- * order, as `PRAGMA index_list` output is sorted for the pin. */
+/** The indexes `collection_runs` carries after the canonical set's first
+ * three migrations: the two §11.2 query indexes task 082 owes (runs by
+ * account/start and by account/outcome/start) plus the unique parent key
+ * `collection_runs_account_id_outcome` that task 083's snapshots composite
+ * FK added (decision D-036 — pinned in detail in snapshots.spec.ts). In
+ * name order, as `PRAGMA index_list` output is sorted for the pin. */
 const EXPECTED_INDEXES = [
+  { name: 'collection_runs_account_id_outcome', unique: 1, origin: 'c' },
   { name: 'collection_runs_account_outcome_start', unique: 0, origin: 'c' },
   { name: 'collection_runs_account_start', unique: 0, origin: 'c' },
 ] as const;
@@ -168,7 +172,7 @@ function queryPlan(database: DatabaseSync, sql: string, ...params: Array<string 
 }
 
 describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => {
-  it('migrates a schema-1 database forward to up-to-date version 2', async () => {
+  it('migrates a schema-1 database forward to up-to-date version 3', async () => {
     await withTempDir(async (dir) => {
       const dbPath = dir.sqlitePath('collection-runs-forward.sqlite');
 
@@ -182,28 +186,29 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         migrations: schemaOneSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 2,
+        supportedVersion: 3,
         appliedVersion: 1,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The one new migration completes it.
+      // The canonical set, grown by tasks 082–083, completes it: both
+      // newer migrations apply in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0002-collection-runs']);
+      expect(applied).toEqual(['0002-collection-runs', '0003-snapshots']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 2,
-        appliedVersion: 2,
+        supportedVersion: 3,
+        appliedVersion: 3,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: both entries with
+      // Journal proven through an independent connection: all entries with
       // their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
@@ -212,6 +217,7 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
       expect(journal).toEqual([
         { name: '0001-accounts', applied_at: T0 },
         { name: '0002-collection-runs', applied_at: T0 + 1 },
+        { name: '0003-snapshots', applied_at: T0 + 1 },
       ]);
       reader.close();
 
@@ -261,8 +267,8 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         .get() as { sql: string };
       expect(created.sql).toMatch(/\)\s*STRICT$/);
 
-      // §11.2's named indexes for this table, exactly: runs by account/start
-      // and account/outcome/start, plain (non-unique) CREATE INDEX entries.
+      // The table's indexes after the full canonical set: the two plain
+      // §11.2 query indexes plus the unique FK parent key (D-036).
       // `index_list` reports reverse-creation order, so sort for the pin.
       const indexes = reader.prepare('PRAGMA index_list(collection_runs)').all() as Array<{
         name: string;

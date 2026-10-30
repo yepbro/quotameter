@@ -228,3 +228,53 @@ Pinned interpretations (D-034):
   deletion means a deleted run's history dies with it, so rowid recycling
   cannot create a stale reference; the auto-assigned rowid is the one
   database-generated value and has no clock dependency.
+
+## The `snapshots` table — migration `0003-snapshots` (task 083, spec §11.2, decision D-036)
+
+The third entry of the canonical `MIGRATIONS` list (schema version 3). One
+header row per **successful** run (§11.1/§7.2) — the §8.4 snapshot header the
+`metric_values` table (task 084) hangs off. Exercised directly in
+`test/integration/snapshots.spec.ts`; the typed data access is task 088's
+repository.
+
+| Column         | Type      | Rules                                                                                               |
+| -------------- | --------- | --------------------------------------------------------------------------------------------------- |
+| `run_id`       | `INTEGER` | `NOT NULL UNIQUE` — one snapshot per run by identity; FK carrier below                              |
+| `account_id`   | `TEXT`    | `NOT NULL`, `snapshots_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE`            |
+| `collected_at` | `INTEGER` | `NOT NULL`, §11.1 epoch ms, wall-clock (§7.1), writer-supplied (no SQL default)                     |
+| `plan_name`    | `TEXT`    | nullable, `snapshots_plan_nonempty`: absent or non-blank (§8.4 shape)                               |
+| `run_outcome`  | `TEXT`    | `NOT NULL`, `snapshots_success_only`: `'success'` only — the composite FK's comparison term (D-036) |
+
+Foreign keys (both `ON DELETE CASCADE`): `account_id` → `accounts(id)`, and
+the composite `(account_id, run_id, run_outcome)` →
+`collection_runs (account_id, id, outcome)` — a parent key this migration
+exposes by adding the unique index `collection_runs_account_id_outcome`.
+
+Index (§11.2 "snapshots by account/time"): `snapshots_account_time
+(account_id, collected_at)` — the spec's wording, named the D-034 way; its
+leading column also serves the account-FK cascade scan. The `run_id UNIQUE`
+constraint adds the implicit `sqlite_autoindex_snapshots_1`.
+
+Pinned interpretations (D-036):
+
+- **`UNIQUE`, not `INTEGER PRIMARY KEY`** — verified on the pinned runtime:
+  a NULL inserted into a NOT NULL rowid alias is silently replaced by a
+  fresh auto-assigned id, attaching a snapshot to an arbitrary run; a plain
+  UNIQUE column rejects NULL. The UNIQUE constraint is the structural
+  "at most one snapshot per run", and no query needs a second identity —
+  the snapshot's identity is its run (task 084/085 reference it as such).
+- **Success linkage via one composite FK** — `(account_id, run_id,
+run_outcome)` matching the parent `(account_id, id, outcome)` proves three
+  §11.2 properties in one constraint: the run exists, it belongs to the same
+  account, and it succeeded. The parent-side default (`ON UPDATE NO ACTION`)
+  additionally freezes a referenced run's `outcome`/`account_id` against
+  post-hoc UPDATEs. Rejected: a trigger (no precedent, more on-disk objects),
+  a partial unique parent index (SQLite forbids as an FK parent key), and a
+  plain run FK + writer contract (§11.2's stated record property left
+  unenforced).
+- **`run_outcome` is the one column beyond §11.2's list** — a CHECK-bound
+  constant carried solely for that composite FK; the exact-column-set rule
+  (D-032/D-034) bends only here, recorded in D-036.
+- **No cross-table time CHECK** — `collected_at` is not ordered against the
+  run's timestamps: the clock-skew leniency D-032/D-034 recorded, and CHECK
+  constraints cannot span tables regardless.

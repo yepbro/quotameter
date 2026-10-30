@@ -44,6 +44,11 @@
  * Task 082 (decision D-034) appends the second schema migration — the §11.2
  * `collection_runs` table with its two spec-named indexes — growing the
  * supported schema version to 2. Tasks 083–087 append theirs after it.
+ *
+ * Task 083 (decision D-036) appends the third schema migration — the §11.2
+ * `snapshots` header row with its spec-named account/time index and the
+ * parent key its success-linkage foreign key needs — growing the supported
+ * schema version to 3. Tasks 084–087 append theirs after it.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -459,14 +464,104 @@ const COLLECTION_RUNS_MIGRATION: Migration = {
 };
 
 /**
+ * The `snapshots` table, its spec-named index, and the parent key its
+ * success-linkage foreign key needs (spec §11.2; task 083, decision D-036).
+ * One row per **successful** run (§11.1 "always store a snapshot for every
+ * successful collection") — the §8.4 snapshot header: account, run id,
+ * collection time, plan name. Metric values are task 084's table; the
+ * repository is task 088's.
+ *
+ * - **Identity = the run.** `run_id` carries a plain `UNIQUE` constraint —
+ *   the structural "at most one snapshot per run" — and deliberately **not**
+ *   `INTEGER PRIMARY KEY`: verified on the pinned runtime, a NULL inserted
+ *   into a NOT NULL rowid alias is silently replaced by a fresh auto-
+ *   assigned id (attaching a snapshot to an arbitrary run), while a plain
+ *   UNIQUE column rejects NULL. A synthetic snapshot id + `UNIQUE(run_id)`
+ *   was rejected for the same cost D-034 avoided in `collection_runs`: a
+ *   second identity no query references — task 084's metric rows and §11.2's
+ *   event "snapshot id" key by the snapshot's run.
+ * - **Success linkage via one composite foreign key.**
+ *   `(account_id, run_id, run_outcome)` references
+ *   `collection_runs (account_id, id, outcome)` — a parent key this
+ *   migration exposes through the `collection_runs_account_id_outcome`
+ *   unique index — with `snapshots_success_only` pinning the child's
+ *   `run_outcome` to `'success'`. One constraint proves three §11.2
+ *   properties: the run exists, it belongs to the same account, and it
+ *   succeeded. The parent-side default (`ON UPDATE NO ACTION`) additionally
+ *   freezes a referenced run's `outcome` and `account_id` against post-hoc
+ *   UPDATEs — recorded history cannot be rewritten out from under a
+ *   snapshot. A partial unique index (`WHERE outcome = 'success'`) cannot
+ *   serve as an FK parent key in SQLite, and a trigger was rejected (no
+ *   precedent in this schema, more on-disk objects, and totality over the
+ *   INSERT/UPDATE paths of both tables to maintain).
+ * - **`run_outcome` is the one column beyond §11.2's list** — a CHECK-bound
+ *   constant carried solely so the composite FK can compare against the
+ *   run's outcome. The D-032/D-034 exact-column-set rule bends only here,
+ *   because no combination of the four listed columns can express "per
+ *   successful run" (D-036).
+ * - **Cascading linkage.** Both foreign keys cascade: deleting a run
+ *   removes its snapshot; deleting an account removes its snapshots and
+ *   runs (§11.2 "use cascading deletion consistently"; D-034 named this
+ *   table's run cascade explicitly). `snapshots_account_time`'s leading
+ *   column serves the account cascade scan — the D-034
+ *   `collection_runs_account_start` precedent.
+ * - **Charset and plan shape.** `account_id` carries the D-014 charset
+ *   CHECK (D-032's GLOB encoding, NUL guard included) so history keys on
+ *   exactly the ids `accounts` can hold; `plan_name` is absent-or-non-blank
+ *   (§8.4's `planName` shape, the `accounts_plan_nonempty` precedent).
+ * - **No SQL defaults, no cross-table time CHECKs.** `collected_at` is §11.1
+ *   epoch milliseconds from the injected clock (D-021); ordering it against
+ *   the run's timestamps was rejected for the clock-skew leniency D-032 and
+ *   D-034 recorded (and CHECK constraints cannot span tables regardless).
+ * - **Index naming.** `snapshots_account_time (account_id, collected_at)`
+ *   follows D-034's spec-wording precedent ("runs by account/start" →
+ *   `collection_runs_account_start`; "snapshots by account/time" → here).
+ */
+const SNAPSHOTS_MIGRATION: Migration = {
+  name: '0003-snapshots',
+  up: ({ database }) => {
+    database.exec(`
+      CREATE UNIQUE INDEX collection_runs_account_id_outcome
+        ON collection_runs (account_id, id, outcome);
+
+      CREATE TABLE snapshots (
+        run_id INTEGER NOT NULL UNIQUE,
+        account_id TEXT NOT NULL,
+        collected_at INTEGER NOT NULL,
+        plan_name TEXT,
+        run_outcome TEXT NOT NULL,
+        CONSTRAINT snapshots_account_charset CHECK (
+          account_id GLOB '[A-Za-z0-9]*'
+          AND account_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          AND length(account_id) BETWEEN 1 AND 64
+          AND instr(account_id, char(0)) = 0
+        ),
+        CONSTRAINT snapshots_plan_nonempty CHECK (plan_name IS NULL OR plan_name <> ''),
+        CONSTRAINT snapshots_success_only CHECK (run_outcome = 'success'),
+        FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE,
+        FOREIGN KEY (account_id, run_id, run_outcome)
+          REFERENCES collection_runs (account_id, id, outcome) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX snapshots_account_time
+        ON snapshots (account_id, collected_at);
+    `);
+  },
+};
+
+/**
  * The application's canonical migration set (§11.4, D-031): the one ordered
  * list the composition root hands to {@link createMigrationRunner}, grown by
  * one entry per schema change — `0001-accounts` since task 081 (D-032),
- * `0002-collection-runs` since task 082 (D-034); tasks 083–087 append theirs
- * after it. The journal table itself comes from the storage adapter, not
- * from a migration.
+ * `0002-collection-runs` since task 082 (D-034), `0003-snapshots` since
+ * task 083 (D-036); tasks 084–087 append theirs after it. The journal table
+ * itself comes from the storage adapter, not from a migration.
  */
-export const MIGRATIONS: ReadonlyArray<Migration> = [ACCOUNTS_MIGRATION, COLLECTION_RUNS_MIGRATION];
+export const MIGRATIONS: ReadonlyArray<Migration> = [
+  ACCOUNTS_MIGRATION,
+  COLLECTION_RUNS_MIGRATION,
+  SNAPSHOTS_MIGRATION,
+];
 
 /**
  * The schema version the given migration set supports — its newest
