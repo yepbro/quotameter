@@ -71,3 +71,44 @@ Guarantees:
   the pre-truncation size.
 
 Blank `secrets` entries are ignored; output is deterministic.
+
+## The HTTP transport (task 104, spec §7.2, §17.1)
+
+`transport.ts` exports `providerFetch(request, options)` — the one HTTP seam
+every adapter calls instead of `fetch` directly. It centralizes the
+cross-cutting request concerns so adapters stay pure parsing:
+
+- **One total deadline (D-042)** — `timeoutMs` (§7.2 default 15 s) bounds
+  DNS, connect, TLS, headers, _and_ the full body read as one exchange,
+  implemented with `AbortSignal.timeout` composed with the caller's §8.1
+  signal via `AbortSignal.any`. A deadline expiry throws
+  `TransportTimeoutError`; a caller abort throws `TransportAbortError`.
+  Signal state — not the rejection shape — is the classification authority.
+- **Bounded body (D-042)** — responses are read streamed and rejected the
+  moment they exceed `MAX_RESPONSE_BODY_BYTES` (64 KiB, aligned with §7.4's
+  sanitized-response cap), with a `Content-Length` fast path; a body of
+  exactly the cap is delivered.
+- **Content-type gate (D-042)** — 2xx responses must be `application/json`
+  (media type, parameters ignored) or the transport throws
+  `TransportContentTypeError`; adapters therefore only ever parse bodies the
+  provider declared as JSON.
+- **Sanitized taxonomy (D-042)** — every failure is a `TransportError` with
+  a `kind` discriminant (`timeout`, `aborted`, `dns`, `connection`,
+  `socket`, `network`, `http-status`, `response-too-large`, `content-type`)
+  that task 105 maps to §7.2 collection outcomes. Non-2xx responses are
+  _observations_: `TransportStatusError` carries the status, the scrubbed
+  status text, and the raw `Retry-After` value for tasks 106/107 — this
+  layer never retries and never parses. Errors never contain the URL, the
+  request headers, or the raw cause: only the machine `causeCode` (e.g.
+  `ECONNREFUSED`) survives, and the few retained server strings are
+  scrubbed against the request's own credential material, so a provider
+  echoing a key back cannot smuggle it into an error (§15.4). Marker-secret
+  tests pin the whole surface.
+- **GET-only, `redirect: 'error'`** — the verified provider endpoints are
+  stable GETs; refusing redirects removes any cross-origin
+  credential-forwarding question. The seam is deliberately minimal (no
+  method or body parameters); widening it is a successor decision.
+
+`fetchImpl` is injectable for tests that pin classification against exact
+runtime failure shapes (the logger-destination pattern); production always
+uses the Node 22 global.
