@@ -69,6 +69,13 @@
  * D-041 64 KiB byte cap in SQL, and the account/time index task 103's
  * retention scans consume — growing the supported schema version to 6. Task
  * 087 appends its migration after it.
+ *
+ * Task 087 (decision D-056) appends the seventh schema migration — the §11.2
+ * `sessions` and `meta` tables in one entry (D-031's one-entry-per-task
+ * rule), completing §11.2's table list: the §15.2 session row with its
+ * SHA-256-hex identity, both expiry bounds as CHECKs, and the spec-named
+ * expiry index, plus the key/value service-state table — growing the
+ * supported schema version to 7.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -91,6 +98,23 @@ export const MIGRATIONS_TABLE = 'schema_migrations';
  * successor migration must fail, not silently diverge).
  */
 export const RAW_RESPONSE_MAX_PAYLOAD_BYTES = 64 * 1024;
+
+/**
+ * §15.2's absolute session lifetime: "no later than 30 days after creation"
+ * — the upper bound `sessions_expiry_absolute` enforces in SQL. Milliseconds
+ * because §11.1 timestamps are epoch milliseconds; exported so the session
+ * layer (tasks 154/155) computes expiries from the same numbers the shipped
+ * schema enforces.
+ */
+export const SESSION_MAX_AGE_MS = 30 * 86_400_000;
+
+/**
+ * §15.2's inactivity window: "sessions expire after 7 days of inactivity" —
+ * the upper bound `sessions_expiry_inactivity` enforces in SQL, measured
+ * from the stored `last_seen_at`. Same export rationale as
+ * {@link SESSION_MAX_AGE_MS}.
+ */
+export const SESSION_INACTIVITY_TIMEOUT_MS = 7 * 86_400_000;
 
 /**
  * The schema-version currency (D-031): a migration name is
@@ -979,14 +1003,131 @@ const RAW_RESPONSES_MIGRATION: Migration = {
 };
 
 /**
+ * The `sessions` and `meta` tables plus the spec-named expiry index (spec
+ * §11.2, §15.2; task 087, decision D-056) — the last §11.2 tables, in one
+ * migration entry because D-031's rule is one `NNNN-…` entry per task. The
+ * session/auth layer that uses them is tasks 154–157; the typed repository
+ * is task 088's; this is only the storage shape.
+ *
+ * `sessions` — §11.2's row is "hash of the session token, created/last-seen/
+ * expiry times; never store the raw cookie token":
+ *
+ * - **Identity = the SHA-256 digest, hex-encoded.** `token_hash TEXT
+ *   PRIMARY KEY NOT NULL` is §15.2's lookup key (cookie token → digest →
+ *   row) and the table's only identity — no second id column, because no
+ *   query references one (the D-036/D-039/D-046/D-051 no-second-identity
+ *   rule). `sessions_token_hash_hex` pins the stored shape to exactly 64
+ *   lowercase hex characters — `createHash('sha256').digest('hex')`'s form —
+ *   with the D-032 GLOB encoding (first character in class, no character
+ *   outside, exact length) plus the NUL guard that makes the encoding exact
+ *   (GLOB and `length()` stop at a NUL while the bytes are stored). The raw
+ *   256-bit cookie token fails the shape in its wire forms — base64url
+ *   (43 characters), base64, raw bytes into TEXT — under one recorded
+ *   precondition: the cookie's wire encoding must not itself be lowercase
+ *   hex, because a hex-encoded 256-bit token is shape-identical to the
+ *   digest and no SQL constraint can tell the two apart. The structural
+ *   no-raw-token guarantee is therefore the exact pinned column set plus
+ *   the credential-fragment pin in
+ *   `test/integration/sessions-meta.spec.ts` (the accounts D-032
+ *   precedent, this task's done-condition), while the value's
+ *   digest-not-token provenance is the session layer's writer contract
+ *   (task 154, §15.2 "store only SHA-256 of the token", which keeps the
+ *   cookie itself in a non-hex wire form so the two shapes stay distinct).
+ * - **Three times, all writer-supplied §11.1 epoch milliseconds, no SQL
+ *   defaults** (D-021, the journal `applied_at` precedent). `last_seen_at`
+ *   is NOT NULL initialized to the creation time: the login that mints a
+ *   session is its first sighting, so §15.2's inactivity window runs from a
+ *   real timestamp from birth and the inactivity bound below needs no NULL
+ *   escape. The session layer (task 155) refreshes it — together with
+ *   `expires_at` — on authenticated use.
+ * - **§15.2's two expiry rules are row CHECKs** — the D-034 rule of
+ *   encoding exactly what the spec states, applied to durations:
+ *   `sessions_expiry_absolute` (`expires_at <= created_at +
+ *   SESSION_MAX_AGE_MS`, "no later than 30 days after creation") and
+ *   `sessions_expiry_inactivity` (`expires_at <= last_seen_at +
+ *   SESSION_INACTIVITY_TIMEOUT_MS`, "expire after 7 days of inactivity"). A
+ *   row can never claim validity beyond either bound, whichever writer
+ *   computes the value. `expires_at` carries the **effective** expiry the
+ *   session layer maintains — `min(last_seen + 7 d, created + 30 d)`, the
+ *   tighter of the two bounds — so one column plus one index answers both
+ *   validation ("is this session still valid?") and §11.3's cleanup
+ *   ("delete expired sessions") completely; `created_at` and `last_seen_at`
+ *   stay stored, so both rules remain independently auditable. At-bound
+ *   values pass (`<=`): the writer legitimately stores equality on both
+ *   bounds. No lower-bound ordering CHECKs — the D-032/D-034 clock-skew
+ *   leniency, and §15.2 states upper bounds only; an already-expired row is
+ *   inert (immediately invalid), never lost history a rejected write would
+ *   have preserved.
+ * - **Not account-bound.** §15.1's service has one user and no account
+ *   subject; sessions are service state, not account history, so §11.2's
+ *   cascading-deletion policy for purged account history does not reach
+ *   this table — no `account_id`, no foreign key, and deleting an account
+ *   leaves sessions untouched (pinned by test). The same holds for `meta`.
+ * - **Index.** `sessions_expiry (expires_at)` is §11.2's "sessions by
+ *   expiry", named the D-034 spec-wording way; the primary-key autoindex
+ *   serves the token-hash lookup. No other index: no query orders sessions
+ *   any other way.
+ *
+ * `meta` — §11.2's "key/value service state, including cleanup metadata as
+ * needed":
+ *
+ * - **Exactly key/value.** `key TEXT PRIMARY KEY NOT NULL` with
+ *   `meta_key_nonempty` (`key <> ''`, the D-032 label precedent) and
+ *   `value TEXT NOT NULL` — the exact-set rule; no timestamps or columns
+ *   §11.2 does not list. Writers own the vocabulary: task 091's cleanup
+ *   metadata (e.g. when cleanup last ran) lands as rows it defines, typed
+ *   by the repository (088).
+ * - **No shape CHECK on `value`.** §11.2 states none; a JSON or charset
+ *   contract here would freeze a writer convention into the on-disk schema
+ *   (changeable only by successor migration) and could reject states the
+ *   service produces — the D-039 identical-states rule. Any TEXT value,
+ *   including the empty string, is storable.
+ */
+const SESSIONS_META_MIGRATION: Migration = {
+  name: '0007-sessions-meta',
+  up: ({ database }) => {
+    database.exec(`
+      CREATE TABLE sessions (
+        token_hash TEXT PRIMARY KEY NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        CONSTRAINT sessions_token_hash_hex CHECK (
+          token_hash GLOB '[0-9a-f]*'
+          AND token_hash NOT GLOB '*[^0-9a-f]*'
+          AND length(token_hash) = 64
+          AND instr(token_hash, char(0)) = 0
+        ),
+        CONSTRAINT sessions_expiry_absolute CHECK (
+          expires_at <= created_at + ${SESSION_MAX_AGE_MS}
+        ),
+        CONSTRAINT sessions_expiry_inactivity CHECK (
+          expires_at <= last_seen_at + ${SESSION_INACTIVITY_TIMEOUT_MS}
+        )
+      ) STRICT;
+
+      CREATE INDEX sessions_expiry
+        ON sessions (expires_at);
+
+      CREATE TABLE meta (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL,
+        CONSTRAINT meta_key_nonempty CHECK (key <> '')
+      ) STRICT;
+    `);
+  },
+};
+
+/**
  * The application's canonical migration set (§11.4, D-031): the one ordered
  * list the composition root hands to {@link createMigrationRunner}, grown by
  * one entry per schema change — `0001-accounts` since task 081 (D-032),
  * `0002-collection-runs` since task 082 (D-034), `0003-snapshots` since
  * task 083 (D-036), `0004-metric-values` since task 084 (D-039),
  * `0005-quota-events` since task 085 (D-046), `0006-raw-responses` since
- * task 086 (D-051); task 087 appends its migration after it. The journal
- * table itself comes from the storage adapter, not from a migration.
+ * task 086 (D-051), `0007-sessions-meta` since task 087 (D-056) — the set
+ * now covers every §11.2 table. The journal table itself comes from the
+ * storage adapter, not from a migration.
  */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   ACCOUNTS_MIGRATION,
@@ -995,6 +1136,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   METRIC_VALUES_MIGRATION,
   QUOTA_EVENTS_MIGRATION,
   RAW_RESPONSES_MIGRATION,
+  SESSIONS_META_MIGRATION,
 ];
 
 /**

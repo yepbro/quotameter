@@ -126,8 +126,8 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
       const dbPath = dir.sqlitePath('accounts-migration.sqlite');
       const db = new DatabaseSync(dbPath);
 
-      // The canonical set, grown by task 086: accounts remains the first
-      // migration; the newest version is now 6.
+      // The canonical set, grown by task 087: accounts remains the first
+      // migration; the newest version is now 7.
       expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
         '0001-accounts',
         '0002-collection-runs',
@@ -135,15 +135,16 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         '0004-metric-values',
         '0005-quota-events',
         '0006-raw-responses',
+        '0007-sessions-meta',
       ]);
       expect(migrationVersion('0001-accounts')).toBe(1);
-      expect(supportedSchemaVersion(MIGRATIONS)).toBe(6);
+      expect(supportedSchemaVersion(MIGRATIONS)).toBe(7);
 
       // §11.4's forward test: a database at schema 0 (the pre-081 state —
       // an empty journal) is behind, and applying the set brings it
       // up-to-date at the newest version.
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 6,
+        supportedVersion: 7,
         appliedVersion: 0,
         relation: 'behind',
         newerThanSupported: [],
@@ -160,10 +161,11 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         '0004-metric-values',
         '0005-quota-events',
         '0006-raw-responses',
+        '0007-sessions-meta',
       ]);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 6,
-        appliedVersion: 6,
+        supportedVersion: 7,
+        appliedVersion: 7,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
@@ -178,10 +180,12 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
       expect(tables.map((table) => table.name)).toEqual([
         'accounts',
         'collection_runs',
+        'meta',
         'metric_values',
         'quota_events',
         'raw_responses',
         MIGRATIONS_TABLE,
+        'sessions',
         'snapshots',
       ]);
       const journal = reader
@@ -194,6 +198,7 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         { name: '0004-metric-values', applied_at: T0 },
         { name: '0005-quota-events', applied_at: T0 },
         { name: '0006-raw-responses', applied_at: T0 },
+        { name: '0007-sessions-meta', applied_at: T0 },
       ]);
       reader.close();
 

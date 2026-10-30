@@ -215,7 +215,8 @@ describe('raw_responses table (task 086, spec §7.4, §11.2, decision D-051)', (
       // every later migration is excluded, or 0006 would run ahead of the
       // version order the set defines.
       const schemaFiveSet = MIGRATIONS.filter(
-        (migration) => migration.name !== '0006-raw-responses',
+        (migration) =>
+          migration.name !== '0006-raw-responses' && migration.name !== '0007-sessions-meta',
       );
       const db = new DatabaseSync(dbPath);
       await createMigrationRunner({
@@ -224,28 +225,28 @@ describe('raw_responses table (task 086, spec §7.4, §11.2, decision D-051)', (
         migrations: schemaFiveSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 6,
+        supportedVersion: 7,
         appliedVersion: 5,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The one new migration completes it.
+      // The task-086/087 migrations complete it, in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0006-raw-responses']);
+      expect(applied).toEqual(['0006-raw-responses', '0007-sessions-meta']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 6,
-        appliedVersion: 6,
+        supportedVersion: 7,
+        appliedVersion: 7,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: all six entries
+      // Journal proven through an independent connection: all seven entries
       // with their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
@@ -258,6 +259,7 @@ describe('raw_responses table (task 086, spec §7.4, §11.2, decision D-051)', (
         { name: '0004-metric-values', applied_at: T0 },
         { name: '0005-quota-events', applied_at: T0 },
         { name: '0006-raw-responses', applied_at: T0 + 1 },
+        { name: '0007-sessions-meta', applied_at: T0 + 1 },
       ]);
       reader.close();
 

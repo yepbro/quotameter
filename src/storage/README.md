@@ -509,3 +509,79 @@ Pinned interpretations (D-051):
   cleanup deletes expired runs — their payloads are older still); deleting
   an account removes its payloads (§8.2 purge); archiving is an UPDATE and
   retains them.
+
+## The `sessions` and `meta` tables — migration `0007-sessions-meta` (task 087, spec §11.2, §15.2, decision D-056)
+
+The seventh entry of the canonical `MIGRATIONS` list (schema version 7) —
+one migration for both tables (D-031's one-entry-per-task rule), completing
+§11.2's table list. The session/auth layer that uses them is tasks 154–157;
+the typed access is task 088's. Exercised directly in
+`test/integration/sessions-meta.spec.ts`.
+
+### `sessions`
+
+| Column         | Type      | Rules                                                                                                                                                             |
+| -------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `token_hash`   | `TEXT`    | `PRIMARY KEY`, `NOT NULL`, `sessions_token_hash_hex`: exactly 64 lowercase hex chars (the SHA-256 digest's `digest('hex')` form), GLOB-encoded with the NUL guard |
+| `created_at`   | `INTEGER` | `NOT NULL`, §11.1 epoch ms, writer-supplied (no SQL default)                                                                                                      |
+| `last_seen_at` | `INTEGER` | `NOT NULL`, §11.1 epoch ms — initialized to creation (login is the first sighting)                                                                                |
+| `expires_at`   | `INTEGER` | `NOT NULL`, §11.1 epoch ms — the effective expiry: `min(last_seen + 7 d, created + 30 d)`                                                                         |
+
+Structural constraints beyond the columns:
+
+- `sessions_expiry_absolute` — `expires_at <= created_at +
+SESSION_MAX_AGE_MS` (§15.2 "no later than 30 days after creation";
+  30 d = 2 592 000 000 ms, exported as `SESSION_MAX_AGE_MS`).
+- `sessions_expiry_inactivity` — `expires_at <= last_seen_at +
+SESSION_INACTIVITY_TIMEOUT_MS` (§15.2 "expire after 7 days of
+  inactivity"; 7 d = 604 800 000 ms, exported as
+  `SESSION_INACTIVITY_TIMEOUT_MS`). At-bound values pass (`<=`).
+
+Index (§11.2 "sessions by expiry"): `sessions_expiry (expires_at)` — named
+the D-034 way; serves §11.3's expired-session cleanup as a range scan. The
+primary-key autoindex serves §15.2's token-hash lookup — no other index.
+
+Pinned interpretations (D-056):
+
+- **Never the raw cookie token** — §11.2's rule made structural three ways:
+  the exact four-column pin (nothing beyond the §11.2 row exists), the
+  credential-fragment pin (`token_hash` is the only column whose name may
+  carry token/cookie/secret/raw vocabulary — a future raw-token column
+  breaks the test, the accounts D-032 precedent), and the hex-shape CHECK,
+  which the raw 256-bit token's wire forms (base64url, raw bytes) cannot
+  fit. One precondition is recorded (D-056): a lowercase-hex cookie
+  encoding would be shape-identical to the digest — no SQL constraint can
+  distinguish the two — so the value's digest-not-token provenance stays
+  the session layer's writer contract (task 154), and the cookie's wire
+  form stays non-hex (base64url), keeping the two shapes distinct.
+- **Identity = the digest** — no second id column: no query references one
+  (the D-036/D-039/D-046/D-051 no-second-identity rule); lookups are
+  cookie token → digest → row.
+- **One effective expiry column** — the writer (task 155) maintains
+  `expires_at` as the tighter of §15.2's two bounds, refreshed together
+  with `last_seen_at`, so one column plus one index answers both validation
+  and cleanup; `created_at`/`last_seen_at` stay stored, keeping both rules
+  independently auditable. No lower-bound ordering CHECKs — the D-032/D-034
+  clock-skew leniency; §15.2 states upper bounds only.
+- **Not account-bound** — §15.1's one-user service state, not account
+  history: no `account_id`, no foreign key, and §11.2's cascading-deletion
+  policy for purged account history does not reach this table (pinned by
+  test: purging every account leaves sessions untouched).
+
+### `meta`
+
+| Column  | Type   | Rules                                                        |
+| ------- | ------ | ------------------------------------------------------------ |
+| `key`   | `TEXT` | `PRIMARY KEY`, `NOT NULL`, `meta_key_nonempty` (`key <> ''`) |
+| `value` | `TEXT` | `NOT NULL` — any TEXT value, including the empty string      |
+
+Pinned interpretations (D-056):
+
+- **Exactly key/value** — no timestamps or columns §11.2 does not list (the
+  D-032 exact-set rule). Writers own the vocabulary: task 091's cleanup
+  metadata (e.g. when cleanup last ran) lands as rows it defines, typed by
+  the repository (088).
+- **No shape CHECK on `value`** — §11.2 states none; a JSON or charset
+  contract would freeze a writer convention into the on-disk schema and
+  could reject states the service produces (the D-039 identical-states
+  rule). Key lookups run on the primary-key autoindex.
