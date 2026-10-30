@@ -10,8 +10,10 @@ Current contents: the task 094 research snapshot (official documentation only), 
 verified-data-source section (the original prototype plus a sanitized live probe — the actual
 endpoints, authentication, and response shapes), the task 095 contract-confirmation section
 (the sanitized samples approved for fixtures, the §8.3 availability statement, and committed
-fixtures under a re-invention policy per spec §15.4/§17.1), and the task 112 peak-schedule
-encoding (the example configuration and its provenance). The 094 snapshot records **only** what
+fixtures under a re-invention policy per spec §15.4/§17.1), the task 096 adapter contract (the
+implementation-facing requests, envelope rules, §8.4 metric mapping, and assumption ledger
+consumed by tasks 098–100), and the task 112 peak-schedule encoding (the example configuration
+and its provenance). The 094 snapshot records **only** what
 official Z.ai documentation says, with exact URLs and access dates; nothing there is inferred,
 and undocumented endpoints, fields, or samples are deliberately absent there (spec §8.3 forbids
 inventing them). The 093 section records what the prototype reads and what a live probe returned,
@@ -887,3 +889,305 @@ the example fail the very validation it exists to demonstrate. The dates and lin
 here — the dossier section the task brief's done-condition names — and the example test pins the
 linkage by asserting this section contains the source URLs, both retrieval dates, and the example
 path.
+
+## Adapter contract — implementation-facing rules for tasks 098-100 (2026-10-30, task 096)
+
+### Scope, method, and decision record
+
+This section turns the record above into the implementation-facing contract for the adapter
+tasks: 098 (`validateCredentials`), 099 (`fetchSnapshot` through the task-104 transport), and
+100 (mapping into the [§8.4 normalized model](../../src/schemas/metrics.ts)). It is the single
+place those tasks look for "which request, which field goes where, and what to do at every
+gap". Method: no live API call and no secret was read. Every **verified** statement cites the
+dossier section and fixture it rests on; every statement beyond the evidence is marked
+**assumption** (A1–A10 in [the ledger](#assumption-ledger)) and names the adapter behavior
+chosen for the gap plus the observation that would reopen it. The decision cluster is
+decision **D-047** in `DECISIONS.md`; this section is its narrative.
+
+### Requests
+
+Host `https://api.z.ai`, plain GETs, one verified authentication form
+([093](#verified-endpoints)):
+
+- **Auth header:** `Authorization: Bearer <key>` — the documented platform scheme
+  (094 sources 5 and 12), probe-observed returning 200 on all three trio endpoints
+  ([authentication](#authentication-observed-forms)). The prototype's unprefixed header form is
+  implied server leniency, not contract (D-038): the adapter sends exactly `Bearer <key>`, and
+  the transport's error scrubbing already treats the whole header value plus the
+  after-scheme credential as secret material (D-042).
+- **No other header is contract material** (assumption A7): the prototype also sends
+  `Accept-Language` and `Content-Type: application/json` on its GETs, but no observation ties
+  any server behavior to either. The adapter sends only the `Authorization` header; a server
+  that started requiring more would answer with a transport-visible failure (`http-status` or
+  `content-type`), which is the reopen trigger.
+
+| #   | Role in a collection cycle                                         | Method and full URL                                        | Query parameters      |
+| --- | ------------------------------------------------------------------ | ---------------------------------------------------------- | --------------------- |
+| 1   | **Primary** — quota metrics + `level`; its failure fails the cycle | `GET https://api.z.ai/api/monitor/usage/quota/limit`       | —                     |
+| 2   | Secondary — plan-name context; failure degrades                    | `GET https://api.z.ai/api/biz/subscription/list`           | —                     |
+| 3   | Secondary — reset-card context (unmapped in v1); failure degrades  | `GET https://api.z.ai/api/biz/customer-package-reset/list` | `targetType=PERSONAL` |
+| 4   | Validation only (098); never part of a collection cycle            | `GET https://api.z.ai/api/coding/paas/v4/models`           | —                     |
+
+- `targetType=PERSONAL` is the one known query parameter — prototype-sent and echoed by the
+  response ([093 endpoint 3](#endpoint-3--reset-cards-get-apibizcustomer-package-resetlisttargettypepersonal)).
+  v1 is personal-plan scope only; no other value is defined (assumption A8).
+- Endpoint 4 is the credential check 093 observed (HTTP 200 with the same Coding Plan key —
+  [authentication](#authentication-observed-forms)). Its body was never captured, so
+  `validateCredentials` is **status-based**: 2xx → valid, 401/403 → rejected (assumption A3 —
+  the same unobserved auth-failure shape as [below](#response-envelopes)), any other
+  outcome (transport failure of any kind) → unavailable — the three distinct results task
+  098 must produce, with no key material in the error.
+
+**Transport requirements (all four endpoints):** every request goes through `providerFetch`
+(D-042, `src/providers/transport.ts`); the adapter never calls `fetch` directly, never
+retries (retry/backoff is task 106's layer), and issues the cycle's GETs sequentially. Every
+`TransportError` kind can occur on the cycle's GETs — `timeout`, `aborted`, `dns`,
+`connection`, `socket`, `network`, `http-status`, `response-too-large`, `content-type` — and
+task 105 owns the mapping from kind to §7.2 outcome. One exception by construction: on the
+signal-less credential check (endpoint 4), `aborted` cannot occur — it fires only on the
+caller's §8.1 signal, which `validateCredentials` does not receive. Applicability specifics:
+
+- **Timeout:** §7.2's configured value (default 15 s) is one total deadline per request; a
+  cycle makes up to three sequential requests, each with its own deadline.
+- **Response size:** the transport's 64 KiB cap applies per response. Observed bodies sit far
+  below it (the committed sanitized fixtures are 0.3–3.8 KiB); a
+  subscription list with many records is the only plausible growth direction, and the cap
+  bounds it.
+- **Content type:** the capture proves JSON bodies but did not record the declared
+  `Content-Type` header. The transport's `application/json` gate is assumed satisfied (A6);
+  a non-JSON declaration surfaces as a `content-type` transport failure, never a parse error.
+
+**Per-endpoint failure policy (D-047):** endpoint 1 failing — transport or parse — fails the
+cycle: no snapshot, no metric values written (§7.2). Endpoints 2 and 3 fail soft: the cycle
+succeeds with endpoint 1's metrics, minus their context (the `planName` fallback; card
+context), and the failure is logged. A soft failure is recorded in the application log only:
+the cycle's run outcome stays `success` — whose error fields the `collection_runs` schema
+keeps clean (D-034) — and no §7.4 response is retained, §7.4 retention being tied to parse
+failures that produce no snapshot. Metric values originate only on endpoint 1, so this split
+keeps §7.2's "do not write metric values" rule (the `Format changed` row) intact without
+losing whole cycles to context loss.
+
+### Response envelopes
+
+Observed envelope, common to the trio ([093](#verified-endpoints); verbatim in every sanitized
+fixture):
+
+```jsonc
+// envelope (observed)
+{
+  "code": 200, // number; the prototype also accepts 0, and either value as a string
+  "msg": "Operation successful",
+  "data": {/* endpoint-specific */},
+  "success": true,
+}
+```
+
+Adapter envelope rules (D-047):
+
+- **Success:** top-level `code` of `0` or `200`, in number **or** string spelling
+  (prototype-verified tolerance; the capture observed number `200`) → validate and unwrap
+  `data`. `success` and `msg` were observed on success but are **not interpreted**: the
+  prototype keys on `code` alone, and no observation assigns `success` independent meaning.
+- **Failure — the honest gap (assumption A2):** no error sample exists (the
+  [095 availability statement](#83-availability-statement), limitation 3). What is known:
+  the prototype raises the envelope's `msg` on non-success codes, so a present `msg` is
+  retained (sanitized, non-secret) as the diagnostic string. Everything else is unknown, and
+  the implementation requirement is therefore conservative: any `code` outside the success
+  set, a missing `code`, or a wrong-typed container — `data` not an object where endpoints 1
+  and 3 expect one, not an array where endpoint 2 expects one, `limits` not an array — is a
+  **parse error**, which task 105 surfaces as `Format changed` with §7.4 sanitized retention.
+  Error codes are never interpreted and never enumerated; `synthetic/zai-envelope-malformed.json`
+  drives this shape.
+- **HTTP-level failures** arrive as `TransportStatusError` (kind `http-status`) before any
+  parsing. §7.2's 401/403 → `Auth rejected` handling is an **assumption (A3)**, not an
+  observation: Z.ai's actual auth-rejection shape was never captured, and an envelope-encoded
+  rejection (HTTP 200 + error `code`) would currently read as `Format changed`. A retained
+  §7.4 payload is the diagnostic that would settle it.
+
+### Metric mapping (endpoint 1 → §8.4)
+
+#### Entry recognition
+
+Each `data.limits[]` entry is recognized by its `(type, unit)` pair. `type` is the quota
+mechanism (observed: `TIME_LIMIT`, `TOKENS_LIMIT`); `unit` is the window time-unit per the
+prototype labels (3 = hours, 5 = months, 6 = weeks —
+[093 prototype](#the-prototype-traceability)); `number` is the window length in those units.
+Recognized identities (D-047):
+
+| `(type, unit)` pair                      | Status                                                                         | Metric `key`   | `label`                | `limitType`      | `unit`                                                                                                             | `windowSeconds`                        |
+| ---------------------------------------- | ------------------------------------------------------------------------------ | -------------- | ---------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
+| `(TIME_LIMIT, 5)`                        | verified (capture)                                                             | `mcp-monthly`  | Monthly MCP tool quota | `MONTHLY`        | `REQUESTS`                                                                                                         | —                                      |
+| `(TOKENS_LIMIT, 3)`                      | verified (capture)                                                             | `tokens-5h`    | 5-hour token quota     | `ROLLING_WINDOW` | `PERCENT` while only `percentage` is supplied (§8.4 percentage-only rule); `CREDITS` if absolutes ever appear (A5) | `number × 3600` (observed `5` → 18000) |
+| `(TIME_LIMIT, 6)` or `(TOKENS_LIMIT, 6)` | **assumed** (A1) — the weekly window is documented (094), the entry unobserved | `weekly-quota` | Weekly quota           | `WEEKLY`         | per present fields: `PERCENT` / `CREDITS` (A5)                                                                     | —                                      |
+
+- `(TIME_LIMIT, 5, 1)` is the **monthly MCP-tool quota**: its `usageDetails` name exactly the
+  094-documented MCP servers metered per call (`search-prime`, `web-reader`, `zread`), and 094
+  source 1 meters MCP usage by call count — hence `unit: REQUESTS`.
+- `(TOKENS_LIMIT, 3, 5)` is the **rolling 5-hour quota**: 094's "credit quota resets 5 hours
+  after consumption" is a rolling window, hence `limitType: ROLLING_WINDOW` and
+  `windowSeconds = number × 3600`. The 5-hour length is the documented plan rule (every tier);
+  if `number` ever differs, `windowSeconds` still follows `number × 3600` — an observed
+  deviation is diagnostics-worthy evidence, not a new window series, and the metric key stays
+  `tokens-5h`.
+- **Unknown `(type, unit)` pairs are skipped and logged** — not emitted and not parse errors
+  (D-047; `synthetic/zai-quota-limit-unknown-type.json` drives this). An unrecognized entry is
+  not a metric, and minting series keys for unknown shapes would fragment the `metric_values`
+  history (every distinct unknown type would start a new series). A response whose entries are
+  all unknown — or `limits: []` (`synthetic/zai-quota-limit-empty-limits.json`) — is a
+  **valid snapshot with zero metrics**: envelope-valid emptiness is success, per §8.3's "not
+  every plan necessarily exposes every field".
+- **Key collisions are resolved first-wins:** entries are processed in array order, and a
+  second entry mapping to an already-emitted key — both `unit 6` types, or the same
+  `(type, unit)` twice — is skipped and logged (§8.4 requires keys to be unique within a
+  snapshot).
+
+#### Field-by-field mapping
+
+| Endpoint-1 source                       | §8.4 target                                                                                                  | Status and evidence                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| envelope `code`/`data`                  | success discriminator + unwrap ([envelope rules](#response-envelopes))                                       | verified — 093 envelope, prototype tolerance                                                                                             |
+| `data.level` (`"pro"` observed)         | `ProviderSnapshot.planName`, verbatim; a non-string value counts as absent (the endpoint-2 fallback applies) | verified — capture and `sanitized/zai-quota-limit.json`                                                                                  |
+| recognized `limits[]` entry             | one `NormalizedMetric` per the recognition table above                                                       | verified shapes                                                                                                                          |
+| `limits[].usage`                        | `limit`                                                                                                      | field verified; **assumed reading** (D-047 — [value semantics](#value-semantics-d-0471--the-question-093-posed-and-095-echoed-open))     |
+| `limits[].currentValue`                 | `used`                                                                                                       | field verified; **assumed reading** (D-047)                                                                                              |
+| `limits[].remaining`                    | `remaining`                                                                                                  | field verified; reading assumed with the triple (D-047)                                                                                  |
+| `limits[].percentage`                   | `percentUsed`, verbatim                                                                                      | field verified; scale **pinned percent** (D-047 — [percentage scale](#percentage-scale-d-0472--the-question-095-deliberately-left-open)) |
+| — (derived: `100 − percentUsed`)        | `percentRemaining`, listed in `derivedFields`                                                                | derived from a supplied/derived percentage — allowed; absolutes never derived from percentages (§8.4)                                    |
+| `limits[].nextResetTime` (epoch ms)     | `resetsAt`, verbatim — already UTC epoch milliseconds; the prototype's ÷1000 is rendering only               | verified — 093 timestamps                                                                                                                |
+| `limits[].usageDetails`                 | **unmapped** — §8.4 has no per-tool breakdown field                                                          | shape verified; deliberately dropped, documented here                                                                                    |
+| `limits[].number` on month/week windows | **unmapped** — informational; the window is calendar-bound                                                   | prototype label                                                                                                                          |
+
+#### Value semantics (D-047.1 — the question 093 posed and 095 echoed open)
+
+Pinned: `usage` is the window **allowance**, `currentValue` the **consumed** amount,
+`remaining` the remainder. It is the only self-consistent reading — the capture and the
+fixtures preserve `currentValue + remaining = usage` and the per-tool `usageDetails` summing
+to `currentValue` (a consumption breakdown sums to the consumed total). The prototype's
+display ("used / total" from `usage`) contradicts `percentage` for the same values and is
+rejected as a rendering artifact, not arithmetic evidence ([093 endpoint
+1](#endpoint-1--quota-limits-get-apimonitorusagequotalimit),
+[095 echo](#open-questions-status-carried-to-096)). Consequence for the adapter: an entry
+whose supplied triple violates `used + remaining = limit` is emitted **invalid** — numeric
+values dropped, `resetsAt` retained (D-010), `invalidReason: "currentValue + remaining does
+not equal usage"` — not a parse error; the other entries of the response survive.
+
+#### Percentage scale (D-047.2 — the question 095 deliberately left open)
+
+Pinned: `percentage` is **integer percent** (0–100 scale), not per-mille. Discriminating
+evidence: the capture's `TOKENS_LIMIT` entry carried `percentage: 19` while the account's
+5-hour quota stood at roughly 18% consumption at capture time (main-session capture-time
+context, recorded here as given evidence — this task made no new probe). 19 as percent is
+consistent with an 18-point-something actual state under integer rounding; 19 as per-mille
+would mean 1.9%. The monthly
+entry (`percentage: 1` at exactly one per-mille consumed — the exact ratio 095 preserved in
+the fixtures precisely so this question stayed open) cannot discriminate: 1 fits per-mille,
+and integer percent only under upward rounding. Adapter decision points:
+
+- `percentUsed` = `percentage` **verbatim** — no re-scaling, no rounding correction. Rounding
+  direction is **not pinned** (both observations are consistent with ceiling; A10); pass-through
+  keeps the provider's number authoritative.
+- `percentRemaining` = `100 − percentUsed`, always, listed in `derivedFields` — it inherits
+  the same integer coarseness by design, so `percentUsed + percentRemaining = 100` holds
+  exactly for the UI.
+- When `percentage` is absent but `used` and `limit` are both supplied, `percentUsed` is
+  derived as `100 · used / limit` (marked derived) — the only permitted absolute→percentage
+  direction. Token/credit counts are **never** derived from percentages (§8.4).
+- **No cross-validation** against the absolute triple (D-047.2): integer rounding makes
+  `percentage: 1` vs an actual 0.1% fraction expected noise, not malformation.
+- Falsifier: a captured `percentage > 100` falsifies the percent scale and reopens D-047.
+
+#### Recognized-entry validation (two-tier strictness, D-047.5)
+
+Envelope and container types are strict (parse error on violation, per
+[envelopes](#response-envelopes)); fields inside a recognized entry are tolerant:
+
+- No usable values — neither `percentage` nor the absolute triple — → invalid metric,
+  `invalidReason: "no quota values present on limits entry"` (the 093-open
+  "percentage-less `TOKENS_LIMIT`" case; 097's planned synthetic fixture drives it).
+- A wrong-typed value field (for example a string `percentage`) → invalid metric,
+  `invalidReason: "<field> is not a number"` naming the field.
+- Absent or wrong-typed `nextResetTime` → omit `resetsAt` (optional metadata); the rest of the
+  entry survives. A recognized entry is never dropped for a metadata defect.
+- A partially supplied absolute triple: the missing member is derived from the other two when
+  both are supplied (for example `remaining = limit − used`), each derivation listed in
+  `derivedFields` (§8.4); with fewer than two supplied, the present values map as far as they
+  go and the metric stays valid.
+- With the absolute triple present, the arithmetic identity is checked per
+  [value semantics](#value-semantics-d-0471--the-question-093-posed-and-095-echoed-open);
+  `usageDetails` is not validated (unmapped).
+
+Concrete observed-state outputs (from `sanitized/zai-quota-limit.json`'s re-invented numbers;
+the capture had the same shapes):
+
+- `mcp-monthly`: `used: 2, remaining: 1998, limit: 2000` (`REQUESTS`),
+  `percentUsed: 1, percentRemaining: 99` (derived), `resetsAt: 1795885500000`,
+  `isValid: true`.
+- `tokens-5h`: `unit: PERCENT`, absolute fields empty, `percentUsed: 23, percentRemaining: 77`
+  (derived), `windowSeconds: 18000`, `resetsAt: 1793353200000`, `isValid: true` — §8.4's
+  percentage-only rule; token counts are never invented from the percentage.
+
+### Subscription and reset-card context (endpoints 2 and 3)
+
+Endpoint 2 supplies plan context only — no quota numbers (verified,
+[093 endpoint 2](#endpoint-2--subscription-records-get-apibizsubscriptionlist)):
+
+| Endpoint-2 source                                                                                                                        | Target                                                                                                 | Status                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| selected record's `productName` (`"GLM Coding Pro"` observed)                                                                            | `planName` **fallback** — used only when endpoint 1's `data.level` is absent                           | field verified; rule A9                                                                                                                                                                                     |
+| record selection among `data[]`                                                                                                          | the record with `inCurrentPeriod === true`; else the first with `status === "VALID"`; else no fallback | **assumed** (A9) — the capture's three records make both candidate rules coincide (the first `VALID` record is also the `inCurrentPeriod` one, the annual STRIPE record); the prototype takes first-`VALID` |
+| `valid` range end (plan expiry), `autoRenew`, `billingCycle`, renewal times                                                              | **unmapped** — §8.4/§11.2 have no plan-expiry field; the `snapshots` table (083) stores plan name only | 093 called this "plan-expiry context, not quota metrics"                                                                                                                                                    |
+| `id`, `customerId`, `agreementNo`, `orderNo`, `productId`, all prices, `paymentType`, `paymentChannel`, `version`, `refundable*`, `ban*` | **unmapped, deliberately** — no target field, and account-linked/monetary values stay out of snapshots | fixture policy D-040 exists precisely because these must not travel                                                                                                                                         |
+
+Endpoint 3 is fetched but **maps nothing in v1** (D-047.6): `lastFiveHourResetTime` /
+`lastWeekResetTime` and the card arrays have no §8.4 target, and the card object shape
+(`available`, `expireTime`) is prototype-source only (A4) — both arrays were empty in the
+capture
+([093 endpoint 3](#endpoint-3--reset-cards-get-apibizcustomer-package-resetlisttargettypepersonal)).
+The fetch is kept rather than dropped on two grounds: the `last*ResetTime` fields are the
+provider's own declared-reset record — the same kind of evidence §12.1's reset detection acts
+on, which for this provider arrives as metric `resetsAt` from endpoint 1 (nothing persists
+the endpoint-3 fields in v1; mapping them into reset-event evidence later would be a contract
+extension) — and re-adding a dropped request would itself be a contract change, while keeping
+it costs one cheap GET per cycle. Card semantics (restore-to-full before natural reset, cycle
+restart, expiry; a weekly card also restores the 5-hour quota) are documented in
+[094's plan-credits section](#plan-credits-and-reset-rules).
+
+### Assumption ledger
+
+Each unverified gap, the adapter behavior chosen for it, where the gap surfaces, and the
+observation that would reopen it:
+
+| #   | Gap (unverified)                                                               | Adapter behavior                                                                                                        | Surfaces as / reopen trigger                                                      |
+| --- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| A1  | Weekly `unit 6` entry — documented quota, absent from the capture              | recognized as `weekly-quota` (WEEKLY); percentage-only → `PERCENT`; absolutes → arithmetic reading with `CREDITS` (A5)  | first capture containing a `unit 6` entry                                         |
+| A2  | Error envelope (`code`/`msg` on failure) — no sample exists                    | any non-success/absent `code` or wrong-typed container → parse error; `msg` kept as diagnostic; codes never interpreted | first retained §7.4 payload of a real failure                                     |
+| A3  | Auth-rejection shape — 401/403 vs 200 + error envelope                         | only HTTP 401/403 count as `Auth rejected` (§7.2); an envelope-encoded rejection reads `Format changed`                 | first observed bad-key response                                                   |
+| A4  | Reset-card object shape — prototype-only (`available`, `expireTime`)           | not parsed in v1 (endpoint 3 maps nothing)                                                                              | a non-empty card array in a future capture                                        |
+| A5  | Absolute values on `TOKENS_LIMIT`/weekly entries — percentage-only observed    | arithmetic reading applies; `unit: CREDITS` — 094's documented credit metering beats the `TOKENS` type name             | first such capture; a contradiction needs a D-047 successor                       |
+| A6  | `Content-Type: application/json` declaration on 2xx responses — not recorded   | assumed; the transport gate is enforced as-is                                                                           | a `content-type` transport failure in diagnostics                                 |
+| A7  | Additional required request headers — only `Authorization` verified            | adapter sends `Authorization` only                                                                                      | an `http-status`/`content-type` failure appearing on an otherwise healthy account |
+| A8  | `targetType` values other than `PERSONAL` (team scope) — unobserved            | v1 always sends `targetType=PERSONAL`; no other value is defined                                                        | team-plan support, if ever requested                                              |
+| A9  | Subscription record-selection rule — candidates coincide in the single capture | `inCurrentPeriod === true` preferred, then first `status === "VALID"`                                                   | a capture where the rules diverge                                                 |
+| A10 | `percentage` rounding direction — consistent with ceiling, not observed        | pass-through verbatim; no rounding assumed or corrected                                                                 | a capture with sub-percent consumption states                                     |
+
+### Evidence index
+
+- **Endpoint URLs, methods, auth, envelope, field names/types, `nextResetTime` epoch-ms,
+  `unit` 3/5/6 semantics, `number` semantics:** the
+  [093 verified-data-source section](#verified-data-source-prototype--live-probe-2026-10-30--task-093)
+  plus `test/fixtures/sanitized/zai-quota-limit.json`,
+  `zai-subscription-list.json`, `zai-customer-package-reset-list.json` (structure verbatim,
+  values re-invented per D-040; consumer notes in
+  [`test/fixtures/README.md`](../../test/fixtures/README.md)).
+- **Window/credit semantics (5-hour rolling, weekly cycle, per-call MCP metering, card
+  behavior, plan tiers):** 094's [plan credits and reset rules](#plan-credits-and-reset-rules)
+  and its overview findings.
+- **No-official-contract verdict:** 094's [quota/usage endpoint status](#quotausage-endpoint-status);
+  **availability statement and sample limitations:** the
+  [095 §8.3 statement](#83-availability-statement); **the open questions this section closes
+  or carries:** [095 open-questions status](#open-questions-status-carried-to-096).
+- **Failure/edge shapes:** `test/fixtures/synthetic/zai-envelope-malformed.json` (envelope),
+  `zai-quota-limit-unknown-type.json` (unknown entry), `zai-quota-limit-empty-limits.json`
+  (empty-but-valid).
+- **Decisions:** D-038 (verified source), D-040 (fixture policy), D-042 (transport seam),
+  D-010 (invalid-metric metadata), D-047 (this section's decision cluster).

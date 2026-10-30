@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Z.ai adapter contract (task 096, spec §8.3/§8.4/§7.2) appended to `docs/providers/zai-coding-plan.md`: the implementation-facing requests (the verified endpoint trio plus the status-based credential-check endpoint), response-envelope rules, the field-by-field metric mapping into the §8.4 model with pinned value semantics (`usage` = allowance, `currentValue` = consumed, `percentage` = integer percent), stable metric identities, per-endpoint failure policy for collection cycles, and an assumption ledger where every unverified gap carries its chosen adapter behavior and falsifier (decision D-047).
 - `docs/mutation-testing.md`: how the daily mutation workflow runs, how to inspect runs and artifacts, and the triage rules for survivors and below-threshold reports (D-045).
 
 ### Changed
