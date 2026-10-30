@@ -1,0 +1,15 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": {
+      "TIME_LIMIT": {
+        "unit": 5,
+        "number": 1,
+        "percentage": 5
+      }
+    },
+    "level": "pro"
+  },
+  "success": true
+}

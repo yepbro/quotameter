@@ -1,0 +1,26 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": [
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "quota": 1200,
+        "usedValue": 60,
+        "left": 1140,
+        "percent": 5,
+        "resetAt": 1799486400000
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 3,
+        "number": 5,
+        "percent": 34
+      }
+    ],
+    "planTier": "pro"
+  },
+  "success": true
+}

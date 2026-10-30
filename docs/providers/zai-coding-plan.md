@@ -12,8 +12,10 @@ endpoints, authentication, and response shapes), the task 095 contract-confirmat
 (the sanitized samples approved for fixtures, the §8.3 availability statement, and committed
 fixtures under a re-invention policy per spec §15.4/§17.1), the task 096 adapter contract (the
 implementation-facing requests, envelope rules, §8.4 metric mapping, and assumption ledger
-consumed by tasks 098–100), and the task 112 peak-schedule encoding (the example configuration
-and its provenance). The 094 snapshot records **only** what
+consumed by tasks 098–100), the task 112 peak-schedule encoding (the example configuration
+and its provenance), and the task 097 fixture-matrix note (the synthetic fixtures completing
+the adapter contract's coverage and the rows deliberately left unfixtured). The 094 snapshot
+records **only** what
 official Z.ai documentation says, with exact URLs and access dates; nothing there is inferred,
 and undocumented endpoints, fields, or samples are deliberately absent there (spec §8.3 forbids
 inventing them). The 093 section records what the prototype reads and what a live probe returned,
@@ -1191,3 +1193,21 @@ observation that would reopen it:
   (empty-but-valid).
 - **Decisions:** D-038 (verified source), D-040 (fixture policy), D-042 (transport seam),
   D-010 (invalid-metric metadata), D-047 (this section's decision cluster).
+
+## Fixture matrix — 2026-10-30 (task 097)
+
+The [adapter contract](#adapter-contract--implementation-facing-rules-for-tasks-098-100-2026-10-30-task-096)
+above is now fully fixture-backed: nineteen synthetic fixtures under `test/fixtures/synthetic/`
+cover every contract row that can manifest as a parseable response body, including the
+assumption-ledger shapes — the weekly `unit 6` entry (A1, absolutes → `CREDITS` per A5),
+absolute `TOKENS_LIMIT` values with partial-triple derivation (A5), non-empty reset-card arrays
+with the prototype-only `{available, expireTime}` shape (A4), the invented failure envelope
+(A2), and divergent subscription records exercising the A9 selection rule. The
+[095 sanitized set](#contract-confirmation--sanitized-samples-approved-for-fixtures-2026-10-30-task-095)
+already covers every verified row and is unchanged. The complete row→fixture map, origin labels
+(invented vs assumption-shaped), and the deliberately unfixtured rows — HTTP-level failures
+(401/403/429/5xx, timeout, oversized, content-type) belong to the task-026 mock server because
+the D-042 transport rejects them before parsing, and trivial cross-cells stay in-test — live in
+[`test/fixtures/README.md`](../../test/fixtures/README.md) (decision D-049). Nothing in this
+task reopens a ledger entry: no new capture exists, and every assumption-shaped fixture states
+its ledger provenance.

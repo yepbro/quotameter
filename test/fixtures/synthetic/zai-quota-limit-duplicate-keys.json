@@ -1,0 +1,47 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": [
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "usage": 1200,
+        "currentValue": 60,
+        "remaining": 1140,
+        "percentage": 5,
+        "nextResetTime": 1799486400000
+      },
+      {
+        "type": "TIME_LIMIT",
+        "unit": 6,
+        "number": 1,
+        "usage": 60000,
+        "currentValue": 12000,
+        "remaining": 48000,
+        "percentage": 20,
+        "nextResetTime": 1800021600000
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 6,
+        "number": 1,
+        "percentage": 41,
+        "nextResetTime": 1800021600000
+      },
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "usage": 1200,
+        "currentValue": 90,
+        "remaining": 1110,
+        "percentage": 8,
+        "nextResetTime": 1799486400000
+      }
+    ],
+    "level": "pro"
+  },
+  "success": true
+}

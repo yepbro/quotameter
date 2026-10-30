@@ -1,0 +1,29 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "customerId": 52714903,
+    "targetType": "PERSONAL",
+    "organizationId": null,
+    "projectId": null,
+    "lastFiveHourResetTime": "2026-10-28 03:17:44",
+    "lastWeekResetTime": "2026-10-25 21:05:12",
+    "fiveHourResets": [
+      {
+        "available": true,
+        "expireTime": "2026-11-06 00:00:00"
+      },
+      {
+        "available": false,
+        "expireTime": "2026-11-04 00:00:00"
+      }
+    ],
+    "weekResets": [
+      {
+        "available": true,
+        "expireTime": "2026-11-20 00:00:00"
+      }
+    ]
+  },
+  "success": true
+}

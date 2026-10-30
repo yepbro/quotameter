@@ -1,0 +1,27 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": [
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "usage": 500,
+        "currentValue": 25,
+        "remaining": 475,
+        "percentage": 5,
+        "nextResetTime": 1799400000000
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 3,
+        "number": 5,
+        "percentage": 11,
+        "nextResetTime": 1798795200000
+      }
+    ],
+    "level": "lite"
+  },
+  "success": true
+}

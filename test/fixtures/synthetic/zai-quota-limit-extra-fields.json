@@ -1,0 +1,50 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "traceId": "synthetic-trace-4f2a9c",
+  "data": {
+    "limits": [
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "usage": 1200,
+        "currentValue": 60,
+        "remaining": 1140,
+        "percentage": 5,
+        "nextResetTime": 1799486400000,
+        "displayName": "MCP tools",
+        "color": "#7c3aed",
+        "usageDetails": [
+          {
+            "modelCode": "search-prime",
+            "usage": 48,
+            "modelName": "Web Search"
+          },
+          {
+            "modelCode": "web-reader",
+            "usage": 7,
+            "modelName": "Web Reader"
+          },
+          {
+            "modelCode": "zread",
+            "usage": 5,
+            "modelName": "Zread"
+          }
+        ]
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 3,
+        "number": 5,
+        "percentage": 28,
+        "nextResetTime": 1798968000000,
+        "windowLabel": "5h"
+      }
+    ],
+    "level": "pro",
+    "region": "sg"
+  },
+  "success": true,
+  "timestamp": 1798700000000
+}

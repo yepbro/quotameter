@@ -1,0 +1,20 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": [
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "usage": 1200,
+        "currentValue": 60,
+        "remaining": 1140,
+        "percentage": 5,
+        "nextResetTime": "2026-11-09 00:00:00"
+      }
+    ],
+    "level": "pro"
+  },
+  "success": true
+}

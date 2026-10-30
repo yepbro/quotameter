@@ -1,0 +1,34 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": [
+      {
+        "type": "TIME_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "usage": 1200,
+        "currentValue": 60,
+        "remaining": 1140,
+        "percentage": 5,
+        "nextResetTime": 1799486400000,
+        "usageDetails": [
+          {
+            "modelCode": "search-prime",
+            "usage": 48
+          },
+          {
+            "modelCode": "web-reader",
+            "usage": 7
+          },
+          {
+            "modelCode": "zread",
+            "usage": 5
+          }
+        ]
+      }
+    ],
+    "level": "pro"
+  },
+  "success": true
+}

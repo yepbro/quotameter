@@ -1,0 +1,17 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "glm-5.3",
+      "object": "model",
+      "created": 1759000000,
+      "owned_by": "z.ai"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "object": "model",
+      "created": 1761000000,
+      "owned_by": "z.ai"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "records": [],
+    "total": 0
+  },
+  "success": true
+}
