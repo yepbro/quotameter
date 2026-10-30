@@ -178,7 +178,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 
 ## Stage 11 — Implement CLI, initialization, diagnostics, and systemd
 
-- [ ] **128. Create the CLI executable and argument parser** — **Status: [new]** — Implement command dispatch and consistent English help/error output. **Done when:** all required commands appear in help and unknown commands fail clearly. **Spec:** [§5.2](SPECIFICATION.md#52-cli-commands).
+- [x] **128. Create the CLI executable and argument parser** — **Status: [done]** — Implement command dispatch and consistent English help/error output. **Done when:** all required commands appear in help and unknown commands fail clearly. **Spec:** [§5.2](SPECIFICATION.md#52-cli-commands).
 - [ ] **129. Implement runtime version checks** — **Status: [new]** — Reject Node.js below `22.13.0` with an actionable message before loading unsupported features. **Done when:** supported and unsupported versions are tested. **Spec:** [§5.1, §17.2](SPECIFICATION.md#5-installation-cli-and-service-lifecycle).
 - [ ] **130. Implement interactive `init` questions** — **Status: [new]** — Prompt for the explicit IANA time zone, host, port, interval, optional account label, and key. **Done when:** values are validated and the time zone cannot be silently defaulted. **Spec:** [§5.3](SPECIFICATION.md#53-init-workflow).
 - [ ] **131. Implement non-interactive `init --yes`** — **Status: [new]** — Support explicit CLI arguments and environment-based secret input. **Done when:** missing `--timezone` is a clear failure and a valid invocation is reproducible. **Spec:** [§5.3](SPECIFICATION.md#53-init-workflow).
