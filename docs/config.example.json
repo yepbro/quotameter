@@ -1,0 +1,45 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "app": {
+    "timezone": "UTC",
+    "pollingIntervalSeconds": 300,
+    "historyRetentionDays": 180
+  },
+  "auth": {
+    "mode": "auto"
+  },
+  "logging": {
+    "level": "warn"
+  },
+  "providers": {
+    "zai-coding-plan": {
+      "peakHours": {
+        "timezone": "Asia/Singapore",
+        "offPeakMultiplier": 0.5,
+        "windows": [
+          {
+            "id": "zai-weekday-peak",
+            "name": "Z.ai Coding Plan peak hours",
+            "days": ["mon", "tue", "wed", "thu", "fri"],
+            "start": "14:00",
+            "end": "18:00",
+            "multiplier": 1.0
+          }
+        ]
+      },
+      "requestTimeoutSeconds": 15
+    }
+  },
+  "accounts": [
+    {
+      "id": "zai-main",
+      "providerId": "zai-coding-plan",
+      "label": "Personal GLM Coding Plan",
+      "enabled": true,
+      "apiKeyEnv": "ZAI_CODING_PLAN_API_KEY"
+    }
+  ]
+}

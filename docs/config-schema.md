@@ -12,6 +12,18 @@ the canonical TypeScript contract (`CONFIG_SCHEMA_DOCUMENT` in
 (`test/unit/config-schema-published.spec.ts`) fails when the committed file
 drifts from the contract, so the artifact cannot go stale silently.
 
+## Example configuration
+
+A complete, commented-by-accompaniment example lives at
+[`docs/config.example.json`](config.example.json): every section at its spec
+defaults, one Z.ai Coding Plan provider, one account wired to an
+environment-variable key. Its `peakHours` block encodes the verified Z.ai
+schedule (Monday–Friday 14:00–18:00 `Asia/Singapore`, peak multiplier `1.0`,
+off-peak `0.5`); the official sources, retrieval dates, and rate semantics are
+documented in the [provider dossier](providers/zai-coding-plan.md) (task 112
+section), and `test/integration/example-config.spec.ts` keeps the example
+loading cleanly through the real configuration parser.
+
 ## Editor validation
 
 Associating the schema gives completion, hovers, and validation while editing

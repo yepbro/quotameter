@@ -8,15 +8,15 @@ this file — 095 (sanitized live response), 096 (full request/response contract
 
 Current contents: the task 094 research snapshot (official documentation only), the task 093
 verified-data-source section (the original prototype plus a sanitized live probe — the actual
-endpoints, authentication, and response shapes), and the task 095 contract-confirmation section
-(the sanitized samples approved for fixtures, the §8.3 availability statement, and the
-sanitization policy). The 094 snapshot records **only** what official Z.ai documentation says,
-with exact URLs and access dates; nothing there is inferred, and undocumented endpoints, fields,
-or samples are deliberately absent there (spec §8.3 forbids inventing them). The 093 section
-records what the prototype reads and what a live probe returned, with `<redacted>` markers in
-place of every account-linked value, and the 095 section turns that probe into committed
-fixtures under a re-invention policy (spec §15/§17.1 forbid committing secrets or personal
-data).
+endpoints, authentication, and response shapes), the task 095 contract-confirmation section
+(the sanitized samples approved for fixtures, the §8.3 availability statement, and committed
+fixtures under a re-invention policy per spec §15.4/§17.1), and the task 112 peak-schedule
+encoding (the example configuration and its provenance). The 094 snapshot records **only** what
+official Z.ai documentation says, with exact URLs and access dates; nothing there is inferred,
+and undocumented endpoints, fields, or samples are deliberately absent there (spec §8.3 forbids
+inventing them). The 093 section records what the prototype reads and what a live probe returned,
+with `<redacted>` markers in place of every account-linked value (spec §15.4/§17.1 forbid
+committing secrets or personal data).
 
 ## Research snapshot — 2026-10-30 (task 094: official documentation)
 
@@ -841,3 +841,49 @@ value, the `Authorization` header name, api-key shapes), and e-mail-shaped strin
 absent from the diff; the audit's scope and result are described in the task commit body. The
 only `…@…` occurrences in this section are the marker-format descriptions (`<ID@…>` and
 alike), which name the redaction convention and carry no marker payload.
+
+## Peak-schedule encoding — 2026-10-30 (task 112)
+
+### What this section is
+
+The seed data D-014 anticipated ("provider-specific values … are configuration _data_ seeded by
+`init` and the example config"): the verified Z.ai peak-hours schedule encoded as
+[`docs/config.example.json`](../config.example.json), a complete example `config.json` whose
+`providers["zai-coding-plan"].peakHours` carries the schedule verbatim from spec §9.2's sample —
+window `zai-weekday-peak`, Monday–Friday `14:00`–`18:00`, `multiplier: 1.0`, explicit
+`offPeakMultiplier: 0.5`, `timezone: "Asia/Singapore"`. The example is data only: no schema or
+`src/` change, and `test/integration/example-config.spec.ts` proves it loads cleanly through the
+real configuration boundary parser (`loadConfigFile`, decision D-018's pipeline). Placement and
+companion decisions are recorded as decision D-043.
+
+### Provenance
+
+| Source                                                   | Retrieved  | States                                                                                                                                                                           |
+| -------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| <https://docs.z.ai/devpack/overview> (dossier source 1)  | 2026-10-30 | "**Peak hours**: Monday to Friday, 14:00–18:00 Singapore Standard Time (UTC+8)." and "**During off-peak hours, model usage is charged at 50% of the standard credit rate**."     |
+| <https://docs.z.ai/devpack/teamplan> (dossier source 14) | 2026-10-30 | Both statements verbatim (see [094's per-source findings](#team-plan-benefits-source-14)).                                                                                       |
+| Spec [§9.1](../../plan/SPECIFICATION.md)                 | 2026-10-28 | The first recorded check of the overview page; task 094 confirmed it unchanged on 2026-10-30 ([peak-hours pin](#peak-hours-schedule-unchanged-since-the-2026-10-28-spec-check)). |
+
+### Rate semantics encoded
+
+- **Peak `1.0`** — the standard credit rate itself: §9.1 defines the configured `multiplier` as
+  the quota-credit rate _relative to the standard rate_, and the sources describe no peak surcharge
+  for the current credits plans (the 50% statement is the only rate modifier either page states).
+- **Off-peak `0.5`** — "During off-peak hours, model usage is charged at 50% of the standard
+  credit rate" (sources 1 and 14, quoted verbatim above). Saturday and Sunday are off-peak under
+  the published Mon–Fri window (§9.1).
+- **Not encoded**: source 9's "1× off-peak / 3× peak" (GLM-5.3) and "0.4× / 1.2×"
+  (GLM-5.3-Flash) rates — they apply to **legacy plan V2** request metering, not to the current
+  credits plans ([094's caution](#peak-hours-schedule-unchanged-since-the-2026-10-28-spec-check)).
+
+Per §9.1 these multipliers are descriptive schedule metadata only: the application must never
+rewrite collected provider values or infer quota values from them.
+
+### Why provenance is not inside the JSON
+
+The configuration contract closes every object (`additionalProperties: false`, decision D-014),
+so a provenance key, `$schema` pointer, or comment inside `docs/config.example.json` would make
+the example fail the very validation it exists to demonstrate. The dates and links therefore live
+here — the dossier section the task brief's done-condition names — and the example test pins the
+linkage by asserting this section contains the source URLs, both retrieval dates, and the example
+path.
