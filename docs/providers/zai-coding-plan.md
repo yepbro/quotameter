@@ -6,9 +6,14 @@ verification round appends its own dated section and never rewrites older ones. 
 this file — 095 (sanitized live response), 096 (full request/response contract),
 112 (peak-schedule encoding), 127 (schedule-source verification).
 
-Current contents: the task 094 research snapshot below. It records **only** what official Z.ai
-documentation says, with exact URLs and access dates; nothing here is inferred, and undocumented
-endpoints, fields, or samples are deliberately absent (spec §8.3 forbids inventing them).
+Current contents: the task 094 research snapshot (official documentation only) and the task 093
+verified-data-source section (the original prototype plus a sanitized live probe — the actual
+endpoints, authentication, and response shapes). The 094 snapshot records **only** what official
+Z.ai documentation says, with exact URLs and access dates; nothing there is inferred, and
+undocumented endpoints, fields, or samples are deliberately absent there (spec §8.3 forbids
+inventing them). The 093 section records what the prototype reads and what a live probe returned,
+with `<redacted>` markers in place of every account-linked value (spec §15/§17.1 forbid committing
+secrets or personal data).
 
 ## Research snapshot — 2026-10-30 (task 094: official documentation)
 
@@ -442,3 +447,287 @@ base URL "must not be assumed to be a quota-statistics endpoint" stands confirme
 - **For task 112 (peak schedule):** cite source 1 (accessed 2026-10-30) with the Mon–Fri
   14:00–18:00 `Asia/Singapore` window and the flat 50% off-peak credit rate; encode 1.0/0.5
   multipliers per §9.1 and do **not** encode the legacy-V2 request multipliers from source 9.
+
+## Verified data source (prototype + live probe, 2026-10-30) — task 093
+
+### Method and provenance
+
+Spec §8.3 makes prototype inspection the first implementation step ("first inspect the original
+prototype and confirm the actual usage-statistics endpoint"). This section does that from three
+inputs; this task itself made **no live API call and read no secret value** — the probe belongs to
+the main session's round.
+
+1. **The original prototype**: a local Python 3 CLI at `~/.local/bin/glm-quota` (standard library
+   only — `urllib.request`, `json`, no dependencies). Inspected as source code in this task; not
+   executed. Its UI strings are Russian; every label quoted below is translated.
+2. **A sanitized live-verification bundle** produced by the main session on 2026-10-30 (UTC+7) by
+   probing the prototype's three endpoints over HTTPS with the user's own Coding Plan key. The
+   bundle lives outside the repository and is **not committed**. Its markers replaced account
+   identifiers and account-linked values **partially, not completely** — two `agreementNo` values
+   and the account-specific dates and prices remain clear in it. In every shape below, `<redacted>`
+   stands for one of those markers; field names, types, structure, and non-personal plan-level
+   values are verbatim from the bundle (`productSmallTitle`/`description` are elided for brevity —
+   public marketing copy, not redacted), no marked value is reconstructed anywhere in this
+   repository, and **no bundle value, marked or clear, may be copied verbatim into any repository
+   artifact** — fixtures (097) re-invent their values (spec §15, §17.1).
+3. **Local corroboration, re-verified in this task** — read-only and secret-free: a byte search
+   (`grep`) of the first-party ZCode client bundle `/opt/ZCode/resources/app.asar` for the three
+   path strings, and a boolean-only check that the key stored for provider `zai-coding-plan` in
+   `~/.local/share/opencode/auth.json` does not begin with `Bearer ` (the check printed only
+   `false`, never any part of the key).
+
+### The prototype (traceability)
+
+What it is, where it lives, and what it reads:
+
+- **Purpose**: render the 5-hour/weekly/monthly quotas with reset times, a subscription line
+  (plan, validity, autorenewal), and the reset-card inventory; a `json` argument dumps the raw
+  endpoint payloads instead.
+- **Key source**: reads `~/.local/share/opencode/auth.json` — OpenCode's own credential store —
+  under provider `zai-coding-plan` (fallback `zai`), accepting either a plain string entry or an
+  object with one of `key`, `api_key`, `apiKey`, `access`, `token`, `access_token`. The stored
+  entry is an object (verified in this task); the key value is not `Bearer `-prefixed.
+- **Transport**: `urllib.request` GET to `https://api.z.ai` + path, 20-second timeout, headers
+  `Authorization` (the stored key value, verbatim — see
+  [Authentication](#authentication-observed-forms)), `Accept-Language: en-US,en`,
+  `Content-Type: application/json`.
+- **Envelope handling**: treats top-level `code` of `0`/`200` (numeric or string) as success and
+  unwraps `data`; any other `code` raises the envelope's `msg`.
+- **Window vocabulary** (from its source, consistent with the observed shapes): `unit` **3 = hours,
+  5 = months, 6 = weeks**; `number` is the window length in those units. Labels: `TIME_LIMIT` or
+  `unit` 5 → monthly MCP-tool quota; `unit` 3 → "{number}-hour token quota" (defaults to 5);
+  `unit` 6 → weekly quota.
+- **Timestamps**: renders `nextResetTime` via `fromtimestamp(value / 1000)` — the field is epoch
+  **milliseconds**.
+
+Done-condition note: the prototype never calls a model-completion endpoint. All three URLs it
+reads are dedicated monitor/biz paths, so the source identified here does not rely on
+`/api/coding/paas/v4`, `/api/anthropic`, or any chat-completions URL.
+
+### Verified endpoints
+
+Three plain GETs on host `https://api.z.ai`, all returning HTTP 200 on 2026-10-30 with one shared
+envelope:
+
+```jsonc
+// envelope common to all three endpoints (observed)
+{
+  "code": 200, // number; the prototype accepts 0/200, numeric or string, as success
+  "msg": "Operation successful",
+  "data": {/* endpoint-specific */},
+  "success": true,
+}
+```
+
+#### Endpoint 1 — quota limits: `GET /api/monitor/usage/quota/limit`
+
+Full URL: `https://api.z.ai/api/monitor/usage/quota/limit`. **Primary metric source.**
+
+```jsonc
+// data (observed)
+{
+  "limits": [
+    {
+      "type": "TIME_LIMIT", // string; observed values: TIME_LIMIT, TOKENS_LIMIT
+      "unit": 5, // number; window time-unit enum — see semantics below
+      "number": 1, // number; window length in `unit`s
+      "usage": 1000,
+      "currentValue": 1,
+      "remaining": 999,
+      "percentage": 1, // number; percent of the window's allowance (scale question below)
+      "nextResetTime": "<redacted>", // number, epoch milliseconds
+      "usageDetails": [
+        // per-tool breakdown of the consumed amount
+        { "modelCode": "search-prime", "usage": 0 },
+        { "modelCode": "web-reader", "usage": 1 },
+        { "modelCode": "zread", "usage": 0 },
+      ],
+    },
+    {
+      "type": "TOKENS_LIMIT",
+      "unit": 3,
+      "number": 5,
+      "percentage": 19,
+      "nextResetTime": "<redacted>", // number, epoch milliseconds
+    },
+  ],
+  "level": "pro", // string; plan tier
+}
+```
+
+Semantics:
+
+- **Window units** (prototype labels, consistent with these shapes): `(TIME_LIMIT, unit 5,
+number 1)` is the **monthly MCP-tool quota** — `usageDetails` names exactly the
+  [094 dossier](#research-snapshot--2026-10-30-task-094-official-documentation)'s MCP servers
+  (Web Search = `search-prime`, Web Reader = `web-reader`, Zread = `zread`), which source 1 meters
+  per call. `(TOKENS_LIMIT, unit 3, number 5)` is the **rolling 5-hour token quota**. A weekly
+  entry (`unit 6`) is defined by the prototype but **absent from this capture** — the response
+  carried only the two entries above.
+- `nextResetTime` is epoch **milliseconds** (the prototype divides by 1000 before rendering); the
+  bundle sanitized both observed values.
+- **Open interpretation question (recorded, not decided):** in the TIME_LIMIT entry the arithmetic
+  is self-consistent if `usage` (1000) is the window **allowance**, `currentValue` (1) the consumed
+  amount, and `remaining` (999) the remainder: `currentValue + remaining = usage`, the
+  `usageDetails` values sum to `currentValue`, and `percentage = 1` fits — though only on a
+  per-mille scale or as a rounded-up percent (1/1000 is 0.1%), so the `percentage` scale itself is
+  part of the open question: settle it before mapping to §8.4 `percentUsed`. The prototype's own
+  display instead prints `usage / usage + remaining` ("used / total"), i.e. it treats `usage` as
+  consumed — which contradicts `percentage = 1` for these values. Which reading the adapter must
+  encode is decision material for 095/096; a second capture after tool consumption settles it.
+- The TOKENS_LIMIT entry carried **only** `percentage` in this capture — no `usage`, `remaining`,
+  `currentValue`, or `usageDetails`.
+- `data.level` (`"pro"`) is the plan tier — the natural §8.4 `planName` source, cross-checkable
+  against subscription `productName` below.
+- This entry is the observed carrier of the "monthly MCP quota" vocabulary that
+  [ZCode's usage-stats page](#zcode-usage-stats-source-11) names but official docs never specify.
+
+#### Endpoint 2 — subscription records: `GET /api/biz/subscription/list`
+
+Full URL: `https://api.z.ai/api/biz/subscription/list`. Plan-name and expiry context; no quota
+numbers. `data` is an array of subscription records (three observed):
+
+```jsonc
+// one record (observed); monetary values, account ids, and account-specific dates are redacted
+{
+  "id": "<redacted>",
+  "customerId": "<redacted>",
+  "agreementNo": "<redacted>",
+  "orderNo": "<redacted>",
+  "productId": "product-372bf4", // plan-level product SKU (annual tier in this capture)
+  "productName": "GLM Coding Pro",
+  "productBigTitle": "GLM Coding Plan",
+  "productSmallTitle": "<marketing tagline string>",
+  "description": "<multi-line benefits string>",
+  "status": "VALID", // string; observed: VALID
+  "purchaseTime": "<redacted>", // string, "YYYY-MM-DD HH:MM:SS"
+  "valid": "<redacted>", // string, "YYYY-MM-DD HH:MM:SS-YYYY-MM-DD HH:MM:SS" (start-end range)
+  "autoRenew": 0, // number 0/1 (the prototype also tolerates a boolean)
+  "initialPrice": "<redacted>", // number; all five price fields share this shape
+  "standardPrice": "<redacted>",
+  "useInitialPrice": true, // boolean
+  "actualPrice": "<redacted>",
+  "renewPrice": "<redacted>",
+  "currentPeriod": 2, // number; billing-period counter
+  "currentRenewTime": "<redacted>", // string, "YYYY-MM-DD"
+  "nextRenewTime": "<redacted>", // string, "YYYY-MM-DD"
+  "paymentType": "WAIT_PAY", // string; observed: WAIT_PAY, SUCCESS
+  "billingCycle": "annually", // string; observed: annually, monthly
+  "inCurrentPeriod": true, // boolean
+  "paymentChannel": "STRIPE", // string; observed: STRIPE, GIVE
+  "refundable": false, // boolean
+  "refundableReason": "<redacted>",
+  "banStatus": 0, // number
+  "banExpireTime": null,
+  "version": "V1", // string; observed: V1, V2 (plan generation)
+}
+```
+
+The three observed records were one annual Stripe-billed record (`inCurrentPeriod: true`) and two
+monthly records with `paymentChannel: "GIVE"` and `inCurrentPeriod: false` — a plan can carry
+several records, so 096 must define which record wins: the prototype takes the first with
+`status === "VALID"`; `inCurrentPeriod === true` is the other candidate. Account-specific values
+(ids, agreement/order numbers, dates, and the paid prices of this particular account) are redacted
+above and must not enter fixtures.
+
+#### Endpoint 3 — reset cards: `GET /api/biz/customer-package-reset/list?targetType=PERSONAL`
+
+Full URL: `https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL` (the
+prototype sends `targetType` as a query parameter).
+
+```jsonc
+// data (observed)
+{
+  "customerId": "<redacted>",
+  "targetType": "PERSONAL",
+  "organizationId": null,
+  "projectId": null,
+  "lastFiveHourResetTime": "<redacted>", // string "YYYY-MM-DD HH:MM:SS" or null
+  "lastWeekResetTime": null,
+  "fiveHourResets": [], // Card[] — empty in this capture
+  "weekResets": [], // Card[] — empty in this capture
+}
+```
+
+Card-object fields (`available`, `expireTime`) are known **only from the prototype source** — both
+arrays were empty in the live capture, so the card shape is unverified until 095 captures a
+non-empty array. Semantics per 094's sources 7 and 11: reset cards restore a quota to full before
+its natural reset, restart that quota's reset cycle, and expire unused; using a weekly card also
+restores the 5-hour quota. `targetType=PERSONAL` scopes the query to a personal plan
+(`organizationId`/`projectId` null in the response).
+
+### Undocumented endpoints — verification status and limitations
+
+All three paths appear **nowhere in official documentation** — the
+[094 verdict](#quotausage-endpoint-status) stands (the official OpenAPI specification lists 14
+model/tool paths only, and the docs route quota inspection to console pages). What makes them the
+§8.3 "verified source and limitations" situation anyway:
+
+| Endpoint                               | Live probe 2026-10-30 | In ZCode `app.asar` (grep, this task) |
+| -------------------------------------- | --------------------- | ------------------------------------- |
+| `/api/monitor/usage/quota/limit`       | 200                   | yes — 2 occurrences                   |
+| `/api/biz/subscription/list`           | 200                   | yes — 3 occurrences                   |
+| `/api/biz/customer-package-reset/list` | 200                   | **no** — 0 occurrences                |
+
+The quota and subscription endpoints are live-probed **and** corroborated by the first-party
+client; the reset-cards endpoint is corroborated by the prototype alone. Limitations recorded per
+§8.3:
+
+1. **Undocumented** — Z.ai may change or remove these paths without notice; the adapter must map
+   unexpected shapes to `Format changed` (§7.2) with §7.4 sanitized retention, never guess fields.
+2. **Observed once, from one Pro-tier personal account** — other plan tiers, team scope
+   (`targetType` other than `PERSONAL`), and non-empty reset-card arrays are unobserved.
+3. **No failure sample exists** — envelope `code`/`msg` on errors and HTTP behavior on auth
+   rejection are unobserved; error fixtures for task 097 are synthetic by necessity.
+
+### Authentication (observed forms)
+
+- **Verified by live probe (2026-10-30):** `Authorization: Bearer <key>` returns 200 on all three
+  endpoints, where `<key>` is the same key OpenCode's `zai-coding-plan` provider uses — and that
+  key is also valid on `https://api.z.ai/api/coding/paas/v4/models` (HTTP 200). One Coding Plan
+  key therefore authorizes both the coding endpoints and the monitor/biz quota surface; the quota
+  endpoints live under `/api/monitor` and `/api/biz`, **not** under `coding/paas`.
+- **Prototype nuance:** the prototype sends the header as the stored key value, verbatim
+  (`'Authorization': key` in its source — it prepends nothing), and the key in OpenCode's
+  `auth.json` does not itself begin with `Bearer ` (boolean check, this task). The prototype being
+  a working utility implies the server has accepted the unprefixed form in past use, but this
+  round did not re-verify that — only the `Bearer` form is probe-observed. The adapter should send
+  the documented `Bearer <key>` form — the platform's documented scheme (094 sources 5 and 12);
+  any prefix-acceptance would be server leniency, not contract.
+
+### Implications for tasks 095, 096, and 097
+
+- **095 (confirm the request contract with a sanitized response):** the sanitized bundle is the
+  candidate "one safe sample"; before approval it should be reconciled with the open questions
+  above — the `usage` vs `currentValue` semantics (one more capture after tool consumption settles
+  it), the absent weekly (`unit 6`) entry, a non-empty reset-card array for the card shape, and
+  whether a TOKENS_LIMIT entry ever carries absolute values.
+- **096 (provider contract document):** URL, method, and auth material is complete (this section);
+  what remains is the metric-mapping decision and the error schema. Candidate §8.4 mappings
+  observed so far (observations only — decisions belong to 096):
+
+| Observed                                                                                 | Candidate §8.4 mapping                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TIME_LIMIT`, `unit 5`, `number 1`, with `usage`/`currentValue`/`remaining`/`percentage` | `limitType: MONTHLY`, `unit: REQUESTS` (MCP tool calls; matches 094's per-call credit formula); used/remaining/limit from `currentValue`/`remaining`/`usage` **if** the arithmetic reading is confirmed |
+| `TOKENS_LIMIT`, `unit 3`, `number 5`, `percentage` only                                  | `limitType: ROLLING_WINDOW`, `windowSeconds: 18000`, `unit: PERCENT` (§8.4 percentage-only rule; never derive token counts from percentages)                                                            |
+| `unit 6` entry (unobserved)                                                              | `limitType: WEEKLY` — candidate only                                                                                                                                                                    |
+| `data.level` (`"pro"`)                                                                   | `planName` (§8.4), cross-checked with subscription `productName`                                                                                                                                        |
+| `nextResetTime` (epoch ms)                                                               | `resetsAt` (§8.4 UTC epoch ms)                                                                                                                                                                          |
+| subscription `valid` end, `autoRenew`, `billingCycle`                                    | plan-expiry context, not quota metrics                                                                                                                                                                  |
+
+- **097 (fixtures):** sanitized real fixtures come from the bundle (all three endpoints, happy
+  path); synthetic fixtures are required for a weekly (`unit 6`) entry, non-empty reset cards,
+  changed/unknown schema, error-envelope and HTTP-error cases, and a TOKENS_LIMIT entry without
+  `percentage`. Fixture values must be re-invented, not copied: neither the bundle's markers nor
+  its clear values (ids, dates, prices, or quota-state numbers) may be copied into fixtures or
+  further artifacts. This dossier quotes the observed quota-state numbers (`usage`,
+  `currentValue`, `percentage`, …) deliberately, as shape exemplars — fixtures must still
+  re-invent them.
+- **098 (credential validation):** `GET /api/coding/paas/v4/models` (200 with the same key) is the
+  observed candidate for `validateCredentials` — a cheap, quota-state-independent check.
+
+This section closes 094's open item ("its contract must come from task 093 … not yet complete")
+for the request/response material. Task 093's own done-condition — a traceable source that does
+not rely on an assumed model-completion endpoint — is met: every URL above is a dedicated
+monitor/biz path, and none of the three is `/api/coding/paas/v4`, `/api/anthropic`, or any
+chat-completions URL.
