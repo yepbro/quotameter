@@ -58,9 +58,10 @@ fails loudly. In practice migrations run once at startup under the
 single-instance lock (D-017), so journal contention is not a concern.
 
 **Explicitly out of scope here:** the §11.4 backup before migrations
-(`VACUUM INTO`, three-generation retention) and the refuse-to-start check for
-a schema newer than the application — both task 092; the application tables
-themselves — tasks 080–087.
+(`VACUUM INTO`, three-generation retention — `backups.ts`) and the
+refuse-to-start check for a schema newer than the application
+(`startup-migrations.ts`); the application tables themselves are tasks
+080–087.
 
 Importing `node:sqlite` prints an `ExperimentalWarning` on Node 22 — expected,
 not an error (docs/agents/gotchas.md; spec §3).
@@ -128,8 +129,9 @@ the version semantics the startup wiring and task 092 consume:
   malformed name throws instead of silently reading as version 0.
 
 The schema tables themselves are tasks 081–087; backups (`VACUUM INTO`,
-retention) and the refuse-to-start behavior remain task 092, which builds
-them on `appliedMigrations()` and `schemaVersionStatus()`.
+retention) and the refuse-to-start behavior are task 092's
+(`backups.ts`/`startup-migrations.ts`), built on `appliedMigrations()` and
+`schemaVersionStatus()`.
 
 ## The `accounts` table — migration `0001-accounts` (task 081, spec §11.2, decision D-032)
 
@@ -831,3 +833,102 @@ go), then at an earlier one (a harmless no-op).
   config/UI layer reads `retention:applied-days` and warns when a newly
   configured window is smaller: the records between the two windows are
   exactly what the next cleanup deletes.
+
+## `backups.ts` — the automatic `VACUUM INTO` backup primitive (task 092, spec §5.6, §11.4, decision D-065)
+
+`createAutomaticBackup({ database, backupDir, now })` writes one automatic
+backup of the open database and enforces §5.6/§11.4's retention window:
+"retain the three most recent automatic backups" (`AUTOMATIC_BACKUP_RETAINED_COUNT`).
+A sibling of `maintenance.ts` — deliberately not part of it, per D-063's
+separate-concerns rule: maintenance tends the live file, a backup is a
+standalone copy written _before_ a risky change and kept _after_ it. Takes
+the raw `DatabaseSync` (D-058: the facade never hands a connection back).
+
+- **Location and naming.** Backups live in `<data>/backups/`
+  (`automaticBackupsDir(dataDir)`; `AUTOMATIC_BACKUP_DIRNAME` is on-disk
+  contract) as `backup-<epoch-ms>[-<seq>].sqlite`. The `-<seq>` suffix
+  (1, 2, …) disambiguates same-instant names — SQLite's `VACUUM INTO`
+  refuses an existing target (verified on the pinned runtime), and a fixed
+  test clock or two startups in one millisecond would otherwise collide.
+- **Ordering is parsed, never lexicographic.** Retention ranks by the
+  `(timestampMs, seq)` parsed from the name (`listAutomaticBackups`,
+  oldest first): a raw name sort would invert `backup-T` against
+  `backup-T-1` (`'-'` sorts before `'.'`) and break on any future name
+  width. The unsuffixed name is sequence 0 — the first of its instant —
+  so same-instant generations evict in creation order.
+- **Only automatic backups are ever evicted.** The naming grammar is the
+  retention scope: an operator-placed file whose name is outside the
+  grammar is invisible to listing and eviction alike (§11.4 says
+  "automatic backups"), pinned by test.
+- **Evict after the new backup exists — and never the new backup
+  itself.** A failed creation (full disk, unwritable directory) costs no
+  existing generation; fs errors propagate unwrapped (D-058 style) and
+  the next migration re-runs retention over the same directory. The
+  just-created backup is exempt from its own retention pass: ordering is
+  by the name-parsed timestamp, and a clock reading _earlier_ than the
+  retained window (an NTP step-back, or a same-instant revisit after the
+  unsuffixed name was evicted) would sort the fresh image oldest and
+  delete it — migrating with zero pre-migration backups exactly when the
+  safety net matters (review finding, reproduced and pinned by test).
+  The window keeps three total — the new backup plus the newest two
+  others — converging back to the three-newest rule on subsequent runs.
+- **Bound parameter.** The target path binds to `VACUUM INTO ?` — never
+  interpolated into the SQL literal. The image is a complete standalone
+  database (committed-but-uncheckpointed WAL content included, no `-wal`
+  sidecar — both pinned by test); SQLite refuses the statement from
+  inside a transaction (pinned by test), which the caller's ordering
+  guarantees (see `startup-migrations.ts`).
+- **Timestamps are writer-supplied** (D-021): `now` names the backup; a
+  non-integer or negative value is rejected before the filesystem is
+  touched — it would mint a name outside the grammar, invisible to
+  retention. The backups subdirectory is created by the call (the §11.1
+  database-file auto-create carve-out); a missing _data_ directory fails
+  loudly with `ENOENT` rather than being re-created (the D-030 posture —
+  task 074's lock path owns the data directory).
+
+## `startup-migrations.ts` — §11.4's backup-then-migrate sequence and newer-schema refusal (task 092, decision D-065)
+
+`runStartupMigrations({ database, dataDir, migrations, clock? })` is the
+operation the future server startup wiring calls (the wiring, scheduling,
+and process exit are later tasks'). Returns
+`{ status, applied, backup? }`; the order of its steps **is** the contract:
+
+1. **Read the version relation first** — `schemaVersionStatus`, read-only
+   (it never even creates the journal table). `'newer'` throws
+   `NewerSchemaError` — carrying `supportedVersion`, `appliedVersion`, and
+   the `newerThanSupported` evidence, message naming both versions and the
+   §5.6 remedy (`npm update -g quotameter`, restart) — **before any
+   backup, migration, or runner construction**. The refusal path performs
+   not one write: the main database file is byte-identical after it
+   (pinned by test), which is §11.4's "leave the database unchanged" made
+   strong. The runner must not be constructed before the check — D-027's
+   construction creates the journal table, a write.
+2. **`'up-to-date'` returns without touching anything** — no migrations
+   pending means no backup (§5.6 guards _migrations_) and not even the
+   journal-table write; the early return precedes runner construction,
+   pinned by test.
+3. **`'behind'` backs up only when a pre-migration state exists** —
+   `appliedVersion > 0` runs `createAutomaticBackup` first, so a migration
+   that fails midway still leaves the pre-migration image on disk for the
+   next startup. A database with no tables at all — the fresh install —
+   skips the backup: `VACUUM INTO` of an empty file protects nothing. The
+   carve-out is emptiness, not the journal: a journal-less database with
+   tables (a foreign file, a lost `schema_migrations`) **is** backed up —
+   the pending migrations are about to transform that content (D-065,
+   pinned by test).
+4. **Then the D-027 harness applies pending migrations** — unchanged; a
+   backup failure propagates before any migration runs, so the database
+   stays at its current schema and the next startup retries the sequence.
+
+`test/integration/startup-migrations.spec.ts` verifies the done-condition:
+forward migration with a usable backup (opens independently, integrity ok,
+contains the pre-migration schema and data), backup retention (exactly
+three kept, oldest evicted, foreign files untouched, same-instant name
+disambiguation, and the just-created backup never evicted by its own pass
+— clock step-back and unsuffixed-name revisit included), the newer-schema
+refusal (both versions named, database byte-identical, no backup directory
+created), and interrupted-migration recovery (the backup and the
+pre-migration state survive a failing migration; a corrected re-run
+completes). The primitive's runtime contract is pinned there too:
+committed-but-uncheckpointed WAL content lands in the standalone image,
+and the in-transaction refusal.

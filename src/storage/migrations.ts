@@ -28,7 +28,8 @@
  * - **No connection ownership.** The caller supplies the `DatabaseSync`;
  *   connection creation and the §11.1 pragmas belong to task 079, and
  *   migrations run under the single-instance lock (D-017) at startup.
- *   Backups (`VACUUM INTO`) and newer-schema refusal are task 092's.
+ *   Backups (`VACUUM INTO`) and newer-schema refusal are task 092's
+ *   (`src/storage/backups.ts`, `src/storage/startup-migrations.ts`).
  *
  * Task 080 (decision D-031) adds the metadata layer on top of the journal —
  * the version semantics §11.4 demands beyond raw bookkeeping, without a
