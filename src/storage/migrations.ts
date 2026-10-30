@@ -49,6 +49,12 @@
  * `snapshots` header row with its spec-named account/time index and the
  * parent key its success-linkage foreign key needs — growing the supported
  * schema version to 3. Tasks 084–087 append theirs after it.
+ *
+ * Task 084 (decision D-039) appends the fourth schema migration — the §11.2
+ * `metric_values` row per §8.4 metric with its spec-named series-access
+ * index and the parent key its denormalization-pinning foreign key needs —
+ * growing the supported schema version to 4. Tasks 085–087 append theirs
+ * after it.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -550,17 +556,178 @@ const SNAPSHOTS_MIGRATION: Migration = {
 };
 
 /**
+ * The `metric_values` table, its spec-named series index, and the parent key
+ * its denormalization-pinning foreign key needs (spec §11.2, §8.4; task 084,
+ * decision D-039). One row per metric per snapshot — the persisted §8.4
+ * `NormalizedMetric`, with account and collection time denormalized so
+ * §11.2's series queries never join (§11.3's ≈52k-snapshots-per-account
+ * scale). The typed repository is task 088's.
+ *
+ * - **Column set exactly §11.2's row.** The snapshot reference (`run_id` —
+ *   the identity D-036 pinned: no query references a second metric-row id),
+ *   the denormalized `account_id`/`collected_at`, then §8.4's fields:
+ *   `metric_key`, `limit_type`, `unit`, `window_seconds`, the five quota
+ *   values, `resets_at`, `is_valid`, `invalid_reason`, `derived_fields`.
+ *   §8.4's `label` is deliberately absent — §11.2's row does not list it
+ *   (labels are adapter/UI vocabulary, not history), the D-032 exact-set
+ *   rule. `limit` is stored as `limit_value` because bare `limit` is an SQL
+ *   keyword no unquoted statement can reference safely.
+ * - **Enums are `src/schemas/metrics.ts` mirrored exactly** (D-010): the
+ *   five `LIMIT_TYPES` and four `METRIC_UNITS` values, case-sensitive —
+ *   adding an enum value stays a code change plus a migration (§8.4).
+ * - **Quota values are REAL; metadata seconds and epochs are INTEGER.** The
+ *   §8.4 boundary types all five quota fields as `number` and percentages
+ *   are fractional by nature, so an INTEGER column would reject states the
+ *   domain can produce — the D-032 identical-states rule. `window_seconds`
+ *   (a duration, the D-034 `interval_seconds` precedent) and `resets_at`
+ *   (§11.1 integer epoch ms) are integral by definition.
+ * - **Validity invariants = §8.4/§11.2 stated properties.**
+ *   `metric_values_valid_has_value`: a valid row carries at least one of the
+ *   five quota values ("a valid metric row must include at least one usable
+ *   numeric metric value"). `metric_values_invalid_clean`: an invalid row
+ *   carries none of the five — NULL, never zero placeholders — while
+ *   `window_seconds`/`resets_at` may be retained (D-010(2): a window length
+ *   or reset schedule can remain known when a reading fails).
+ *   `metric_values_invalid_reason` is one-directional — invalid requires a
+ *   reason; a valid row's reason is unconstrained — the D-034
+ *   `collection_runs_success_clean` pattern of encoding exactly what the
+ *   spec states and nothing a writer merely happens to guarantee.
+ * - **`derived_fields` is a 5-bit mask** over D-010's closed
+ *   `DERIVED_METRIC_FIELDS` order (used=1, remaining=2, limit=4,
+ *   percentUsed=8, percentRemaining=16): NULL = absent, 0 = empty set,
+ *   0–31 = exactly the power set of the closed set. A set outside the
+ *   closed list is unrepresentable — CHECKs cannot validate per-element
+ *   membership of a JSON array (no subqueries), so a JSON encoding would
+ *   have left the closed set a writer contract, the alternative D-036
+ *   rejected for snapshots' success linkage. `metric_values_derived_present`
+ *   additionally couples every set bit to its column's presence — D-010's
+ *   "listed as derived but the field is not set" record invariant, in SQL
+ *   (review finding); as a side effect an invalid row (all five quota
+ *   columns NULL) can carry only the NULL or 0 mask. The repository
+ *   (task 088) encodes/decodes; the assignment is on-disk contract.
+ * - **Denormalization pinned by the D-036 composite-FK technique.**
+ *   `(account_id, run_id, collected_at)` references
+ *   `snapshots (account_id, run_id, collected_at)` `ON DELETE CASCADE` — a
+ *   parent key this migration exposes through the `snapshots_account_run_time`
+ *   unique index — so the copied account and time can never drift from their
+ *   snapshot: one constraint proves the snapshot exists, the account
+ *   matches, and the series time matches. The parent-side default (ON
+ *   UPDATE NO ACTION) additionally freezes a referenced snapshot's identity
+ *   against post-hoc UPDATEs. The direct `account_id → accounts` FK is kept
+ *   alongside it, the D-036 both-foreign-keys shape: §11.2's "cascading
+ *   deletion consistently" names the account path explicitly.
+ * - **One metric per key per snapshot is structural**: `UNIQUE
+ *   (run_id, metric_key)` — the storage face of §8.4's "keys are unique
+ *   within a snapshot". Its autoindex (leading `run_id`) also serves the
+ *   snapshot/run cascade scans, the D-034 one-index-two-jobs pattern.
+ * - **No range CHECKs on `window_seconds`/`resets_at`.** The §8.4 boundary
+ *   validates only finiteness for them (D-010); inventing bounds here would
+ *   make storage reject states the domain can produce. Timing sanity ends
+ *   at STRICT's integer typing and the FK-pinned epoch column.
+ * - **No SQL defaults.** Every value is writer-supplied from validated
+ *   normalized data (task 088 supplies clock timestamps, D-021).
+ */
+const METRIC_VALUES_MIGRATION: Migration = {
+  name: '0004-metric-values',
+  up: ({ database }) => {
+    database.exec(`
+      CREATE UNIQUE INDEX snapshots_account_run_time
+        ON snapshots (account_id, run_id, collected_at);
+
+      CREATE TABLE metric_values (
+        run_id INTEGER NOT NULL,
+        account_id TEXT NOT NULL,
+        collected_at INTEGER NOT NULL,
+        metric_key TEXT NOT NULL,
+        limit_type TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        window_seconds INTEGER,
+        used REAL,
+        remaining REAL,
+        limit_value REAL,
+        percent_used REAL,
+        percent_remaining REAL,
+        resets_at INTEGER,
+        is_valid INTEGER NOT NULL,
+        invalid_reason TEXT,
+        derived_fields INTEGER,
+        CONSTRAINT metric_values_account_charset CHECK (
+          account_id GLOB '[A-Za-z0-9]*'
+          AND account_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          AND length(account_id) BETWEEN 1 AND 64
+          AND instr(account_id, char(0)) = 0
+        ),
+        CONSTRAINT metric_values_metric_key_nonempty CHECK (metric_key <> ''),
+        CONSTRAINT metric_values_limit_type CHECK (
+          limit_type IN ('ROLLING_WINDOW', 'DAILY', 'WEEKLY', 'MONTHLY', 'OTHER')
+        ),
+        CONSTRAINT metric_values_unit CHECK (
+          unit IN ('TOKENS', 'CREDITS', 'REQUESTS', 'PERCENT')
+        ),
+        CONSTRAINT metric_values_valid_flag CHECK (is_valid IN (0, 1)),
+        CONSTRAINT metric_values_valid_has_value CHECK (
+          is_valid = 0
+          OR used IS NOT NULL
+          OR remaining IS NOT NULL
+          OR limit_value IS NOT NULL
+          OR percent_used IS NOT NULL
+          OR percent_remaining IS NOT NULL
+        ),
+        CONSTRAINT metric_values_invalid_clean CHECK (
+          is_valid = 1
+          OR (
+            used IS NULL
+            AND remaining IS NULL
+            AND limit_value IS NULL
+            AND percent_used IS NULL
+            AND percent_remaining IS NULL
+          )
+        ),
+        CONSTRAINT metric_values_invalid_reason CHECK (
+          is_valid = 1 OR invalid_reason IS NOT NULL
+        ),
+        CONSTRAINT metric_values_invalid_reason_nonempty CHECK (
+          invalid_reason IS NULL OR invalid_reason <> ''
+        ),
+        CONSTRAINT metric_values_derived_fields_range CHECK (
+          derived_fields IS NULL OR derived_fields BETWEEN 0 AND 31
+        ),
+        CONSTRAINT metric_values_derived_present CHECK (
+          derived_fields IS NULL
+          OR (
+            ((derived_fields & 1) = 0 OR used IS NOT NULL)
+            AND ((derived_fields & 2) = 0 OR remaining IS NOT NULL)
+            AND ((derived_fields & 4) = 0 OR limit_value IS NOT NULL)
+            AND ((derived_fields & 8) = 0 OR percent_used IS NOT NULL)
+            AND ((derived_fields & 16) = 0 OR percent_remaining IS NOT NULL)
+          )
+        ),
+        UNIQUE (run_id, metric_key),
+        FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE,
+        FOREIGN KEY (account_id, run_id, collected_at)
+          REFERENCES snapshots (account_id, run_id, collected_at) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX metric_values_series_access
+        ON metric_values (account_id, metric_key, collected_at);
+    `);
+  },
+};
+
+/**
  * The application's canonical migration set (§11.4, D-031): the one ordered
  * list the composition root hands to {@link createMigrationRunner}, grown by
  * one entry per schema change — `0001-accounts` since task 081 (D-032),
  * `0002-collection-runs` since task 082 (D-034), `0003-snapshots` since
- * task 083 (D-036); tasks 084–087 append theirs after it. The journal table
- * itself comes from the storage adapter, not from a migration.
+ * task 083 (D-036), `0004-metric-values` since task 084 (D-039); tasks
+ * 085–087 append theirs after it. The journal table itself comes from the
+ * storage adapter, not from a migration.
  */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   ACCOUNTS_MIGRATION,
   COLLECTION_RUNS_MIGRATION,
   SNAPSHOTS_MIGRATION,
+  METRIC_VALUES_MIGRATION,
 ];
 
 /**

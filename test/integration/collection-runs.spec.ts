@@ -186,23 +186,23 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         migrations: schemaOneSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 3,
+        supportedVersion: 4,
         appliedVersion: 1,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The canonical set, grown by tasks 082–083, completes it: both
+      // The canonical set, grown by tasks 082–084, completes it: the three
       // newer migrations apply in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0002-collection-runs', '0003-snapshots']);
+      expect(applied).toEqual(['0002-collection-runs', '0003-snapshots', '0004-metric-values']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 3,
-        appliedVersion: 3,
+        supportedVersion: 4,
+        appliedVersion: 4,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
@@ -218,6 +218,7 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         { name: '0001-accounts', applied_at: T0 },
         { name: '0002-collection-runs', applied_at: T0 + 1 },
         { name: '0003-snapshots', applied_at: T0 + 1 },
+        { name: '0004-metric-values', applied_at: T0 + 1 },
       ]);
       reader.close();
 

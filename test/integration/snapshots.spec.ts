@@ -44,8 +44,12 @@ const EXPECTED_COLUMNS = [
  * reports them: §11.2's named account/time index (created by the migration)
  * and the autoindex of the `run_id UNIQUE` constraint — the structural
  * at-most-one-snapshot-per-run enforcement (origin 'u' = UNIQUE constraint).
+ * `snapshots_account_run_time` is the parent key task 084's `metric_values`
+ * migration adds for its denormalization-pinning composite FK (D-036's
+ * precedent for a later migration's parent key).
  */
 const EXPECTED_INDEXES = [
+  { name: 'snapshots_account_run_time', unique: 1, origin: 'c' },
   { name: 'snapshots_account_time', unique: 0, origin: 'c' },
   { name: 'sqlite_autoindex_snapshots_1', unique: 1, origin: 'u' },
 ] as const;
@@ -183,8 +187,13 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
       const dbPath = dir.sqlitePath('snapshots-forward.sqlite');
 
       // §11.4's forward test from the previous supported schema: a database
-      // at schema 2 — migrated by the task-082 canonical set (0001–0002).
-      const schemaTwoSet = MIGRATIONS.filter((migration) => migration.name !== '0003-snapshots');
+      // at schema 2 — migrated by the task-082 canonical set (0001–0002);
+      // every later migration is excluded, or 0004 would run without the
+      // snapshots table 0003 creates.
+      const schemaTwoSet = MIGRATIONS.filter(
+        (migration) =>
+          migration.name !== '0003-snapshots' && migration.name !== '0004-metric-values',
+      );
       const db = new DatabaseSync(dbPath);
       await createMigrationRunner({
         database: db,
@@ -192,28 +201,29 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
         migrations: schemaTwoSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 3,
+        supportedVersion: 4,
         appliedVersion: 2,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The one new migration completes it.
+      // The canonical set, grown by tasks 083–084, completes it: both newer
+      // migrations apply in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0003-snapshots']);
+      expect(applied).toEqual(['0003-snapshots', '0004-metric-values']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 3,
-        appliedVersion: 3,
+        supportedVersion: 4,
+        appliedVersion: 4,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: all three entries
+      // Journal proven through an independent connection: all four entries
       // with their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
@@ -223,6 +233,7 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
         { name: '0001-accounts', applied_at: T0 },
         { name: '0002-collection-runs', applied_at: T0 },
         { name: '0003-snapshots', applied_at: T0 + 1 },
+        { name: '0004-metric-values', applied_at: T0 + 1 },
       ]);
       reader.close();
 

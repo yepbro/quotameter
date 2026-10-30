@@ -278,3 +278,85 @@ run_outcome)` matching the parent `(account_id, id, outcome)` proves three
 - **No cross-table time CHECK** — `collected_at` is not ordered against the
   run's timestamps: the clock-skew leniency D-032/D-034 recorded, and CHECK
   constraints cannot span tables regardless.
+
+## The `metric_values` table — migration `0004-metric-values` (task 084, spec §11.2, §8.4, decision D-039)
+
+The fourth entry of the canonical `MIGRATIONS` list (schema version 4). One
+row per metric per snapshot — the persisted §8.4 `NormalizedMetric`, with
+account and collection time denormalized so §11.2's series queries never
+join (§11.3's ≈52k-snapshots-per-account scale). Exercised directly in
+`test/integration/metric-values.spec.ts`; the typed data access is task
+088's repository.
+
+| Column              | Type      | Rules                                                                                        |
+| ------------------- | --------- | -------------------------------------------------------------------------------------------- |
+| `run_id`            | `INTEGER` | `NOT NULL` — the snapshot identity (D-036); composite-FK carrier below                       |
+| `account_id`        | `TEXT`    | `NOT NULL`, `metric_values_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE` |
+| `collected_at`      | `INTEGER` | `NOT NULL`, §11.1 epoch ms, composite-FK carrier — pinned to the snapshot's value            |
+| `metric_key`        | `TEXT`    | `NOT NULL`, `metric_values_metric_key_nonempty`                                              |
+| `limit_type`        | `TEXT`    | `NOT NULL`, `metric_values_limit_type`: the five `LIMIT_TYPES` values only                   |
+| `unit`              | `TEXT`    | `NOT NULL`, `metric_values_unit`: the four `METRIC_UNITS` values only                        |
+| `window_seconds`    | `INTEGER` | nullable; no range CHECK (the §8.4 boundary validates only finiteness)                       |
+| `used`              | `REAL`    | nullable quota column                                                                        |
+| `remaining`         | `REAL`    | nullable quota column                                                                        |
+| `limit_value`       | `REAL`    | nullable quota column; `limit` renamed — bare `limit` is an SQL keyword                      |
+| `percent_used`      | `REAL`    | nullable quota column                                                                        |
+| `percent_remaining` | `REAL`    | nullable quota column                                                                        |
+| `resets_at`         | `INTEGER` | nullable, §11.1 epoch ms; retainable on invalid rows (D-010(2))                              |
+| `is_valid`          | `INTEGER` | `NOT NULL`, `metric_values_valid_flag`: 0/1 only                                             |
+| `invalid_reason`    | `TEXT`    | nullable, absent-or-non-blank; required when invalid (`metric_values_invalid_reason`)        |
+| `derived_fields`    | `INTEGER` | nullable, `metric_values_derived_fields_range`: 0–31 bitmask over D-010's field order        |
+
+Structural constraints beyond the columns:
+
+- `UNIQUE (run_id, metric_key)` — one row per metric per snapshot; the
+  storage face of §8.4's "keys are unique within a snapshot". Its autoindex
+  (leading `run_id`) also serves the snapshot/run cascade scans.
+- `metric_values_valid_has_value` — a valid row carries at least one of the
+  five quota values (§11.2 "a valid metric row must include at least one
+  usable numeric metric value").
+- `metric_values_invalid_clean` — an invalid row carries none of the five:
+  NULL, never zero placeholders (§11.2/D-010); `window_seconds` and
+  `resets_at` may be retained.
+- `metric_values_derived_present` — every set bit requires its column
+  present: D-010's "listed as derived but the field is not set" record
+  invariant, structurally; an invalid row (all five quota columns NULL) can
+  carry only the NULL or 0 mask.
+- Composite FK `(account_id, run_id, collected_at)` →
+  `snapshots (account_id, run_id, collected_at)` `ON DELETE CASCADE` — a
+  parent key this migration exposes by adding the unique index
+  `snapshots_account_run_time`. One constraint proves the snapshot exists,
+  the account matches, and the denormalized time matches (the D-036
+  technique); the parent-side NO ACTION default freezes a referenced
+  snapshot's identity against post-hoc UPDATEs. The direct
+  `account_id → accounts` FK is kept alongside it (the D-036 shape).
+
+Index (§11.2 "series access"): `metric_values_series_access
+(account_id, metric_key, collected_at)` — the spec's wording, named the
+D-034 way; proven used via `EXPLAIN QUERY PLAN`.
+
+Pinned interpretations (D-039):
+
+- **No `label` column** — §11.2's metric_values row does not list it
+  (labels are adapter/UI vocabulary, not history); the D-032 exact-set rule.
+- **Quota values REAL, metadata INTEGER** — the §8.4 boundary types the five
+  quota fields as `number` and percentages are fractional; an INTEGER column
+  would reject states the domain can produce (the D-032 identical-states
+  rule). `window_seconds` (a duration, D-034's `interval_seconds` precedent)
+  and `resets_at` (§11.1 integer epoch ms) are integral by definition.
+- **`derived_fields` bitmask** — used=1, remaining=2, limit=4,
+  percentUsed=8, percentRemaining=16 (D-010's `DERIVED_METRIC_FIELDS`
+  order); NULL = absent, 0 = empty set, 0–31 = exactly the power set of the
+  closed set. A set outside the closed list is unrepresentable; a JSON
+  encoding was rejected because CHECK constraints cannot validate
+  per-element membership, which would leave the closed set a writer
+  contract. Each set bit is additionally coupled to its column's presence
+  (`metric_values_derived_present`), mirroring the §8.4 boundary's
+  derived⇒set invariant. The repository (task 088) encodes/decodes; the bit
+  assignment is on-disk contract.
+- **`metric_values_invalid_reason` is one-directional** — invalid requires a
+  non-blank reason; a valid row's reason is unconstrained, mirroring D-034's
+  `collection_runs_success_clean` (encode exactly what the spec states).
+- **No range CHECKs on `window_seconds`/`resets_at`** — the §8.4 boundary
+  validates only finiteness for them; invented bounds would reject states
+  the domain can produce.
