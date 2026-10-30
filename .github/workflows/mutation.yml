@@ -1,0 +1,134 @@
+# Daily mutation testing with issue-based triage (spec §17.3, task 055;
+# cadence decided in DECISIONS.md D-045).
+#
+# Runs the full Stryker suite once a day on `master` (also triggerable
+# manually) and upserts a rolling GitHub issue labeled `mutation-report`:
+# the body always shows the latest report, each run appends its summary as
+# a comment so the history stays reviewable. Uses the preinstalled `gh`
+# CLI instead of a third-party action (the repository pins actions by
+# commit SHA and adds none here).
+name: mutation
+
+on:
+  schedule:
+    # 02:17 UTC daily — morning triage time for the maintainer (UTC+7),
+    # off the round minute to avoid the cron congestion window.
+    - cron: '17 2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: mutation
+  cancel-in-progress: false
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Below-threshold results must still produce the triage issue, so the
+      # step's failure is recorded instead of stopping the job.
+      - name: Run mutation tests
+        id: stryker
+        continue-on-error: true
+        run: npm run test:mutation
+
+      - name: Retain mutation report artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Render report markdown
+        if: always()
+        env:
+          STRYKER_OUTCOME: ${{ steps.stryker.outcome }}
+        run: |
+          node <<'SCRIPT' > /tmp/mutation-report.md
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync('reports/mutation/mutation.json', 'utf8'));
+          const tally = { killed: 0, survived: 0, timedOut: 0, noCoverage: 0, compileError: 0, runtimeError: 0, ignored: 0, pending: 0 };
+          const perFile = [];
+          const survived = [];
+          for (const [file, data] of Object.entries(report.files ?? {})) {
+            const fileTally = { ...tally };
+            for (const m of data.mutants ?? []) {
+              if (m.status in fileTally) fileTally[m.status] += 1;
+              tally[m.status] = (tally[m.status] ?? 0) + 1;
+              if (m.status === 'survived') {
+                survived.push({ file, line: m.location.start.line, mutator: m.mutatorName });
+              }
+            }
+            const total = (data.mutants ?? []).length;
+            const detected = fileTally.killed + fileTally.timedOut;
+            perFile.push({ file, total, detected, survived: fileTally.survived, score: total ? Math.round((detected / total) * 1000) / 10 : null });
+          }
+          const total = Object.values(tally).reduce((a, b) => a + b, 0);
+          const detected = tally.killed + tally.timedOut;
+          const score = total ? Math.round(((detected / total) * 100) * 10) / 10 : null;
+          const belowThreshold = process.env.STRYKER_OUTCOME === 'failure';
+          const date = new Date().toISOString().slice(0, 10);
+          const lines = [];
+          lines.push(`Daily mutation report — ${date}`, '');
+          lines.push(`- Verdict: ${belowThreshold ? '**below the configured break threshold** (see stryker.config.mjs)' : 'within the configured thresholds'}`);
+          lines.push(`- Mutation score: ${score}% (${detected} detected of ${total} mutants — killed ${tally.killed}, timed out ${tally.timedOut})`);
+          lines.push(`- Survived: ${tally.survived}, no coverage: ${tally.noCoverage}, ignored: ${tally.ignored}`);
+          lines.push(`- Thresholds and scope: \`stryker.config.mjs\` (scope and cadence decision: DECISIONS.md D-045)`, '');
+          lines.push('## Per-file results', '', '| File | Mutants | Detected | Survived | Score |', '| --- | ---: | ---: | ---: | ---: |');
+          for (const f of perFile.filter((x) => x.total > 0)) {
+            lines.push(`| \`${f.file}\` | ${f.total} | ${f.detected} | ${f.survived} | ${f.score === null ? '—' : f.score + '%'} |`);
+          }
+          lines.push('', '## Survived mutants (triage list)', '');
+          if (survived.length === 0) {
+            lines.push('None — every generated mutant was detected.');
+          } else {
+            for (const s of survived.slice(0, 200)) {
+              lines.push(`- \`${s.file}:${s.line}\` — ${s.mutator}${survived.length > 200 ? '' : ''}`);
+            }
+            if (survived.length > 200) lines.push(`- …and ${survived.length - 200} more (see the uploaded artifact)`);
+          }
+          lines.push('', '<sub>Generated by `.github/workflows/mutation.yml`; full JSON/HTML in the run artifact.</sub>');
+          console.log(lines.join('\n'));
+          SCRIPT
+
+      - name: Upsert the triage issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          STRYKER_OUTCOME: ${{ steps.stryker.outcome }}
+        run: |
+          set -euo pipefail
+          date=$(date -u +%F)
+          verdict=$([ "$STRYKER_OUTCOME" = failure ] && echo "below threshold" || echo "pass")
+          title="Mutation report — rolling (last run: ${date}, ${verdict})"
+          number=$(gh issue list --repo "$REPO" --label mutation-report --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --repo "$REPO" --title "$title" --body-file /tmp/mutation-report.md
+          else
+            number=$(gh issue create --repo "$REPO" --title "$title" --label mutation-report --body-file /tmp/mutation-report.md | grep -oE '[0-9]+$')
+          fi
+          gh issue comment "$number" --repo "$REPO" --body "Run of ${date}: ${verdict} — full report in the issue body and the run artifact."
+
+      - name: Fail the job after reporting when below threshold
+        if: steps.stryker.outcome == 'failure'
+        run: |
+          echo "::error::Mutation score is below the configured break threshold; see the mutation-report issue."
+          exit 1

@@ -9,7 +9,7 @@
 ## Branch protection and CI
 
 - `master` is protected: pull requests + the required status check named exactly **`CI`** are enforced; force-pushes and branch deletion are disabled.
-- The required check is a **gate job** named `CI` in `.github/workflows/ci.yml` that fails when any job behind it fails (static, test matrix, install containers, package, unsupported-node, mutation). Never rename it; add new jobs to its `needs`.
+- The required check is a **gate job** named `CI` in `.github/workflows/ci.yml` that fails when any job behind it fails (static, test matrix, install containers, package, unsupported-node). Never rename it; add new jobs to its `needs`. Mutation testing lives in the separate daily `.github/workflows/mutation.yml` (D-045) and does not gate pushes.
 - Admin (`yepbro`) may push directly — used during bootstrap; regular work lands via squash-merged PRs.
 - Node matrix: `22.13.0` (declared minimum), `22`, `24`. Add the next LTS to the matrix when it ships.
 - Diagnosing a red run: `gh api "repos/yepbro/quotameter/actions/runs?head_sha=<full-sha>"` → job ids → `gh run view --job <id> --log`.

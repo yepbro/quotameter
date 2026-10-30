@@ -26,9 +26,12 @@ export default {
   },
   mutate: ['src/**/*.ts'],
   coverageAnalysis: 'perTest',
-  reporters: ['clear-text', 'progress', 'html'],
+  reporters: ['clear-text', 'progress', 'html', 'json'],
   htmlReporter: {
     fileName: htmlReportFile,
+  },
+  jsonReporter: {
+    fileName: `${reportsDir}/mutation/mutation.json`,
   },
   tempDirName: tempDir,
   thresholds: {

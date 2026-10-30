@@ -64,7 +64,6 @@ check-all: ## Full CI parity: every check CI runs, locally in the container
 	$(RUN) npm run test:ci; \
 	$(MAKE) --no-print-directory build; \
 	$(RUN) npm run test:e2e; \
-	$(RUN) npm run test:mutation; \
 	$(MAKE) --no-print-directory package; \
 	echo "All checks passed."
 

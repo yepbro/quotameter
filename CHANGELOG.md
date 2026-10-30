@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Mutation testing moved out of `make check-all` and per-push CI into a daily scheduled workflow (`.github/workflows/mutation.yml`) that upserts a rolling `mutation-report` issue with score, per-file table, and survived-mutant triage list; `make mutation` still runs it manually (decision D-045).
+
 ### Added
 
 - MIT `LICENSE` and attribution `NOTICE` files.
