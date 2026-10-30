@@ -4,8 +4,9 @@ All `node:sqlite` access is isolated here (spec §3, §11): the connection and
 pragmas (079), forward-only migrations with backups (078, 080–092),
 `QuotaRepository` — the typed facade the application consumes (088) — the
 atomic collection-cycle write composed over it (089), the §8.2 account
-archive/purge lifecycle operations (090), and the §11.3 retention cleanup
-with its WAL-checkpoint maintenance primitive (091). Rows are mapped to typed
+archive/purge lifecycle operations (090), the §11.3 retention cleanup
+with its WAL-checkpoint maintenance primitive (091), and the §7.4
+raw-payload per-account cap (103). Rows are mapped to typed
 domain records from `src/schemas/` before leaving this layer.
 
 **Rule:** may import only `src/schemas/` and `src/util/`. No SQL is issued
@@ -696,8 +697,12 @@ snapshots, events, and raw payloads, and the connection staying usable.
   and the §8.4 boundary admits zero-metric snapshots.
 - **No pre-validation, no wrapping** — the named CHECK constraints remain the
   write gate (D-058); the function validates nothing beforehand and swallows
-  nothing. Task 110's poller hands classified cycles to this seam; reset-event
-  detection (§12.1, tasks 117/118) and scheduling happen before the call.
+  nothing. One policy exception: storing a §7.4 payload also enforces §7.4's
+  per-account cap inside the same transaction (see
+  `raw-response-retention.ts` below — the cap is retention policy composed
+  over the facade, not row validation). Task 110's poller hands classified
+  cycles to this seam; reset-event detection (§12.1, tasks 117/118) and
+  scheduling happen before the call.
 
 ## `account-lifecycle.ts` — the §8.2 archive/purge operations (task 090, spec §8.2, §11.2, decision D-061)
 
@@ -833,6 +838,56 @@ go), then at an earlier one (a harmless no-op).
   config/UI layer reads `retention:applied-days` and warns when a newly
   configured window is smaller: the records between the two windows are
   exactly what the next cleanup deletes.
+
+## `raw-response-retention.ts` — the §7.4 per-account cap (task 103, spec §7.4, §5.5, decision D-067)
+
+`enforceRawResponseCap(repository, accountId) → { retained, evicted }` is
+the count-based half of §7.4's retention sentence ("retain no more than 20
+responses per account and no more than 30 days"): it keeps the account's
+newest `RAW_RESPONSE_MAX_PER_ACCOUNT = 20` payloads (the facade's
+`captured_at DESC, run_id DESC` order — the run-id tiebreak makes
+same-instant eviction deterministic) and deletes the rest by run id,
+composing exactly the two D-058 primitives designed for it
+(`listRawResponses` + `deleteRawResponsesByRunIds`). The time-based half
+stays in `retention-cleanup.ts` — D-063's recorded boundary: 091 expires
+age, 103 counts records, and neither module does the other's job.
+
+- **A sibling module, not facade methods** (D-060/D-061/D-063 pattern, the
+  fourth application); the cap constant is fixed §7.4 policy, not
+  configuration — the count twin of `RAW_RESPONSE_MAX_AGE_DAYS`.
+- **Enforcement runs at the write moment**: `persistCollectionCycle` calls
+  this function inside the cycle's own transaction (§11.1) whenever it
+  stores a §7.4 payload, so after any committed parse-failure cycle the
+  account holds at most 20 payloads — continuously true, not eventually
+  true (a cleanup-cadence cap would retain ~1 400/day-worth of rows
+  between passes at §7.1's polling floor; a read-time cap would be
+  cosmetic). Task 110 drives every cycle through the 089 seam, so no
+  sanctioned write path bypasses the cap; the eviction is atomic with the
+  write (an injected failure rolls the whole cycle back, run row included).
+- **One pass repairs any overshoot** — the listing is unbounded on purpose,
+  so a facade-seeded state or a future cap-lowering successor is cut to the
+  newest 20 by a single call. (One accepted ceiling: a pathological
+  facade-seeded overshoot past SQLite's ~32 766 statement-variable limit
+  fails the eviction statement loudly, deleting nothing — unreachable
+  through the sanctioned write path, which evicts at most one row per
+  cycle.)
+- **Eviction deletes payloads only** — the dropped runs' `collection_runs`
+  rows survive: §7.4 caps the payload, not the §11.1 history unit; every
+  other account is untouched (the listing is account-scoped).
+- **Exposure is not this module's concern** — §7.4's "only through
+  `quotameter doctor --raw <account>` (never over HTTP or in the web UI)"
+  is enforced structurally by `test/unit/raw-response-gate.spec.ts` (the
+  D-058 SQL-gate pattern), which confines the raw-payload surface to
+  `src/storage/**` and the `src/cli/**` consumer layer.
+
+`test/integration/raw-response-retention.spec.ts` pins the done-condition:
+after **every** parse-failure write the account holds ≤ 20; the 21st write
+evicts exactly the oldest payload (its run surviving); the boundary at
+exactly 20 evicts nothing; accounts are capped independently; the
+same-instant `run_id` tiebreak and an out-of-order arrival older than
+everything retained evict by the pinned order; and the standalone pass
+repairs a facade-seeded overshoot and rejects a blank account id before
+touching any row.
 
 ## `backups.ts` — the automatic `VACUUM INTO` backup primitive (task 092, spec §5.6, §11.4, decision D-065)
 

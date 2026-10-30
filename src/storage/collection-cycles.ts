@@ -10,7 +10,10 @@
  * {@link QuotaRepository.withTransaction} seam (D-058) — the run row always;
  * the snapshot, its metric rows, and its reset events together for a
  * successful cycle; the §7.4 sanitized payload alongside the run for a
- * parse-failure cycle. Any failure — a named CHECK rejecting a row, a UNIQUE
+ * parse-failure cycle. That write also enforces §7.4's per-account cap (20)
+ * inside the same transaction (task 103, decision D-067) — a payload lands
+ * only together with the eviction of whatever it pushed out of policy. Any
+ * failure — a named CHECK rejecting a row, a UNIQUE
  * collision, or a driver-level throw — rolls the whole cycle back and
  * propagates unchanged: a run row can never survive without its snapshot, a
  * snapshot never without its metric rows, an event never without the
@@ -60,6 +63,7 @@ import type {
   QuotaRepository,
   RunOutcome,
 } from './repository';
+import { enforceRawResponseCap } from './raw-response-retention';
 
 /* ── Identity-free row inputs (the facade rows minus what this writer adds) ── */
 
@@ -208,6 +212,11 @@ export function persistCollectionCycle(
       cycle.rawResponse !== null
     ) {
       tx.insertRawResponse({ ...cycle.rawResponse, accountId: cycle.accountId, runId });
+      // §7.4's per-account cap, at the only sanctioned write moment and in
+      // the same transaction: the cycle commits only with the account
+      // already at or under 20 retained payloads, so the cap is continuously
+      // true rather than eventually true (task 103, decision D-067).
+      enforceRawResponseCap(tx, cycle.accountId);
     }
     return runId;
   });

@@ -111,10 +111,23 @@ export function buildCommandTable(): Command[] {
       ],
     },
     stub('passwd', 'Set or change the web password', ['passwd']),
-    stub(
-      'doctor',
-      'Diagnose runtime, configuration, database, network, credentials, and service issues',
-      ['doctor'],
-    ),
+    // Doctor's option surface is declared now because spec §5.5/§7.4 fix it
+    // (`quotameter doctor --raw <account>` — the CLI-only raw-payload
+    // diagnostic, fed by `src/cli/raw-diagnostics.ts`, task 103); the
+    // handler itself stays a stub until task 145 implements the checks.
+    {
+      kind: 'leaf',
+      name: 'doctor',
+      summary:
+        'Diagnose runtime, configuration, database, network, credentials, and service issues',
+      options: {
+        raw: {
+          type: 'string',
+          description: 'Show sanitized provider responses stored for parse failures of <account>',
+        },
+      },
+      maxPositionals: 0,
+      run: notImplemented(['doctor']),
+    },
   ];
 }

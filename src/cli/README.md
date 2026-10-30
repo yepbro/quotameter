@@ -11,13 +11,14 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 
 ## Dispatch skeleton (task 128, decision D-044)
 
-| File          | Owns                                                                                                  |
-| ------------- | ----------------------------------------------------------------------------------------------------- |
-| `main.ts`     | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                 |
-| `commands.ts` | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub |
-| `parser.ts`   | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                             |
-| `help.ts`     | pure help renderers (general, command, group)                                                         |
-| `output.ts`   | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                              |
+| File                 | Owns                                                                                                  |
+| -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `main.ts`            | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                 |
+| `commands.ts`        | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub |
+| `parser.ts`          | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                             |
+| `help.ts`            | pure help renderers (general, command, group)                                                         |
+| `output.ts`          | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                              |
+| `raw-diagnostics.ts` | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -59,6 +60,24 @@ that name or its short. Subcommand nesting is exactly one level
 (`service`), which is all §5.2 defines. Handlers receive parsed
 `flags`/`positionals`; thrown errors are reported as command failures
 (exit 1), so prefer returning precise codes.
+
+## The `doctor --raw` diagnostic read path (task 103, spec §7.4/§5.5, decision D-067)
+
+`raw-diagnostics.ts` is the **only** sanctioned raw-payload consumer
+outside `src/storage/`: `readRawDiagnostics(repository, accountId)` reads
+the account's retained §7.4 payloads (newest first, bounded by the
+20-per-account cap the storage write path enforces), and
+`renderRawDiagnostics(records)` renders them as text — a header per record
+(run id, captured instant as ISO 8601 UTC, HTTP status/content type with
+explicit `no HTTP status`/`unknown content type` words when absent) and the
+sanitized body verbatim below it (D-041: pretty-printing is a display
+concern). The `doctor` row in `commands.ts` declares the spec-fixed
+`--raw <account>` option; task 145's handler composes the two functions
+behind it. §7.4's "(never over HTTP or in the web UI)" is enforced
+mechanically by `test/unit/raw-response-gate.spec.ts`: any `src/**` or
+`ui/**` file outside `src/storage/**` and `src/cli/**` that references the
+raw-payload surface (facade identifiers, or this module's own API and
+import path) fails `make check`.
 
 ### Launcher notes (`bin/quotameter.mjs`)
 
