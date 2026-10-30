@@ -121,21 +121,25 @@ function allAccounts(database: DatabaseSync): StoredAccount[] {
 }
 
 describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
-  it('is the first canonical migration: schema 0 applies it forward to up-to-date version 1', async () => {
+  it('is the first canonical migration: schema 0 applies the full canonical set forward', async () => {
     await withTempDir(async (dir) => {
       const dbPath = dir.sqlitePath('accounts-migration.sqlite');
       const db = new DatabaseSync(dbPath);
 
-      // The canonical set since this task: exactly one migration, version 1.
-      expect(MIGRATIONS.map((migration) => migration.name)).toEqual(['0001-accounts']);
+      // The canonical set, grown by task 082: accounts remains the first
+      // migration; the newest version is now 2.
+      expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
+        '0001-accounts',
+        '0002-collection-runs',
+      ]);
       expect(migrationVersion('0001-accounts')).toBe(1);
-      expect(supportedSchemaVersion(MIGRATIONS)).toBe(1);
+      expect(supportedSchemaVersion(MIGRATIONS)).toBe(2);
 
-      // §11.4's forward test from the previous supported schema: a database
-      // at schema 0 (the pre-081 state — an empty journal) is behind, and
-      // the one new migration brings it up-to-date at version 1.
+      // §11.4's forward test: a database at schema 0 (the pre-081 state —
+      // an empty journal) is behind, and applying the set brings it
+      // up-to-date at the newest version.
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 1,
+        supportedVersion: 2,
         appliedVersion: 0,
         relation: 'behind',
         newerThanSupported: [],
@@ -145,10 +149,10 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
         clock: createFixedClock(T0),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0001-accounts']);
+      expect(applied).toEqual(['0001-accounts', '0002-collection-runs']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 1,
-        appliedVersion: 1,
+        supportedVersion: 2,
+        appliedVersion: 2,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
@@ -160,11 +164,18 @@ describe('accounts table (task 081, spec §11.2, decision D-032)', () => {
       const tables = reader
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name ASC")
         .all() as Array<{ name: string }>;
-      expect(tables.map((table) => table.name)).toEqual(['accounts', MIGRATIONS_TABLE]);
+      expect(tables.map((table) => table.name)).toEqual([
+        'accounts',
+        'collection_runs',
+        MIGRATIONS_TABLE,
+      ]);
       const journal = reader
         .prepare(`SELECT name, applied_at FROM ${MIGRATIONS_TABLE} ORDER BY name ASC`)
         .all() as Array<{ name: string; applied_at: number }>;
-      expect(journal).toEqual([{ name: '0001-accounts', applied_at: T0 }]);
+      expect(journal).toEqual([
+        { name: '0001-accounts', applied_at: T0 },
+        { name: '0002-collection-runs', applied_at: T0 },
+      ]);
       reader.close();
 
       // The recorded state is respected: a re-run is a no-op.

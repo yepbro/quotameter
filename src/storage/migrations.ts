@@ -40,6 +40,10 @@
  * Task 081 (decision D-032) appends the first schema migration — the §11.2
  * `accounts` table — growing the canonical set and the supported schema
  * version to 1. Tasks 082–087 append theirs after it.
+ *
+ * Task 082 (decision D-034) appends the second schema migration — the §11.2
+ * `collection_runs` table with its two spec-named indexes — growing the
+ * supported schema version to 2. Tasks 083–087 append theirs after it.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -352,13 +356,117 @@ const ACCOUNTS_MIGRATION: Migration = {
 };
 
 /**
+ * The `collection_runs` table and its indexes (spec §11.2; task 082,
+ * decision D-034). One row per polling cycle — successful or not (§11.1
+ * "store a run record for every collection cycle, successful or
+ * unsuccessful") — capturing what §7.2's retry/error behaviors must leave
+ * behind:
+ *
+ * - **Synthetic id.** `id INTEGER PRIMARY KEY` — the rowid alias SQLite
+ *   auto-assigns — is the run id §11.2's `snapshots` row references. No
+ *   `AUTOINCREMENT`: §11.2 mandates cascading deletion consistently, so a
+ *   deleted run's history dies with it and rowid recycling cannot create a
+ *   stale reference. The auto-assigned id is the one database-generated
+ *   value; it has no clock dependency, so the no-SQL-time rule holds.
+ * - **Outcome enum = §7.2's outcome classes.** The closed §11.2 list maps
+ *   the §7.2 failure rows exactly: network failure → `network_error`,
+ *   timeout → `timeout`, HTTP 5xx → `server_error`, 429 → `rate_limited`,
+ *   401/403 → `auth_error`, invalid payload → `parse_error`, plus
+ *   `success`. The enum is the charset of §7.3's status vocabulary.
+ * - **Ranges mirror the domain boundaries** (the D-032
+ *   plan-nonempty precedent): `interval_seconds` carries §7.1's 60–3600
+ *   valid range, `attempts >= 1` keeps §7.2's "total attempt count"
+ *   (1 request plus up to 3 retries) a count and not a flag, and
+ *   `retry_after_seconds` is NULL or within §7.2's one-hour cap. The
+ *   attempt maximum is deliberately not encoded — it is poller retry
+ *   policy, not a property of a recorded run.
+ * - **Nullable evidence columns, uncoupled from the outcome.** `http_status`
+ *   (NULL or a real 100–599 status) is absent when no response arrived and
+ *   `retry_after_seconds` is absent when no `Retry-After` applies — a 429
+ *   may legally arrive without the header. Binding either to specific
+ *   outcomes would freeze provider/transport behavior (tasks 098+) into
+ *   the on-disk contract; §7.2's mapping is the collector's to guarantee.
+ * - **`error_message` stores already-sanitized text** (§7.2 "sanitized
+ *   error information"): the redaction module is task 102's, storage only
+ *   keeps the absent-or-non-blank shape, and `collection_runs_success_clean`
+ *   keeps a successful run error-free — the one coupling §7.2 states
+ *   outright (a failure may still lack a message, so it is one-directional).
+ * - **No start/end ordering CHECK.** `ended_at >= started_at` was rejected
+ *   for the same reason D-032 rejected `archived_at >= created_at`: both
+ *   timestamps are wall-clock reads (§7.1) around one HTTP cycle, a clock
+ *   correction between them is possible, and a rejected INSERT would lose
+ *   the run record permanently — history tables must not turn skew into
+ *   data loss. The interval and retry-after ranges are the timing-sanity
+ *   checks this table carries.
+ * - **Cascading account linkage.** `account_id` references `accounts(id)`
+ *   with `ON DELETE CASCADE` — §11.2 "use cascading deletion consistently
+ *   for purged account history" — and carries the D-014 charset CHECK
+ *   (D-032's encoding, NUL guard included) so the id history rows key on is
+ *   exactly the id `accounts` can hold. The `collection_runs_account_start`
+ *   index's leading column serves the parent-delete scan; no extra
+ *   foreign-key index is needed.
+ */
+const COLLECTION_RUNS_MIGRATION: Migration = {
+  name: '0002-collection-runs',
+  up: ({ database }) => {
+    database.exec(`
+      CREATE TABLE collection_runs (
+        id INTEGER PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER NOT NULL,
+        interval_seconds INTEGER NOT NULL,
+        outcome TEXT NOT NULL,
+        http_status INTEGER,
+        error_message TEXT,
+        attempts INTEGER NOT NULL,
+        retry_after_seconds INTEGER,
+        CONSTRAINT collection_runs_account_charset CHECK (
+          account_id GLOB '[A-Za-z0-9]*'
+          AND account_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          AND length(account_id) BETWEEN 1 AND 64
+          AND instr(account_id, char(0)) = 0
+        ),
+        CONSTRAINT collection_runs_outcome CHECK (
+          outcome IN (
+            'success', 'auth_error', 'rate_limited', 'network_error',
+            'timeout', 'server_error', 'parse_error'
+          )
+        ),
+        CONSTRAINT collection_runs_interval_range CHECK (interval_seconds BETWEEN 60 AND 3600),
+        CONSTRAINT collection_runs_attempts_positive CHECK (attempts >= 1),
+        CONSTRAINT collection_runs_http_status_range CHECK (
+          http_status IS NULL OR http_status BETWEEN 100 AND 599
+        ),
+        CONSTRAINT collection_runs_retry_after_range CHECK (
+          retry_after_seconds IS NULL
+          OR (retry_after_seconds >= 0 AND retry_after_seconds <= 3600)
+        ),
+        CONSTRAINT collection_runs_error_nonempty CHECK (error_message IS NULL OR error_message <> ''),
+        CONSTRAINT collection_runs_success_clean CHECK (
+          outcome <> 'success' OR error_message IS NULL
+        ),
+        FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX collection_runs_account_start
+        ON collection_runs (account_id, started_at);
+
+      CREATE INDEX collection_runs_account_outcome_start
+        ON collection_runs (account_id, outcome, started_at);
+    `);
+  },
+};
+
+/**
  * The application's canonical migration set (§11.4, D-031): the one ordered
  * list the composition root hands to {@link createMigrationRunner}, grown by
- * one entry per schema change — `0001-accounts` since task 081 (D-032);
- * tasks 082–087 append theirs after it. The journal table itself comes from
- * the storage adapter, not from a migration.
+ * one entry per schema change — `0001-accounts` since task 081 (D-032),
+ * `0002-collection-runs` since task 082 (D-034); tasks 083–087 append theirs
+ * after it. The journal table itself comes from the storage adapter, not
+ * from a migration.
  */
-export const MIGRATIONS: ReadonlyArray<Migration> = [ACCOUNTS_MIGRATION];
+export const MIGRATIONS: ReadonlyArray<Migration> = [ACCOUNTS_MIGRATION, COLLECTION_RUNS_MIGRATION];
 
 /**
  * The schema version the given migration set supports — its newest

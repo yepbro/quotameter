@@ -174,3 +174,57 @@ Pinned interpretations (D-032):
   clock (D-021) at write time; §11.2 requires no accounts index (the table is
   small and configuration-synced). `id` declares `NOT NULL` explicitly because
   SQLite rowid tables would otherwise accept a NULL text primary key.
+
+## The `collection_runs` table — migration `0002-collection-runs` (task 082, spec §11.2, decision D-034)
+
+The second entry of the canonical `MIGRATIONS` list (schema version 2). One
+row per polling cycle — successful or not (§11.1) — capturing what §7.2's
+retry/error behaviors leave behind. Exercised directly in
+`test/integration/collection-runs.spec.ts`; the typed data access is task
+088's repository.
+
+| Column                | Type      | Rules                                                                                          |
+| --------------------- | --------- | ---------------------------------------------------------------------------------------------- |
+| `id`                  | `INTEGER` | `PRIMARY KEY` (rowid alias, auto-assigned) — the run id snapshots reference                    |
+| `account_id`          | `TEXT`    | `NOT NULL`, `collection_runs_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE` |
+| `started_at`          | `INTEGER` | `NOT NULL`, §11.1 epoch ms, wall-clock (§7.1)                                                  |
+| `ended_at`            | `INTEGER` | `NOT NULL`, §11.1 epoch ms                                                                     |
+| `interval_seconds`    | `INTEGER` | `NOT NULL`, `collection_runs_interval_range`: §7.1's 60–3600                                   |
+| `outcome`             | `TEXT`    | `NOT NULL`, `collection_runs_outcome`: §11.2's seven values only                               |
+| `http_status`         | `INTEGER` | nullable, `collection_runs_http_status_range`: NULL or 100–599                                 |
+| `error_message`       | `TEXT`    | nullable, `collection_runs_error_nonempty`; NULL on success (`collection_runs_success_clean`)  |
+| `attempts`            | `INTEGER` | `NOT NULL`, `collection_runs_attempts_positive`: §7.2's total attempt count                    |
+| `retry_after_seconds` | `INTEGER` | nullable, `collection_runs_retry_after_range`: NULL or 0–3600 (§7.2's cap)                     |
+
+Indexes (§11.2 "runs by account/start and account/outcome/start"):
+`collection_runs_account_start (account_id, started_at)` and
+`collection_runs_account_outcome_start (account_id, outcome, started_at)` —
+the first also serves the foreign-key cascade scan, so no extra FK index.
+
+Pinned interpretations (D-034):
+
+- **Outcome enum = §7.2's outcome classes** — the closed §11.2 list
+  (`success`, `auth_error`, `rate_limited`, `network_error`, `timeout`,
+  `server_error`, `parse_error`) is exactly the vocabulary of §7.2's failure
+  table and §7.3's status precedence.
+- **Ranges mirror the domain boundaries** (the D-032 plan-name precedent):
+  interval carries §7.1's validated 60–3600, `attempts >= 1` keeps §7.2's
+  "total attempt count" a count (the maximum of 4 is poller retry policy,
+  not storage truth), retry-after honors §7.2's one-hour cap.
+- **Nullable evidence, uncoupled from the outcome** — `http_status` is absent
+  when no response arrived; `retry_after_seconds` is absent when no
+  `Retry-After` applies (a 429 may arrive without the header). Binding either
+  to specific outcomes would freeze collector/adapter behavior (tasks 098+)
+  into the on-disk contract.
+- **`error_message` stores already-sanitized text** (§7.2 "sanitized error
+  information") — the redaction module is task 102's; storage keeps the
+  absent-or-non-blank shape and the one §7.2 coupling: a successful run
+  never carries an error (failures may lack a message).
+- **No `ended_at >= started_at` CHECK** — same clock-skew leniency D-032
+  recorded for `archived_at >= created_at`: a rejected INSERT would lose the
+  run record permanently; the interval and retry-after ranges are this
+  table's timing-sanity checks.
+- **Synthetic id without `AUTOINCREMENT`** — §11.2's consistent cascading
+  deletion means a deleted run's history dies with it, so rowid recycling
+  cannot create a stale reference; the auto-assigned rowid is the one
+  database-generated value and has no clock dependency.
