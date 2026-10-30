@@ -3,9 +3,10 @@
 All `node:sqlite` access is isolated here (spec §3, §11): the connection and
 pragmas (079), forward-only migrations with backups (078, 080–092),
 `QuotaRepository` — the typed facade the application consumes (088) — the
-atomic collection-cycle write composed over it (089), and the §8.2 account
-archive/purge lifecycle operations (090). Rows are mapped to typed domain
-records from `src/schemas/` before leaving this layer.
+atomic collection-cycle write composed over it (089), the §8.2 account
+archive/purge lifecycle operations (090), and the §11.3 retention cleanup
+with its WAL-checkpoint maintenance primitive (091). Rows are mapped to typed
+domain records from `src/schemas/` before leaving this layer.
 
 **Rule:** may import only `src/schemas/` and `src/util/`. No SQL is issued
 anywhere else; `QuotaRepository` satisfies the §8.1 "core services" list as
@@ -741,3 +742,92 @@ orphaning history.
 - **Reactivation is out of scope** — §8.2 names no archived-to-active
   transition and the facade has no primitive for it; the config-sync tasks
   extend the surface when they need one.
+
+## `maintenance.ts` — the WAL checkpoint / `incremental_vacuum` primitive (task 091, spec §11.3, §5.6, decision D-063)
+
+`runStorageMaintenance(database)` is §11.3's closing step — "Then checkpoint
+WAL and run `incremental_vacuum` where supported/configured" — and §5.6's
+shutdown checkpoint, as one primitive over the raw connection (the facade
+rightly never hands a `DatabaseSync` back, D-058; a checkpoint is a statement
+about the database file, not about any table). It is deliberately **not** a
+repository method, for the same sibling-module reason as the other composed
+operations. `test/integration/maintenance.spec.ts` verifies the checkpoint by
+its **effect** — the `-wal` file, which only TRUNCATE mode resets to zero
+bytes — against the production connection (task 079's readback-verified WAL).
+
+- **`wal_checkpoint(TRUNCATE)`, outcome as data** — TRUNCATE is the mode that
+  actually returns the disk; its `{busy, log, checkpointed}` row maps into the
+  result, where `busy` (another connection's read snapshot held the WAL —
+  `doctor`, an operator shell) is a reportable outcome, not an error: the next
+  cleanup checkpoints again. On a §11.1 connection the checkpoint first waits
+  out the 5 s `busy_timeout` budget through SQLite's busy handler before
+  reporting `busy` — a caller on the hot path should expect that synchronous
+  stall. Only driver-level failures throw, unwrapped (D-058 style).
+- **`incremental_vacuum` runs unconditionally; SQLite decides** — the §11.1
+  pragma set configures no `auto_vacuum`, so a Quotameter database defaults to
+  `NONE`, where the pragma is a documented no-op (verified on the pinned
+  runtime). "Where supported/configured" is expressed by running the call and
+  reporting the actual mode readback (`'none'`/`'full'`/`'incremental'`): real
+  work only on an operator-configured `INCREMENTAL` file, zero cost on the
+  service's own default.
+- **Checkpoint before vacuum** — §11.3's own order; the vacuum then operates
+  on a database that already absorbed the WAL.
+
+## `retention-cleanup.ts` — the §11.3 retention cleanup (task 091, spec §11.3, §7.4, §15.2, decision D-063)
+
+`runRetentionCleanup({ repository, database }, { now, retentionDays })` is
+§11.3's cleanup as one repeat-safe operation: it deletes every row the window
+expired — through the facade's count-returning deletes (D-058), in one
+transaction that also writes the §11.2 cleanup metadata — and then runs the
+maintenance primitive. **Scheduling is not here**: when this runs (startup and
+daily) is the server lifecycle's concern; the module takes an explicit `now`
+and window (D-021 — the future scheduler computes them from the injectable
+clock and the loaded configuration) and is safe to call back-to-back.
+`test/integration/retention-cleanup.spec.ts` verifies the done-condition —
+"startup and daily cleanup are safe to repeat" — by running the cleanup twice
+over seeded multi-account history (identical input: the second run removes
+nothing and changes nothing), then at a later `now` (only the newly expired
+go), then at an earlier one (a harmless no-op).
+
+| Table             | Time column   | Cutoff                     | Semantics                                                                                                               |
+| ----------------- | ------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `collection_runs` | `started_at`  | `now − retentionDays` days | strictly before → deleted; the cascade takes the run's snapshot, metric values, snapshot-linked events, and raw payload |
+| `quota_events`    | `event_at`    | same                       | strictly before → deleted (run-free rows and surviving runs' §12.1-dated events alike)                                  |
+| `raw_responses`   | `captured_at` | `now − 30` days (§7.4)     | strictly before → deleted; the count excludes payloads a run cascade already took                                       |
+| `sessions`        | `expires_at`  | `now` (§15.2)              | strictly before → deleted, independent of the history window                                                            |
+
+- **The bounds are validated here, before any delete runs** — `retentionDays`
+  must be an integer in 7–3650 (`MIN_RETENTION_DAYS`/`MAX_RETENTION_DAYS`);
+  a rejected input deletes nothing. This is §11.3 policy the module owns at
+  the storage boundary, not a replay of D-058's no-pre-validation rule (no
+  schema CHECK can express a range about a query parameter); the config layer
+  validates its own copy (`app.historyRetentionDays`).
+- **The run is the retention unit** — snapshots and metric rows have no
+  separate cutoff calls: a snapshot cannot outlive its run, and the report's
+  run count covers the cascade (no O(history) counting reads at §11.3's
+  ~52,000-snapshots-per-account scale; the series/history indexes those
+  queries rely on are D-058's query-plan-pinned ones).
+- **Raw payloads follow §7.4's own 30-day window** (`RAW_RESPONSE_MAX_AGE_DAYS`)
+  — the time-based half of "no more than 20 per account and no more than 30
+  days". The per-account 20-record cap is task 103's (`listRawResponses` +
+  `deleteRawResponsesByRunIds`); this module never counts records, it only
+  expires age.
+- **Sessions follow §15.2, not the history window** — a session dies at its
+  own `expires_at` (the D-056 CHECKs already cap that at 7 days of inactivity
+  and 30 days of life); the delete is `expires_at < now`, whatever the window.
+- **Deletes and markers commit as one transaction** — the last-run markers
+  (`retention:last-run` = the run's `now`, `retention:applied-days` = the
+  window applied) never claim a half-done cleanup; an injected marker-write
+  failure rolls every delete back, and the next (startup/daily) run redoes
+  the whole cleanup — the repeat-safety is by construction, verified by test.
+- **Maintenance after the commit, unconditionally** — §11.3's order; the WAL
+  the transaction grew is observable as a zero-byte `-wal` file after the
+  call, also when the deletes removed nothing.
+- **§11.3's "do not delete" is by construction** — no `accounts` row (active
+  or archived), no configuration, no connection setting, and no `meta` key
+  except the two markers is touched; expired history of archived accounts
+  goes with the window (retention is a history rule), pinned by test.
+- **The reduce-retention warning is a recorded hook, not built here** — the
+  config/UI layer reads `retention:applied-days` and warns when a newly
+  configured window is smaller: the records between the two windows are
+  exactly what the next cleanup deletes.
