@@ -14,7 +14,12 @@
  * leaves a genuinely stale lock behind. `run` starts the full server
  * lifecycle (`runServer`) with the lock as its only component — the honest
  * "second process": it exits 1 with the contention explanation when the data
- * directory is taken, and releases the lock on SIGTERM otherwise.
+ * directory is taken, and releases the lock on SIGTERM otherwise. Only `run`
+ * registers the `onSignalsReady` seam (D-024): it writes a `signals-ready`
+ * marker once the shutdown handlers are installed, so the spec can signal
+ * this child without the U-001 kill-before-handler race; a refused contender
+ * never reaches that point, and `hold` installs no handlers at all — it must
+ * die by `SIGKILL` with the lock left stale.
  */
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -52,7 +57,10 @@ try {
     // test steps that contend with it.
     setInterval(() => {}, 60_000);
   } else {
-    const code = await runServer({ components: [lock] });
+    const code = await runServer({
+      components: [lock],
+      onSignalsReady: () => writeFileSync(join(dataDir, 'signals-ready'), 'signals-ready\n'),
+    });
     // Hard exit: the runner owns the process and owes the test a definite code.
     process.exit(code);
   }

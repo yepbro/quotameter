@@ -609,10 +609,16 @@ describe('real processes (child, via singleInstanceRunner)', () => {
       const dir = await createTempDir('quotameter-lock-child-release-');
       const first = spawnRunner('run', dir.path);
       try {
-        await waitForFile(lockFilePath(dir.path));
+        // Wait for signal readiness, not the lock file: the lock appears
+        // inside `app.start()`, but `runServer` installs the SIGTERM/SIGINT
+        // handlers only afterwards, and a signal delivered in that window
+        // kills the handler-less child via the OS-default disposition (the
+        // U-001 race). `signals-ready` is emitted only once both handlers
+        // are installed — and implies the lock is held — so the SIGTERM
+        // below is always caught (D-024 seam, shared with serverMainRunner).
+        await waitForFile(join(dir.path, 'signals-ready'));
 
-        // A contender proves the first process really holds the lock, and its
-        // own startup also guarantees the first process finished starting.
+        // A contender proves the first process really holds the lock.
         const contender = spawnRunner('run', dir.path);
         const refusal = await contender.exited;
         expect(refusal.code).toBe(1);
