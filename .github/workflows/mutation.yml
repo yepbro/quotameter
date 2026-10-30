@@ -119,6 +119,11 @@ jobs:
           date=$(date -u +%F)
           verdict=$([ "$STRYKER_OUTCOME" = failure ] && echo "below threshold" || echo "pass")
           title="Mutation report — rolling (last run: ${date}, ${verdict})"
+          # `gh issue create --label` requires the label to already exist
+          # (it cannot create one), so bootstrap it before first use; the
+          # `|| true` covers the already-exists case, and a real failure
+          # resurfaces at the `gh issue create` below anyway.
+          gh label create mutation-report --repo "$REPO" --description "Rolling daily mutation-testing triage issue (docs/mutation-testing.md)" --color "5319e7" || true
           number=$(gh issue list --repo "$REPO" --label mutation-report --state open --json number --jq '.[0].number // empty')
           if [ -n "$number" ]; then
             gh issue edit "$number" --repo "$REPO" --title "$title" --body-file /tmp/mutation-report.md

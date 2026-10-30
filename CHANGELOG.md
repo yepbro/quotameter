@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The daily mutation workflow now bootstraps its `mutation-report` label idempotently before first use: `gh issue create --label` requires the label to already exist and cannot create it, which failed the workflow's validation run at the issue-upsert step (U-004).
 - `npm audit` restored after the npm registry retired the quick-audit endpoint: the dev image and CI now pin npm 11 (bulk advisory endpoint) while Node stays at the 22.13.0 minimum.
 
 ### Added

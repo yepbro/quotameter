@@ -32,7 +32,9 @@ else. No secrets are stored anywhere for this to work.
 ## The rolling issue
 
 - A single open issue labeled **`mutation-report`** carries the latest
-  report as its body (title shows the last run date and verdict).
+  report as its body (title shows the last run date and verdict); the
+  workflow creates the label itself before first use, via
+  `gh label create … || true`, so the repository needs no one-time setup.
 - Every run **appends a one-line comment**, so the comment thread is the
   history of verdicts over time.
 - Find it from the command line:
