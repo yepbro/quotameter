@@ -6,6 +6,7 @@ Docker environments are managed by **docktree** (`docktree.yml`): every git work
 
 - Worktree convention: `~/worktrees/quotamonitor/<feature>`.
 - In any worktree, `make up` starts its isolated environment; all `make` targets work identically there.
+- The image carries **npm 11** (pinned `11.9.0` in the Dockerfile): the registry retired the quick-audit endpoint on 2026-10-30 and the npm bundled with Node 22 can no longer run `npm audit` (npm 11 uses the bulk advisory endpoint). CI does the same bump before its audit step.
 - Image is pinned to Node.js **22.13.0** (the declared minimum — catches accidental use of newer APIs early).
 
 ## Critical invariant: uid mismatch

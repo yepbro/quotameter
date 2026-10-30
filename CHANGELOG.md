@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `npm audit` restored after the npm registry retired the quick-audit endpoint: the dev image and CI now pin npm 11 (bulk advisory endpoint) while Node stays at the 22.13.0 minimum.
+
 ### Added
 
 - Synthetic Z.ai response matrix (task 097, spec §8.3/§17.1) under `test/fixtures/synthetic/`: nineteen fixtures covering the adapter-contract rows the single sanitized capture cannot — the weekly `unit 6` entry, absolute-value (`CREDITS`) entries, partial/duplicate/invalid/renamed/extra-field/different-plan/different-unit limit responses, envelope success spellings and failure shapes, wrong-typed containers, divergent subscription record selection, non-empty reset cards, and the never-captured `/models` body. Every file is registered with its origin (invented or assumption-shaped per the 096 ledger A1/A2/A4/A5) and the contract rows it serves in `test/fixtures/README.md`; deliberately unfixtured rows (HTTP-level failures, trivial cross-cells) are recorded there too (decision D-049).

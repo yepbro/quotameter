@@ -20,6 +20,11 @@ RUN apt-get update \
         libpango-1.0-0 libcairo2 libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# npm 11: the registry retired the quick-audit endpoint on 2026-10-30 and
+# the npm bundled with Node 22.13 (10.9.x) can no longer run `npm audit`;
+# npm 11 uses the bulk advisory endpoint. Node stays at the 22.13.0 minimum.
+RUN npm install -g npm@11.9.0
+
 WORKDIR /app
 
 # Prepare writable directories for the non-root `node` user:

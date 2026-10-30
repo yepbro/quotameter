@@ -40,6 +40,12 @@ jobs:
       - name: Type-check server and UI
         run: npm run typecheck:all
 
+      # The npm bundled with Node 22 (10.9.x) lost `npm audit` when the
+      # registry retired the quick-audit endpoint (2026-10-30); npm 11 uses
+      # the bulk advisory endpoint. Keep the pin in sync with the Dockerfile.
+      - name: Update npm for the bulk audit endpoint
+        run: npm install -g npm@11.9.0
+
       - name: Audit production dependencies
         run: npm run audit:prod
 
