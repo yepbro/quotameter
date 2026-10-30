@@ -1,5 +1,6 @@
 /**
- * Z.ai Coding Plan metric mapping (spec §8.3, §8.4; task 099, decision D-053).
+ * Z.ai Coding Plan metric mapping (spec §8.3, §8.4; tasks 099/100,
+ * decisions D-047/D-053).
  *
  * The pure translation of endpoint-1's quota-limit payload
  * (`GET /api/monitor/usage/quota/limit`) into the §8.4 normalized model,
@@ -11,12 +12,15 @@
  * two-tier strictness of D-047.5 (containers strict at the caller, entry
  * fields tolerant), and the §8.4 derivation rules.
  *
- * Task 099 lays this module complete because its done-condition requires
- * validated responses to produce a normalized snapshot; task 100 owns its
- * refinement and verifies every mapping row against every fixture. The
- * module is pure — no HTTP, no clock, no logging — so 100 can contract-test
- * it as a function. Skip and collision reports travel as data (`skips`);
- * the caller ([`snapshot.ts`](snapshot.ts)) logs them.
+ * Task 099 laid this module complete because its done-condition required
+ * validated responses to produce a normalized snapshot; task 100
+ * (2026-10-31) verified every D-047 mapping row against every fixture —
+ * recognition identities and labels pinned by exact-equality rows, the
+ * parseable fixture set checked for §8.4 unit discipline — with no
+ * semantic change: the tables above remain decision property (D-047,
+ * D-053). The module is pure — no HTTP, no clock, no logging. Skip and
+ * collision reports travel as data (`skips`); the caller
+ * ([`snapshot.ts`](snapshot.ts)) logs them.
  */
 
 import type {

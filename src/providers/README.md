@@ -113,13 +113,15 @@ cross-cutting request concerns so adapters stay pure parsing:
 runtime failure shapes (the logger-destination pattern); production always
 uses the Node 22 global.
 
-## The Z.ai Coding Plan adapter (tasks 098–099, spec §8.3)
+## The Z.ai Coding Plan adapter (tasks 098–100, spec §8.3)
 
 `zai-coding-plan/` is the first adapter island. Task 098 delivered its
 credential validation; task 099 the `fetchSnapshot` collection cycle with the
-§8.4 metric mapping (task 100 refines and verifies that mapping). The
-implementation contract is the
-[adapter-contract section of the provider dossier](../../docs/providers/zai-coding-plan.md)
+§8.4 metric mapping; task 100 verified that mapping against every fixture row
+(exact-equality recognition rows plus a §8.4 unit-discipline matrix — no
+semantic change, decision D-047/D-053 stand). The implementation contract is
+the [adapter-contract section of the provider
+dossier](../../docs/providers/zai-coding-plan.md)
 (task 096, decision D-047); the task-098 specifics are decision D-052, the
 task-099 specifics decision D-053.
 
@@ -166,22 +168,25 @@ task-099 specifics decision D-053.
   abort mid-cycle — is soft: logged through the injected logger and
   degraded, never cycle-fatal (D-047: metric values originate only on
   endpoint 1).
-- **The metric mapping (`mapping.ts`, task 099; task 100 owns its
-  refinement)** — the pure translation of endpoint 1 into the §8.4 model
-  per the D-047 tables: recognition by `(type, unit)` (`mcp-monthly`
-  `MONTHLY`/`REQUESTS`; `tokens-5h` `ROLLING_WINDOW` with
-  `windowSeconds = number × 3600`; `weekly-quota` `WEEKLY` on either type
-  spelling), unknown pairs and first-wins key collisions skipped and
-  reported (`skips`, logged at warn by the cycle), the D-047.1 value
-  semantics (`usage` → `limit`, `currentValue` → `used`, `remaining` →
-  `remaining`, with the supplied-triple arithmetic check), the D-047.2
-  integer-percent pass-through (`percentRemaining` always derived so the
-  two sum to exactly 100; `percentUsed` derived only from _supplied_
+- **The metric mapping (`mapping.ts`, tasks 099/100)** — the pure translation
+  of endpoint 1 into the §8.4 model per the D-047 tables: recognition by
+  `(type, unit)` (`mcp-monthly` `MONTHLY`/`REQUESTS`; `tokens-5h`
+  `ROLLING_WINDOW` with `windowSeconds = number × 3600`; `weekly-quota`
+  `WEEKLY` on either type spelling), unknown pairs and first-wins key
+  collisions skipped and reported (`skips`, logged at warn by the cycle), the
+  D-047.1 value semantics (`usage` → `limit`, `currentValue` → `used`,
+  `remaining` → `remaining`, with the supplied-triple arithmetic check), the
+  D-047.2 integer-percent pass-through (`percentRemaining` always derived so
+  the two sum to exactly 100; `percentUsed` derived only from _supplied_
   `used`+`limit` — derivations never chain, §8.4), unit choice
   `CREDITS`/`PERCENT` by present fields (A5), metadata (`resetsAt`,
   `windowSeconds`) surviving invalid readings (D-010), and entries with
   unusable values emitted invalid — never zero — with the pinned
-  `invalidReason` strings.
+  `invalidReason` strings. Task 100 contract-tested every row: each
+  recognition identity is pinned by an exact full-object equality assertion
+  (labels, field presence _and_ absence), and every parseable fixture body is
+  checked for §8.4 unit discipline (closed enum, no absolutes on `PERCENT`
+  metrics, exact percent sums, invariant-clean snapshots).
 - **Subscription context (A9)** — endpoint 2 is envelope-soft-checked
   (`data` must be an array), the record with `inCurrentPeriod === true` is
   selected (else the first `status === 'VALID'`), and its `productName` is
@@ -207,5 +212,4 @@ task-099 specifics decision D-053.
   at construction with echo-free `TypeError`s — wiring mistakes fail fast
   (D-013's spirit).
 - **Not yet** — registration in the composition root is a later assembly
-  task — nothing in this island edits `src/server/**`; task 100 deepens
-  the mapping contract against every fixture row.
+  task — nothing in this island edits `src/server/**`.

@@ -1211,3 +1211,49 @@ the D-042 transport rejects them before parsing, and trivial cross-cells stay in
 [`test/fixtures/README.md`](../../test/fixtures/README.md) (decision D-049). Nothing in this
 task reopens a ledger entry: no new capture exists, and every assumption-shaped fixture states
 its ledger provenance.
+
+## Mapping verification round — 2026-10-31 (task 100)
+
+### What this section is
+
+Task 100's audit of the [metric mapping](#metric-mapping-endpoint-1--84) against the fixture
+corpus, closing the task's done-condition ("all mappings are contract-tested and unknown
+metrics are handled safely"). Method: every row of the 096 recognition and field-by-field
+tables was checked against `test/unit/zai-coding-plan-mapping.spec.ts`; every gap became an
+exact test. **No mapping semantics changed** — the audit found no behavior gap in
+`mapping.ts`, so the tables above stand unamended and remain decision property (D-047/D-053);
+no ledger entry is reopened (still no new capture exists).
+
+### What the round added
+
+- **Recognition rows pinned by exact full-object equality** — one `toEqual` row per
+  `(type, unit)` identity (`mcp-monthly`, `tokens-5h` percentage-only, `weekly-quota` in both
+  its absolute and percentage-only spellings), asserting every §8.4 field _and the absence of
+  the others_: the previously unasserted labels (`Monthly MCP tool quota`, `5-hour token
+quota`), `windowSeconds` absent on calendar windows even when `number` is supplied (the
+  "number on month/week windows unmapped" row), absolute fields absent on percentage-only
+  entries, and no `usageDetails` leakage. A defined-but-unexpected field fails the equality,
+  so the rows pin the exact emitted shape, not just a subset.
+- **A unit-discipline matrix over every parseable body** — the sanitized capture plus the
+  fourteen non-error synthetic quota fixtures each map to metrics asserted against §8.4's
+  never-mix rules: `unit` within the closed enum, a `PERCENT` metric carrying no absolute
+  fields, `percentUsed + percentRemaining = 100`, and the shared snapshot invariants clean.
+- **Tolerance cross-cells that were unpinned** (all in-test mutations per D-049's
+  deliberately-unfixtured rule — no fixture files added): a wrong-typed `usageDetails` never
+  invalidates its entry (unmapped means unvalidated; the exact-equality monthly row feeds the
+  capture's `usageDetails` shape, so non-leakage is pinned too), `percentage` is never
+  cross-validated against the absolute triple (D-047.2's expected-noise rule),
+  `percentage: 0` is a present value, `null` value fields are wrong-typed rather than absent,
+  fractional percentages pass through verbatim, recognition is type-strict (a string `"5"`
+  unit or numeric type is an unknown shape — skipped and reported, never coerced), and
+  `windowSeconds = number × 3600` is pinned at a non-5 `number` (4 hours → 14400), so the
+  formula holds rather than a disguised constant — the clause the deviation rule above relies
+  on. The matrix also asserts `percentRemaining` exists whenever `percentUsed` does, pinning
+  D-047.2's "always derived" rule over the whole corpus.
+
+### Why no new fixtures
+
+D-049 fixed the fixture boundary: minimal single-purpose files for contract rows, in-test
+mutations for trivial cross-cells. Every row the audit found unpinned is a cross-cell of an
+already-fixtured shape, so the honest artifact is the test, not a near-duplicate file; adding
+one would contradict the matrix decision's recorded scope.

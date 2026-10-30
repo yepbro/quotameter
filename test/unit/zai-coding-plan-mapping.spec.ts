@@ -6,17 +6,24 @@ import {
   parseSubscriptionContext,
   SnapshotParseError,
 } from '../../src/providers/zai-coding-plan/snapshot';
-import { findProviderSnapshotProblems, type ProviderSnapshot } from '../../src/schemas/metrics';
+import {
+  findProviderSnapshotProblems,
+  METRIC_UNITS,
+  type ProviderSnapshot,
+} from '../../src/schemas/metrics';
 
 /**
  * Pure-parse matrix of the Z.ai quota-limit contract (spec §8.3, §8.4, §17.1;
- * task 099, decisions D-047/D-049/D-053): every sanitized and synthetic
+ * tasks 099/100, decisions D-047/D-049/D-053): every sanitized and synthetic
  * fixture body drives the strict parse (envelope + containers) and the
  * tolerant mapping, plus the in-test mutations the fixture README records
- * as deliberately unfixtured. Sanitized bodies are asserted by shape,
- * vocabulary, and arithmetic — never by value; synthetic values are
- * git-stable and asserted exactly. No HTTP here: the fetch path is covered
- * by test/integration/zai-coding-plan-snapshot.spec.ts.
+ * as deliberately unfixtured. Task 100's verification round adds the
+ * recognition-table rows pinned by exact full-object equality and the
+ * unit-discipline loop over every parseable body (§8.4's never-mix rule).
+ * Sanitized bodies are asserted by shape, vocabulary, and arithmetic —
+ * never by value; synthetic values are git-stable and asserted exactly.
+ * No HTTP here: the fetch path is covered by
+ * test/integration/zai-coding-plan-snapshot.spec.ts.
  */
 
 const SECRETS = ['qm-mapping-marker'] as const;
@@ -429,6 +436,187 @@ describe('parseQuotaLimitBody — mapping of the synthetic matrix', () => {
   });
 });
 
+describe('mapQuotaLimitData — the recognition table, every row pinned exactly', () => {
+  // Full-object equality: an errant defined field — a windowSeconds on a
+  // calendar window, an invented absolute on a percentage-only entry, a
+  // leaked usageDetails — fails toEqual, so each row pins both presence
+  // and absence of every §8.4 field (D-047's recognition table).
+
+  it('(TIME_LIMIT, 5) → mcp-monthly: MONTHLY REQUESTS, no windowSeconds', () => {
+    const { metrics, skips, planName } = mapQuotaLimitData(
+      [
+        {
+          type: 'TIME_LIMIT',
+          unit: 5,
+          number: 1,
+          usage: 1200,
+          currentValue: 60,
+          remaining: 1140,
+          percentage: 5,
+          nextResetTime: 1_799_486_400_000,
+          // The capture shape: an unmapped per-tool breakdown riding on a
+          // recognized entry. Feeding it here makes the exact-equality row
+          // below genuinely pin non-leakage (review P2-1).
+          usageDetails: [{ modelCode: 'search-prime', usage: 1 }],
+        },
+      ],
+      'pro',
+    );
+    expect(skips).toEqual([]);
+    expect(planName).toBe('pro');
+    expect(metrics).toEqual([
+      {
+        key: 'mcp-monthly',
+        label: 'Monthly MCP tool quota',
+        limitType: 'MONTHLY',
+        unit: 'REQUESTS',
+        used: 60,
+        remaining: 1140,
+        limit: 1200,
+        percentUsed: 5,
+        percentRemaining: 95,
+        resetsAt: 1_799_486_400_000,
+        isValid: true,
+        derivedFields: ['percentRemaining'],
+      },
+    ]);
+  });
+
+  it('(TOKENS_LIMIT, 3) percentage-only → tokens-5h: ROLLING_WINDOW PERCENT, window from number', () => {
+    const { metrics } = mapQuotaLimitData(
+      [
+        {
+          type: 'TOKENS_LIMIT',
+          unit: 3,
+          number: 5,
+          percentage: 34,
+          nextResetTime: 1_798_968_000_000,
+        },
+      ],
+      'pro',
+    );
+    expect(metrics).toEqual([
+      {
+        key: 'tokens-5h',
+        label: '5-hour token quota',
+        limitType: 'ROLLING_WINDOW',
+        unit: 'PERCENT',
+        windowSeconds: 18_000,
+        percentUsed: 34,
+        percentRemaining: 66,
+        resetsAt: 1_798_968_000_000,
+        isValid: true,
+        derivedFields: ['percentRemaining'],
+      },
+    ]);
+  });
+
+  it('(TIME_LIMIT, 6) with absolutes → weekly-quota: WEEKLY CREDITS, number unmapped', () => {
+    const { metrics } = mapQuotaLimitData(
+      [
+        {
+          type: 'TIME_LIMIT',
+          unit: 6,
+          number: 1,
+          usage: 60_000,
+          currentValue: 12_000,
+          remaining: 48_000,
+          percentage: 20,
+          nextResetTime: 1_800_021_600_000,
+        },
+      ],
+      'pro',
+    );
+    // `number` is informational on calendar windows (096 field table): the
+    // weekly metric carries no windowSeconds even though number arrived.
+    expect(metrics).toEqual([
+      {
+        key: 'weekly-quota',
+        label: 'Weekly quota',
+        limitType: 'WEEKLY',
+        unit: 'CREDITS',
+        used: 12_000,
+        remaining: 48_000,
+        limit: 60_000,
+        percentUsed: 20,
+        percentRemaining: 80,
+        resetsAt: 1_800_021_600_000,
+        isValid: true,
+        derivedFields: ['percentRemaining'],
+      },
+    ]);
+  });
+
+  it('(TOKENS_LIMIT, 6) percentage-only → weekly-quota: WEEKLY PERCENT, resetsAt omitted', () => {
+    const { metrics } = mapQuotaLimitData(
+      [{ type: 'TOKENS_LIMIT', unit: 6, number: 1, percentage: 41 }],
+      'pro',
+    );
+    expect(metrics).toEqual([
+      {
+        key: 'weekly-quota',
+        label: 'Weekly quota',
+        limitType: 'WEEKLY',
+        unit: 'PERCENT',
+        percentUsed: 41,
+        percentRemaining: 59,
+        isValid: true,
+        derivedFields: ['percentRemaining'],
+      },
+    ]);
+  });
+});
+
+describe('the fixture matrix — every parseable body yields unit-disciplined metrics', () => {
+  // Task 100's done-condition as a literal matrix: every quota-limit body
+  // that survives the strict parse — sanitized capture plus the synthetic
+  // non-error set — must map to metrics obeying every §8.4 rule the
+  // mapping owns: the closed unit enum, the never-mix rule (a PERCENT
+  // metric carries no absolute fields), the exact percent-sum identity,
+  // and the shared snapshot invariants. The four parse-error fixtures
+  // never reach the mapping; the strictness describe above covers them.
+  const bodies = [
+    'sanitized/zai-quota-limit.json',
+    'synthetic/zai-envelope-code-string.json',
+    'synthetic/zai-envelope-code-zero.json',
+    'synthetic/zai-quota-limit-different-plan.json',
+    'synthetic/zai-quota-limit-different-unit.json',
+    'synthetic/zai-quota-limit-duplicate-keys.json',
+    'synthetic/zai-quota-limit-empty-limits.json',
+    'synthetic/zai-quota-limit-extra-fields.json',
+    'synthetic/zai-quota-limit-invalid-entries.json',
+    'synthetic/zai-quota-limit-partial.json',
+    'synthetic/zai-quota-limit-renamed-fields.json',
+    'synthetic/zai-quota-limit-reset-time-string.json',
+    'synthetic/zai-quota-limit-tokens-absolute.json',
+    'synthetic/zai-quota-limit-unknown-type.json',
+    'synthetic/zai-quota-limit-weekly.json',
+  ] as const;
+
+  for (const name of bodies) {
+    it(`${name} → §8.4-clean metrics`, () => {
+      const { metrics } = parseQuotaLimitBody(fixture(name), 200, SECRETS);
+      expect(findProviderSnapshotProblems(asSnapshot(metrics))).toEqual([]);
+      for (const metric of metrics) {
+        expect(METRIC_UNITS).toContain(metric.unit);
+        if (metric.unit === 'PERCENT') {
+          // §8.4: counts are never invented from percentages — the
+          // absolute fields of a percentage-only metric stay empty.
+          expect(metric.used).toBeUndefined();
+          expect(metric.remaining).toBeUndefined();
+          expect(metric.limit).toBeUndefined();
+        }
+        if (metric.percentUsed !== undefined) {
+          // D-047.2: percentRemaining is always derived when percentUsed
+          // exists, and the two sum to exactly 100 — one assertion pins
+          // both (undefined fails it; review P3-2).
+          expect(metric.percentRemaining).toBe(100 - metric.percentUsed);
+        }
+      }
+    });
+  }
+});
+
 describe('mapQuotaLimitData — derivation and pass-through edges', () => {
   const entry = (fields: Record<string, unknown>): Record<string, unknown> => ({
     type: 'TOKENS_LIMIT',
@@ -515,6 +703,14 @@ describe('mapQuotaLimitData — derivation and pass-through edges', () => {
     expect(stringNumber?.isValid).toBe(true);
   });
 
+  it('scales windowSeconds with the supplied number — the formula, not a constant', () => {
+    // Every fixture carries number: 5, where number × 3600 equals a
+    // plausible hardcoded 18000 (review P3-1); a 4-hour spelling pins
+    // the multiplication the dossier's deviation clause relies on.
+    const { metrics } = mapQuotaLimitData([entry({ number: 4, percentage: 5 })], 'pro');
+    expect(metrics[0]).toMatchObject({ key: 'tokens-5h', windowSeconds: 14_400, isValid: true });
+  });
+
   it('treats a non-string or empty level as an absent plan name, verbatim otherwise', () => {
     for (const level of [undefined, 42, null, '']) {
       const { planName } = mapQuotaLimitData([], level);
@@ -537,6 +733,91 @@ describe('mapQuotaLimitData — derivation and pass-through edges', () => {
     expect(metrics[0]?.percentUsed).toBe(30);
     expect(skips).toEqual([
       "skipped duplicate limits entry for metric key 'weekly-quota' (first entry wins)",
+    ]);
+  });
+
+  it('keeps a zero percentage — a present value, never treated as absent', () => {
+    const { metrics } = mapQuotaLimitData([entry({ percentage: 0 })], 'pro');
+    expect(metrics[0]).toMatchObject({
+      unit: 'PERCENT',
+      percentUsed: 0,
+      percentRemaining: 100,
+      isValid: true,
+    });
+    expect(metrics[0]?.derivedFields).toEqual(['percentRemaining']);
+  });
+
+  it('treats a null value field as wrong-typed, not absent', () => {
+    const { metrics } = mapQuotaLimitData([entry({ percentage: null })], 'pro');
+    expect(metrics[0]?.isValid).toBe(false);
+    expect(metrics[0]?.invalidReason).toBe('percentage is not a number');
+    expect(metrics[0]?.percentUsed).toBeUndefined();
+  });
+
+  it('passes a fractional percentage through verbatim — no rounding correction', () => {
+    const { metrics } = mapQuotaLimitData([entry({ percentage: 19.5 })], 'pro');
+    expect(metrics[0]).toMatchObject({ percentUsed: 19.5, percentRemaining: 80.5 });
+  });
+
+  it('never cross-validates percentage against the supplied absolutes (D-047.2)', () => {
+    // The triple says 5% consumed; the provider's percentage says 7.
+    // Integer rounding makes such disagreement expected noise — the
+    // provider's number stays authoritative and the metric stays valid.
+    const { metrics } = mapQuotaLimitData(
+      [
+        {
+          type: 'TIME_LIMIT',
+          unit: 5,
+          number: 1,
+          usage: 1200,
+          currentValue: 60,
+          remaining: 1140,
+          percentage: 7,
+        },
+      ],
+      'pro',
+    );
+    expect(metrics[0]).toMatchObject({ isValid: true, percentUsed: 7, percentRemaining: 93 });
+  });
+
+  it('never invalidates an entry for its usageDetails — unmapped means unvalidated', () => {
+    const monthly = (usageDetails: unknown): Record<string, unknown> => ({
+      type: 'TIME_LIMIT',
+      unit: 5,
+      number: 1,
+      usage: 1200,
+      currentValue: 60,
+      remaining: 1140,
+      percentage: 5,
+      usageDetails,
+    });
+    for (const usageDetails of ['garbage', [42], { modelCode: 'zread' }]) {
+      const { metrics } = mapQuotaLimitData([monthly(usageDetails)], 'pro');
+      expect(metrics[0]).toMatchObject({
+        key: 'mcp-monthly',
+        isValid: true,
+        used: 60,
+        remaining: 1140,
+        limit: 1200,
+      });
+    }
+  });
+
+  it('skips wrong-typed pair members — recognition is type-strict', () => {
+    const { metrics, skips } = mapQuotaLimitData(
+      [
+        entry({ type: 'TIME_LIMIT', unit: '5', number: 1, percentage: 5 }),
+        { type: 5, unit: 3, number: 5, percentage: 6 },
+      ],
+      'pro',
+    );
+    // A string "5" is not the months unit and a numeric 5 is not TIME_LIMIT:
+    // both entries are unknown shapes, skipped and reported — never parsed
+    // into a metric, never a parse error.
+    expect(metrics).toEqual([]);
+    expect(skips).toEqual([
+      "skipped unrecognized limits entry (type 'TIME_LIMIT', unit '5')",
+      'skipped unrecognized limits entry (type 5, unit 3)',
     ]);
   });
 });
