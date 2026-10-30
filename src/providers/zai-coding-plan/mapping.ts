@@ -18,9 +18,15 @@
  * recognition identities and labels pinned by exact-equality rows, the
  * parseable fixture set checked for §8.4 unit discipline — with no
  * semantic change: the tables above remain decision property (D-047,
- * D-053). The module is pure — no HTTP, no clock, no logging. Skip and
- * collision reports travel as data (`skips`); the caller
- * ([`snapshot.ts`](snapshot.ts)) logs them.
+ * D-053). Task 101 (2026-10-31) audited every §8.4 derivation path and
+ * closed the one gap the audit found: an arithmetic derivation (or the
+ * `windowSeconds` scaling) whose result is not a finite number now leaves
+ * the field absent and unlisted instead of emitting a value the §8.4
+ * invariants reject (D-057); the property suite in
+ * `test/unit/zai-coding-plan-mapping.property.spec.ts` is the standing
+ * proof — percentages never invent counts included. The module is pure —
+ * no HTTP, no clock, no logging. Skip and collision reports travel as
+ * data (`skips`); the caller ([`snapshot.ts`](snapshot.ts)) logs them.
  */
 
 import type {
@@ -125,6 +131,17 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * A derivation result usable as a §8.4 value: finite, or nothing. IEEE-754
+ * overflow turns some finite pairs (extreme magnitudes, zero allowances in
+ * a quotient) into `Infinity`/`NaN` — a result like that is not a value
+ * the source fields support, so the derivation is skipped and the field
+ * stays absent and unlisted (task 101, decision D-057).
+ */
+function derivableValue(value: number): number | undefined {
+  return Number.isFinite(value) ? value : undefined;
+}
+
 /** The absolute-triple source fields in canonical derivation order. */
 const VALUE_FIELDS = Object.freeze(['usage', 'currentValue', 'remaining', 'percentage'] as const);
 
@@ -162,7 +179,11 @@ function invalidMetric(
  */
 function buildMetric(identity: MetricIdentity, entry: Record<string, unknown>): NormalizedMetric {
   const windowNumber = identity.windowFromNumber ? finiteNumber(entry.number) : undefined;
-  const windowSeconds = windowNumber === undefined ? undefined : windowNumber * 3600;
+  // The ×3600 scaling obeys the same finiteness rule as every derivation:
+  // an overflowing product omits the metadata field rather than emitting
+  // a non-finite window length (D-057).
+  const windowSeconds =
+    windowNumber === undefined ? undefined : derivableValue(windowNumber * 3600);
   const resetsAt = finiteNumber(entry.nextResetTime);
   const unit = unitForEntry(identity, entry);
 
@@ -216,29 +237,38 @@ function buildMetric(identity: MetricIdentity, entry: Record<string, unknown>): 
   let limitValue = limit;
   let remainingValue = remaining;
   if (used !== undefined && limit !== undefined && remaining === undefined) {
-    remainingValue = limit - used;
-    derived.push('remaining');
+    // The pair supports the derivation only when its arithmetic is a
+    // finite number: an overflowing difference leaves the field absent and
+    // unlisted (D-057), never a non-finite value the §8.4 invariants reject.
+    remainingValue = derivableValue(limit - used);
+    if (remainingValue !== undefined) derived.push('remaining');
   } else if (used !== undefined && remaining !== undefined && limit === undefined) {
-    limitValue = used + remaining;
-    derived.push('limit');
+    limitValue = derivableValue(used + remaining);
+    if (limitValue !== undefined) derived.push('limit');
   } else if (limit !== undefined && remaining !== undefined && used === undefined) {
-    usedValue = limit - remaining;
-    derived.push('used');
+    usedValue = derivableValue(limit - remaining);
+    if (usedValue !== undefined) derived.push('used');
   }
 
   // percentage is passed through verbatim (D-047.2: no re-scaling, no
   // rounding correction, no cross-validation against the absolutes). The
   // only permitted absolute→percentage derivation requires both `used` and
   // `limit` to have been *supplied* — never a derived `limit` — and a
-  // zero allowance to be non-finite division, so the derivation is skipped
-  // there (the metric keeps its absolutes; review finding P1-1).
+  // quotient that is a finite number: a zero allowance (NaN or ±Infinity
+  // division) and an overflowing ratio both skip the derivation, leaving
+  // the metric its absolutes (task 100 review P1-1; D-057).
   let percentUsed = percentSupplied;
-  if (percentUsed === undefined && used !== undefined && limit !== undefined && limit !== 0) {
-    percentUsed = (100 * used) / limit;
-    derived.push('percentUsed');
+  if (percentUsed === undefined && used !== undefined && limit !== undefined) {
+    const quotient = derivableValue((100 * used) / limit);
+    if (quotient !== undefined) {
+      percentUsed = quotient;
+      derived.push('percentUsed');
+    }
   }
   let percentRemaining: number | undefined;
   if (percentUsed !== undefined) {
+    // Always finite: subtracting a finite percentage from 100 cannot
+    // overflow (the true sum stays far below the overflow threshold).
     percentRemaining = 100 - percentUsed;
     derived.push('percentRemaining');
   }

@@ -1092,8 +1092,10 @@ and integer percent only under upward rounding. Adapter decision points:
   the same integer coarseness by design, so `percentUsed + percentRemaining = 100` holds
   exactly for the UI.
 - When `percentage` is absent but `used` and `limit` are both supplied, `percentUsed` is
-  derived as `100 · used / limit` (marked derived) — the only permitted absolute→percentage
-  direction. Token/credit counts are **never** derived from percentages (§8.4).
+  derived as `100 · used / limit` (marked derived) when that quotient is a finite number —
+  the only permitted absolute→percentage direction. A zero allowance (NaN or ±Infinity
+  division) and an overflowing ratio skip the derivation, leaving the metric its absolutes
+  (D-057). Token/credit counts are **never** derived from percentages (§8.4).
 - **No cross-validation** against the absolute triple (D-047.2): integer rounding makes
   `percentage: 1` vs an actual 0.1% fraction expected noise, not malformation.
 - Falsifier: a captured `percentage > 100` falsifies the percent scale and reopens D-047.
@@ -1112,8 +1114,10 @@ Envelope and container types are strict (parse error on violation, per
   entry survives. A recognized entry is never dropped for a metadata defect.
 - A partially supplied absolute triple: the missing member is derived from the other two when
   both are supplied (for example `remaining = limit − used`), each derivation listed in
-  `derivedFields` (§8.4); with fewer than two supplied, the present values map as far as they
-  go and the metric stays valid.
+  `derivedFields` (§8.4) — but only when the arithmetic is a finite number: an overflowing
+  sum or difference (IEEE-754 extremes) leaves the field absent and unlisted instead of
+  emitting a value the §8.4 invariants reject (D-057). With fewer than two supplied, the
+  present values map as far as they go and the metric stays valid.
 - With the absolute triple present, the arithmetic identity is checked per
   [value semantics](#value-semantics-d-0471--the-question-093-posed-and-095-echoed-open);
   `usageDetails` is not validated (unmapped).
@@ -1257,3 +1261,48 @@ D-049 fixed the fixture boundary: minimal single-purpose files for contract rows
 mutations for trivial cross-cells. Every row the audit found unpinned is a cross-cell of an
 already-fixtured shape, so the honest artifact is the test, not a near-duplicate file; adding
 one would contradict the matrix decision's recorded scope.
+
+## Derived-field audit round — 2026-10-31 (task 101)
+
+Task 101's audit of every §8.4 derivation path in the mapping, closing the task's
+done-condition ("tests prove percentages are never used to invent token counts"). The audit
+walked each permitted derivation — `remaining = limit − used`, `used = limit − remaining`,
+`limit = used + remaining`, `percentUsed = 100 · used / limit` (supplied inputs only),
+`percentRemaining = 100 − percentUsed` (supplied or derived percentage) — against the rules,
+and confirmed the two structural properties by reading: percentages never feed an absolute
+field, and derivations never chain (a derived `limit` does not qualify `percentUsed`).
+
+The one behavior gap the audit found: arithmetic on finite inputs can overflow IEEE-754
+finiteness — `MAX_VALUE − (−MAX_VALUE)`, `MAX_VALUE + MAX_VALUE`, `100 · MAX_VALUE /
+MIN_VALUE`, `number × 3600` at extremes — and the pre-101 code emitted the `Infinity`/`NaN`
+result as a metric value, producing snapshots the shared §8.4 invariants
+(`findProviderSnapshotProblems`) reject. The fix (decision D-057): a derivation fires only
+when its arithmetic yields a finite number; otherwise the field stays absent and unlisted,
+the supplied values survive, and the metric stays valid. This subsumes the zero-allowance
+guard from task 100's review (0/0 → NaN, x/0 → ±Infinity — both non-finite), so behavior for
+zero allowances is unchanged. Deliberately _not_ changed: the supplied-triple identity check
+keeps exact float equality per D-047.1 — rejecting a rounding-inconsistent triple as an
+invalid metric is the safe direction, and no epsilon is introduced.
+
+The standing proof lives in
+[`test/unit/zai-coding-plan-mapping.property.spec.ts`](../../test/unit/zai-coding-plan-mapping.property.spec.ts):
+
+- **The done-condition as a property**: every recognized identity × arbitrary finite
+  percentage maps to a metric with no absolute fields, `unit: PERCENT` (the monthly MCP
+  quota keeps its fixed `REQUESTS`), verbatim `percentUsed`, `percentRemaining = 100 −
+percentUsed`, `derivedFields` exactly `['percentRemaining']`, invariant-clean — and no
+  absolute field ever appears when no absolute source was supplied.
+- **Derivation exactness**: a generated field-subset oracle (exact triples, provably
+  violated triples, arbitrary presence; IEEE-754 extremes always in play) asserts, per
+  entry, each field's presence/absence and exact value, validity and its `invalidReason`
+  branch, unit discipline, the `windowSeconds` rule, `derivedFields` listing exactly the
+  computed fields (closed set, no duplicates), the no-chaining property, the percent-sum
+  identity, finiteness of every emitted number, and a clean snapshot-invariant check.
+- **Extreme pairs** drive each derivation path with ±`MAX_VALUE`/±`MIN_VALUE`/0/±1
+  constants: finite results pass through exactly, overflowing ones leave the field absent.
+
+The example suite (`test/unit/zai-coding-plan-mapping.spec.ts`) pins the same rules readably:
+the four overflow guards, the window-scaling overflow, a lone allowance (no derivations, no
+percentages), and a derived `remaining` beside a supplied percentage (no cross-validation).
+Reverting the D-057 guard fails four property tests and four example tests — the proof has
+killing power, not just coverage.

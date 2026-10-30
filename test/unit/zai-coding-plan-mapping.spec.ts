@@ -822,6 +822,109 @@ describe('mapQuotaLimitData — derivation and pass-through edges', () => {
   });
 });
 
+describe('mapQuotaLimitData — finite derivations only (task 101, D-057)', () => {
+  const MAX = Number.MAX_VALUE;
+  const entry = (fields: Record<string, unknown>): Record<string, unknown> => ({
+    type: 'TOKENS_LIMIT',
+    unit: 3,
+    number: 5,
+    ...fields,
+  });
+
+  it('skips a derivation whose arithmetic overflows — the supplied pair survives', () => {
+    // limit − used overflows to +Infinity: `remaining` stays absent and
+    // unlisted, and the 100·used product overflows too, so no percentages
+    // appear. Before D-057 this emitted Infinity and produced a snapshot
+    // the §8.4 invariants reject.
+    const overflowing = mapQuotaLimitData([entry({ usage: MAX, currentValue: -MAX })], 'pro');
+    expect(overflowing.metrics[0]).toMatchObject({
+      used: -MAX,
+      limit: MAX,
+      unit: 'CREDITS',
+      isValid: true,
+    });
+    expect(overflowing.metrics[0]?.remaining).toBeUndefined();
+    expect(overflowing.metrics[0]?.percentUsed).toBeUndefined();
+    expect(overflowing.metrics[0]?.percentRemaining).toBeUndefined();
+    expect(overflowing.metrics[0]?.derivedFields).toBeUndefined();
+
+    // used + remaining overflows: `limit` is not derived.
+    const summed = mapQuotaLimitData([entry({ currentValue: MAX, remaining: MAX })], 'pro');
+    expect(summed.metrics[0]).toMatchObject({ used: MAX, remaining: MAX, isValid: true });
+    expect(summed.metrics[0]?.limit).toBeUndefined();
+    expect(summed.metrics[0]?.derivedFields).toBeUndefined();
+
+    // limit − remaining overflows: `used` is not derived.
+    const subtracted = mapQuotaLimitData([entry({ usage: MAX, remaining: -MAX })], 'pro');
+    expect(subtracted.metrics[0]).toMatchObject({ limit: MAX, remaining: -MAX, isValid: true });
+    expect(subtracted.metrics[0]?.used).toBeUndefined();
+
+    // Each entry alone is invariant-clean (same-key metrics cannot share
+    // a snapshot — §8.4 requires unique keys).
+    for (const { metrics } of [overflowing, summed, subtracted]) {
+      expect(findProviderSnapshotProblems(asSnapshot(metrics))).toEqual([]);
+    }
+  });
+
+  it('skips an overflowing percentUsed quotient while the finite remaining still derives', () => {
+    // MAX / MIN_VALUE overflows, so no percentage appears — but the
+    // finite remainder keeps its derivation. Only `remaining` is listed.
+    const { metrics } = mapQuotaLimitData(
+      [entry({ usage: Number.MIN_VALUE, currentValue: MAX })],
+      'pro',
+    );
+    expect(metrics[0]).toMatchObject({
+      used: MAX,
+      limit: Number.MIN_VALUE,
+      remaining: -MAX,
+      isValid: true,
+    });
+    expect(metrics[0]?.percentUsed).toBeUndefined();
+    expect(metrics[0]?.percentRemaining).toBeUndefined();
+    expect(metrics[0]?.derivedFields).toEqual(['remaining']);
+    expect(findProviderSnapshotProblems(asSnapshot(metrics))).toEqual([]);
+  });
+
+  it('omits windowSeconds when the ×3600 scaling overflows', () => {
+    const { metrics } = mapQuotaLimitData([entry({ number: MAX, percentage: 5 })], 'pro');
+    expect(metrics[0]).toMatchObject({ percentUsed: 5, isValid: true, unit: 'PERCENT' });
+    expect(metrics[0]?.windowSeconds).toBeUndefined();
+    expect(findProviderSnapshotProblems(asSnapshot(metrics))).toEqual([]);
+  });
+
+  it('maps a lone allowance as far as it goes — no derivations, no percentages', () => {
+    // A single supplied absolute supports nothing: no pair for the triple,
+    // no used for the quotient; the metric is valid with just `limit`.
+    const { metrics } = mapQuotaLimitData([entry({ usage: 1200 })], 'pro');
+    expect(metrics[0]).toMatchObject({ limit: 1200, unit: 'CREDITS', isValid: true });
+    expect(metrics[0]?.used).toBeUndefined();
+    expect(metrics[0]?.remaining).toBeUndefined();
+    expect(metrics[0]?.percentUsed).toBeUndefined();
+    expect(metrics[0]?.percentRemaining).toBeUndefined();
+    expect(metrics[0]?.derivedFields).toBeUndefined();
+    expect(findProviderSnapshotProblems(asSnapshot(metrics))).toEqual([]);
+  });
+
+  it('derives remaining beside a supplied percentage without cross-validation', () => {
+    // The pair completes the triple; the provider's percentage stays
+    // verbatim even though the triple says a different fraction (D-047.2).
+    const { metrics } = mapQuotaLimitData(
+      [entry({ usage: 1200, currentValue: 60, percentage: 7 })],
+      'pro',
+    );
+    expect(metrics[0]).toMatchObject({
+      used: 60,
+      remaining: 1140,
+      limit: 1200,
+      percentUsed: 7,
+      percentRemaining: 93,
+      isValid: true,
+    });
+    expect(metrics[0]?.derivedFields).toEqual(['remaining', 'percentRemaining']);
+    expect(findProviderSnapshotProblems(asSnapshot(metrics))).toEqual([]);
+  });
+});
+
 describe('parseSubscriptionContext — endpoint 2 soft parsing (A9)', () => {
   it('selects the inCurrentPeriod record when the rules coincide (sanitized)', () => {
     const context = parseSubscriptionContext(fixture('sanitized/zai-subscription-list.json'));
