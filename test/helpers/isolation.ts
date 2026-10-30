@@ -82,20 +82,46 @@ export function deferList(): {
   };
 }
 
+/** The fake-clock controls {@link withFakeTimers} hands to its body. */
+export interface FakeClock {
+  /** Advance the fake clock synchronously; timers fire, microtasks do not flush. */
+  advanceMs: (ms: number) => void;
+  /**
+   * Advance the fake clock while flushing the microtask queue between
+   * timer firings — the control for promise-chained async waits such as a
+   * backoff sleep followed by the next attempt.
+   */
+  advanceMsAsync: (ms: number) => Promise<void>;
+  runAllTimersAsync: () => Promise<void>;
+}
+
+/** Options for {@link withFakeTimers}. */
+export interface FakeTimerOptions {
+  /**
+   * Whether real elapsed time keeps advancing the fake clock (default
+   * `true`, for bodies that await real-timer work under fake timers).
+   * Exact-boundary timer tests opt out: with drift enabled, a few real
+   * milliseconds can push the fake clock past a boundary mid-test and
+   * make the assertion flaky (spec §17.3 forbids flaky tests).
+   */
+  readonly shouldAdvanceTime?: boolean;
+}
+
 /**
  * Installs fake timers for the duration of `body` and restores real timers
  * afterwards, even on failure. The helpers mirror `vi` for convenience.
  */
 export async function withFakeTimers(
-  body: (clock: {
-    advanceMs: (ms: number) => void;
-    runAllTimersAsync: () => Promise<void>;
-  }) => Promise<void> | void,
+  body: (clock: FakeClock) => Promise<void> | void,
+  options: FakeTimerOptions = {},
 ): Promise<void> {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers({ shouldAdvanceTime: options.shouldAdvanceTime ?? true });
   try {
     await body({
       advanceMs: (ms) => vi.advanceTimersByTime(ms),
+      advanceMsAsync: async (ms) => {
+        await vi.advanceTimersByTimeAsync(ms);
+      },
       runAllTimersAsync: async () => {
         await vi.runAllTimersAsync();
       },

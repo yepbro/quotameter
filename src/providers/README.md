@@ -97,8 +97,11 @@ cross-cutting request concerns so adapters stay pure parsing:
   `socket`, `network`, `http-status`, `response-too-large`, `content-type`)
   that task 105 maps to §7.2 collection outcomes. Non-2xx responses are
   _observations_: `TransportStatusError` carries the status, the scrubbed
-  status text, and the raw `Retry-After` value for tasks 106/107 — this
-  layer never retries and never parses. Errors never contain the URL, the
+  status text, and the raw `Retry-After` value — this layer never retries
+  and never parses. The §7.2 retry loop itself is a cycle-level wrapper in
+  `src/services/polling-retry.ts` (task 106, decision D-059), consuming the
+  taxonomy downstream through task 105's `retryable` flag; `Retry-After`
+  parsing stays task 107's. Errors never contain the URL, the
   request headers, or the raw cause: only the machine `causeCode` (e.g.
   `ECONNREFUSED`) survives, and the few retained server strings are
   scrubbed against the request's own credential material, so a provider

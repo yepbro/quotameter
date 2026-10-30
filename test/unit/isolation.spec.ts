@@ -67,4 +67,25 @@ describe('isolation helpers', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(realSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('withFakeTimers advances async: a promise chained onto a timer settles', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        let settled = false;
+        // The shape of an async sleep whose continuation runs in a
+        // microtask: the sync advance fires the timer, but only the async
+        // advance also flushes the continuation.
+        setTimeout(() => {
+          Promise.resolve().then(() => {
+            settled = true;
+          });
+        }, 500);
+        clock.advanceMs(500);
+        expect(settled).toBe(false);
+        await clock.advanceMsAsync(0);
+        expect(settled).toBe(true);
+      },
+      { shouldAdvanceTime: false },
+    );
+  });
 });

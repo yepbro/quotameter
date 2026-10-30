@@ -16,6 +16,7 @@ import {
   providerFetch,
   type ProviderHttpRequest,
 } from '../../src/providers/transport';
+import { runCycleWithRetries } from '../../src/services/polling-retry';
 
 /**
  * Real-socket coverage for the HTTP transport (spec §7.2, §17.1; task 104,
@@ -428,5 +429,108 @@ describe('providerFetch over real sockets', () => {
     expect(error).toBeInstanceOf(TransportError);
     expect(typeof (error as TransportError).kind).toBe('string');
     expect((error as TransportError).kind).toBe('http-status');
+  });
+});
+
+describe('runCycleWithRetries over real sockets (spec §7.2, task 106)', () => {
+  let retryServer: MockProviderServer;
+
+  beforeAll(async () => {
+    retryServer = await startMockProviderServer();
+  });
+
+  afterAll(async () => {
+    await retryServer.close();
+  });
+
+  /**
+   * The backoff delays (2/4/8 s + jitter) are pinned exactly by the
+   * fake-timer unit suite driving the default sleep; integration replaces
+   * the wait with a stub so real-socket runs stay fast while proving
+   * eligibility, attempt counts, and timeout interaction end to end.
+   */
+  const instantBackoff: () => Promise<void> = async () => {};
+
+  it('retries an HTTP 5xx failure and succeeds on the second attempt', async () => {
+    retryServer.setBehavior({ kind: 'respond', status: 503, body: '' });
+    const before = retryServer.requests.length;
+    const result = await runCycleWithRetries(
+      () =>
+        providerFetch(
+          { url: `${retryServer.url}/api/monitor/usage/quota/limit` },
+          { timeoutMs: 5000 },
+        ),
+      {
+        random: () => 0,
+        sleep: async () => {
+          // Reached only after the retryable 503: flip the provider healthy.
+          retryServer.setBehavior({ kind: 'respond', status: 200, body: '{"quota":{"used":10}}' });
+        },
+      },
+    );
+    expect(result).toMatchObject({ ok: true, attempts: 2 });
+    if (result.ok) {
+      expect(result.value.status).toBe(200);
+      expect(result.value.body).toBe('{"quota":{"used":10}}');
+    }
+    expect(retryServer.requests.length).toBe(before + 2);
+  });
+
+  it.each([429, 401, 403])('does not retry HTTP %d within the cycle', async (status) => {
+    retryServer.setBehavior({ kind: 'respond', status, body: '' });
+    const before = retryServer.requests.length;
+    let backoffs = 0;
+    const outcome = await runCycleWithRetries(
+      () => providerFetch(markerRequest(`${retryServer.url}/`), { timeoutMs: 5000 }),
+      {
+        random: () => 0,
+        sleep: async () => {
+          backoffs++;
+        },
+      },
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.attempts).toBe(1);
+    if (!outcome.ok) expect(outcome.error).toBeInstanceOf(TransportStatusError);
+    expect(retryServer.requests.length).toBe(before + 1);
+    expect(backoffs).toBe(0);
+    if (!outcome.ok) expect(errorSurface(outcome.error)).not.toContain(MARKER);
+  });
+
+  it('retries a real request timeout: the deadline cuts, the cycle recovers', async () => {
+    // Interaction with the transport's per-attempt §7.2 timeout (D-042):
+    // attempt 1 burns its own 60 ms deadline against a 400 ms response and
+    // rejects TransportTimeoutError — retryable — and attempt 2 succeeds.
+    retryServer.setBehavior({ kind: 'respond', status: 200, body: '{}', delayMs: 400 });
+    const result = await runCycleWithRetries(
+      () => providerFetch({ url: `${retryServer.url}/` }, { timeoutMs: 60 }),
+      {
+        random: () => 0,
+        sleep: async () => {
+          retryServer.setBehavior({ kind: 'respond', status: 200, body: '{"ok":true}' });
+        },
+      },
+    );
+    expect(result).toMatchObject({ ok: true, attempts: 2 });
+    if (result.ok) expect(result.value.body).toBe('{"ok":true}');
+  });
+
+  it('exhausts three retries against a refused connection, keeping the error', async () => {
+    const port = await freedLoopbackPort();
+    let calls = 0;
+    const result = await runCycleWithRetries(
+      async () => {
+        calls++;
+        return providerFetch(markerRequest(`http://127.0.0.1:${port}/`), { timeoutMs: 5000 });
+      },
+      { random: () => 0, sleep: instantBackoff },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.attempts).toBe(4);
+    expect(calls).toBe(4);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(TransportConnectionError);
+      expect(errorSurface(result.error)).not.toContain(MARKER);
+    }
   });
 });
