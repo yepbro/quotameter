@@ -263,11 +263,13 @@ describe('metric_values table (task 084, spec §11.2, decision D-039)', () => {
       // §11.4's forward test from the previous supported schema: a database
       // at schema 3 — migrated by the task-083 canonical set (0001–0003).
       // Every later migration is excluded so the pass leaves exactly the
-      // schema-3 state the task-084/085 migrations must complete (the
+      // schema-3 state the task-084/085/086 migrations must complete (the
       // snapshots.spec.ts precedent for excluding successors).
       const schemaThreeSet = MIGRATIONS.filter(
         (migration) =>
-          migration.name !== '0004-metric-values' && migration.name !== '0005-quota-events',
+          migration.name !== '0004-metric-values' &&
+          migration.name !== '0005-quota-events' &&
+          migration.name !== '0006-raw-responses',
       );
       const db = new DatabaseSync(dbPath);
       await createMigrationRunner({
@@ -276,28 +278,28 @@ describe('metric_values table (task 084, spec §11.2, decision D-039)', () => {
         migrations: schemaThreeSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 5,
+        supportedVersion: 6,
         appliedVersion: 3,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The task-084/085 migrations complete it, in order.
+      // The task-084/085/086 migrations complete it, in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0004-metric-values', '0005-quota-events']);
+      expect(applied).toEqual(['0004-metric-values', '0005-quota-events', '0006-raw-responses']);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 5,
-        appliedVersion: 5,
+        supportedVersion: 6,
+        appliedVersion: 6,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: all five entries
+      // Journal proven through an independent connection: all six entries
       // with their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
@@ -309,6 +311,7 @@ describe('metric_values table (task 084, spec §11.2, decision D-039)', () => {
         { name: '0003-snapshots', applied_at: T0 },
         { name: '0004-metric-values', applied_at: T0 + 1 },
         { name: '0005-quota-events', applied_at: T0 + 1 },
+        { name: '0006-raw-responses', applied_at: T0 + 1 },
       ]);
       reader.close();
 

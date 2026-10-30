@@ -186,13 +186,13 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         migrations: schemaOneSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 5,
+        supportedVersion: 6,
         appliedVersion: 1,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The canonical set, grown by tasks 082–085, completes it: the four
+      // The canonical set, grown by tasks 082–086, completes it: the five
       // newer migrations apply in order.
       const applied = await createMigrationRunner({
         database: db,
@@ -204,16 +204,17 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         '0003-snapshots',
         '0004-metric-values',
         '0005-quota-events',
+        '0006-raw-responses',
       ]);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 5,
-        appliedVersion: 5,
+        supportedVersion: 6,
+        appliedVersion: 6,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: all five entries
+      // Journal proven through an independent connection: all six entries
       // with their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
@@ -225,6 +226,7 @@ describe('collection_runs table (task 082, spec §11.2, decision D-034)', () => 
         { name: '0003-snapshots', applied_at: T0 + 1 },
         { name: '0004-metric-values', applied_at: T0 + 1 },
         { name: '0005-quota-events', applied_at: T0 + 1 },
+        { name: '0006-raw-responses', applied_at: T0 + 1 },
       ]);
       reader.close();
 

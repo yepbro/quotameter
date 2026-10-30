@@ -430,3 +430,82 @@ Pinned interpretations (D-046):
   events referencing it; archiving an account is an UPDATE and retains the
   events (§8.2). A NULL `run_id` satisfies the composite FK while the
   direct FK still proves the account exists.
+
+## The `raw_responses` table — migration `0006-raw-responses` (task 086, spec §7.4, §11.2, decision D-051)
+
+The sixth entry of the canonical `MIGRATIONS` list (schema version 6). One
+row per **parse-failed** collection run — the bounded, sanitized payload
+`quotameter doctor --raw` (task 103) diagnoses `Format changed` with.
+Sanitization is task 102's (D-041: the row stores the sanitizer's output
+as-is), retention execution (20 per account / 30 days) is task 103's, and
+the typed access is task 088's. Exercised directly in
+`test/integration/raw-responses.spec.ts`.
+
+| Column         | Type      | Rules                                                                                        |
+| -------------- | --------- | -------------------------------------------------------------------------------------------- |
+| `run_id`       | `INTEGER` | `NOT NULL UNIQUE` — one raw record per run by identity; composite-FK carrier below           |
+| `account_id`   | `TEXT`    | `NOT NULL`, `raw_responses_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE` |
+| `captured_at`  | `INTEGER` | `NOT NULL`, §11.1 epoch ms, writer-supplied (no SQL default) — the 30-day retention key      |
+| `http_status`  | `INTEGER` | nullable, `raw_responses_http_status_range`: NULL or 100–599 (D-034 mirror)                  |
+| `content_type` | `TEXT`    | nullable, `raw_responses_content_type_nonempty`: absent or non-blank                         |
+| `body`         | `TEXT`    | `NOT NULL`, may be empty; `raw_responses_body_size`: `octet_length(body) <= 65536`           |
+| `run_outcome`  | `TEXT`    | `NOT NULL`, `raw_responses_parse_error_only`: `'parse_error'` only — the composite FK's term |
+
+Structural constraints beyond the columns:
+
+- `run_id INTEGER NOT NULL UNIQUE` — §11.2's "one per run" as the schema, a
+  plain UNIQUE column (D-036's verified finding: a NULL into a NOT NULL
+  rowid alias is silently replaced by a fresh id, while the plain UNIQUE
+  column rejects it). No second identity column: no query references a
+  raw-response id.
+- Composite FK `(account_id, run_id, run_outcome)` →
+  `collection_runs (account_id, id, outcome)` `ON DELETE CASCADE` — the
+  parent key task 083 already exposed (`collection_runs_account_id_outcome`,
+  no new parent index) — with `raw_responses_parse_error_only` pinning the
+  child's carrier. One constraint proves three §7.4/§11.2 properties: the
+  run exists, it belongs to the same account, and its outcome is
+  `parse_error` — so a successful run (or any non-parse failure) can never
+  carry a raw record, and a payload can never be filed under another
+  account's run. The parent-side NO ACTION default freezes a referenced
+  run's outcome/account against post-hoc UPDATEs.
+- `raw_responses_body_size` — the D-041 64 KiB cap in SQL, in **bytes**:
+  `octet_length()` counts the full UTF-8 byte length (NUL included; SQLite
+  ≥ 3.43, the pinned runtime carries 3.47.2), while `length()` counts code
+  points (up to 4 bytes each) and stops at NUL. At-cap passes, one byte
+  over is rejected. The bound interpolates from
+  `RAW_RESPONSE_MAX_PAYLOAD_BYTES` — the storage-side twin of D-041's
+  `MAX_PAYLOAD_BYTES`, re-declared because the layout DAG forbids storage
+  importing providers and drift-tested for equality against the sanitizer's
+  constant.
+
+Index: `raw_responses_account_time (account_id, captured_at)` — the
+per-account scan task 103's retention policy needs (newest-first for the
+20-record cap, `captured_at` ranges for the 30-day expiry), named the
+D-034 way; its leading `account_id` also serves the account-FK cascade
+scan, and the `run_id UNIQUE` autoindex serves the run cascade — no extra
+foreign-key indexes.
+
+Pinned interpretations (D-051):
+
+- **Column set = §11.2's row plus the two D-036 FK carriers** — `account_id`
+  and `run_outcome` exist solely so the parse-error linkage can compare
+  against the run's own columns (the D-036-documented bend); `account_id`
+  additionally leads the retention index. `captured_at` names §11.2's
+  "timestamp" (the house `_at` suffix); §7.4 names no content type,
+  §11.2's row does, so the column is here.
+- **`body` may be empty** — an empty body is itself a parse failure
+  (`JSON.parse('')` throws; the sanitizer passes `''` through), so unlike
+  `error_message` there is no non-empty CHECK; no charset or NUL guard
+  either — the row stores the sanitizer's output and must fit every state
+  the domain can produce (the D-039 rule).
+- **Evidence columns mirror D-034's shapes** — `http_status` is NULL when
+  the failure produced no response to retain a status from (D-048:
+  `response-too-large`/`content-type` carry none); `content_type` is the
+  header value verbatim or absent — unbounded by design: §7.4's cap is the
+  payload's, the transport's header-size limit bounds what can arrive, and
+  a schema-side bound would reject states the domain can produce (the
+  D-039 rule).
+- **Cascading linkage** — deleting a run removes its payload (§11.3's
+  cleanup deletes expired runs — their payloads are older still); deleting
+  an account removes its payloads (§8.2 purge); archiving is an UPDATE and
+  retains them.

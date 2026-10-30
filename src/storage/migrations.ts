@@ -62,6 +62,13 @@
  * `details`, and the parent key its account-pinning snapshot foreign key
  * needs — growing the supported schema version to 5. Tasks 086–087 append
  * theirs after it.
+ *
+ * Task 086 (decision D-051) appends the sixth schema migration — the §7.4/
+ * §11.2 `raw_responses` row: one bounded sanitized parse-failure payload per
+ * run, its parse-error linkage structural over the task-083 parent key, the
+ * D-041 64 KiB byte cap in SQL, and the account/time index task 103's
+ * retention scans consume — growing the supported schema version to 6. Task
+ * 087 appends its migration after it.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
@@ -74,6 +81,16 @@ import { createSystemClock, type Clock } from '../util/clock';
  * contract: renaming it would strand existing databases.
  */
 export const MIGRATIONS_TABLE = 'schema_migrations';
+
+/**
+ * The payload byte budget of the `raw_responses` table (spec §7.4: "cap each
+ * response at 64 KiB") — the storage-side twin of D-041's
+ * `MAX_PAYLOAD_BYTES`. Re-declared here because the layout DAG forbids
+ * storage importing providers; `test/integration/raw-responses.spec.ts`
+ * drift-tests the two constants for equality (a D-041 change without a
+ * successor migration must fail, not silently diverge).
+ */
+export const RAW_RESPONSE_MAX_PAYLOAD_BYTES = 64 * 1024;
 
 /**
  * The schema-version currency (D-031): a migration name is
@@ -841,14 +858,135 @@ const QUOTA_EVENTS_MIGRATION: Migration = {
 };
 
 /**
+ * The `raw_responses` table and its retention index (spec §7.4, §11.2; task
+ * 086, decision D-051). One row per **parse-failed** collection run — the
+ * bounded, sanitized payload `doctor --raw` (task 103) diagnoses `Format
+ * changed` with. Sanitization itself is task 102's (D-041: the row stores
+ * the sanitizer's output as-is); retention execution (20 per account / 30
+ * days) is task 103's; the typed repository is task 088's.
+ *
+ * - **Column set = §11.2's row plus the two D-036 FK carriers.** The spec's
+ *   list is "one per run; timestamp, HTTP status, content type, body":
+ *   `run_id` (the run reference), `captured_at` (§11.1 epoch ms,
+ *   writer-supplied from the injected clock, D-021, no SQL default — the
+ *   value task 103's 30-day policy compares), nullable `http_status`,
+ *   nullable `content_type`, `body`. `account_id` and `run_outcome` exist
+ *   solely so the parse-error linkage below can compare against the run's
+ *   own columns — the D-036-documented bend of the exact-set rule, paid
+ *   once per table that needs it; `account_id` additionally leads the
+ *   retention index. §7.4 names no content type, §11.2's row does, so the
+ *   column is here.
+ * - **One raw record per run is structural**: `run_id INTEGER NOT NULL
+ *   UNIQUE` — a plain UNIQUE column, deliberately not `INTEGER PRIMARY
+ *   KEY` (D-036's verified finding: a NULL into a NOT NULL rowid alias is
+ *   silently replaced by a fresh id, while the plain UNIQUE column rejects
+ *   it). No second identity column: no query references a raw-response id;
+ *   `doctor --raw` reads by run/account. No `AUTOINCREMENT` — cascading
+ *   deletion makes recycling harmless (D-034).
+ * - **Parse-failure-only linkage via the D-036 composite-FK technique.**
+ *   `(account_id, run_id, run_outcome)` references `collection_runs
+ *   (account_id, id, outcome)` — the parent key task 083 already exposed as
+ *   `collection_runs_account_id_outcome`, so this migration adds no new
+ *   parent index — with `raw_responses_parse_error_only` pinning the
+ *   child's `run_outcome` to `'parse_error'`. One constraint proves three
+ *   §7.4/§11.2 properties: the run exists, it belongs to the same account,
+ *   and its outcome is `parse_error` — "store a provider response only
+ *   when parsing/schema validation fails" (§7.4) encoded strictly, so a
+ *   successful run (or any non-parse failure: auth, network, timeout,
+ *   rate-limit, server) can never carry a raw record, and a raw record can
+ *   never claim another account's run. The parent-side default (`ON UPDATE
+ *   NO ACTION`) additionally freezes a referenced run's outcome and
+ *   account against post-hoc UPDATEs — a run whose payload was kept cannot
+ *   be rewritten into a success. Weaker encodings were rejected:
+ *   `run_outcome <> 'success'` would admit states §7.4 forbids, and a
+ *   plain run FK would leave both the outcome and the account consistency
+ *   to the writer (the D-036 rationale, verbatim).
+ * - **The byte cap is SQL, in bytes.** D-041 caps the sanitized payload at
+ *   64 KiB of UTF-8 (marker included), so the column budget is
+ *   `octet_length(body) <= 65536`, interpolated from
+ *   {@link RAW_RESPONSE_MAX_PAYLOAD_BYTES}. Bytes, not characters:
+ *   SQLite's `length()` counts code points (up to 4 bytes each — a
+ *   character cap would admit 256 KiB) and stops at an embedded NUL, while
+ *   `octet_length()` (SQLite ≥ 3.43; the pinned runtime carries 3.47.2)
+ *   counts the full UTF-8 byte length, NUL included (verified
+ *   empirically). At-cap passes — the D-041 sanitizer can emit exactly
+ *   65536 bytes — and one byte over is rejected.
+ * - **`body` is NOT NULL and may be empty.** An empty body is a legitimate
+ *   parse failure (`JSON.parse('')` throws; the sanitizer passes `''`
+ *   through), so unlike `error_message` there is no non-empty CHECK. No
+ *   charset or NUL guard either: the row stores the sanitizer's output,
+ *   the domain's every producible state must fit (the D-039 rule), and the
+ *   size CHECK measures NUL-bearing text exactly.
+ * - **Evidence columns mirror D-034's shapes.** `http_status` is NULL or a
+ *   real 100–599 status — NULL when the failure produced no response to
+ *   retain a status from (D-048: `response-too-large` and `content-type`
+ *   carry none). `content_type` is absent-or-non-blank (the
+ *   `accounts_plan_nonempty` precedent): absent when the transport saw no
+ *   header (a §7.4/§7.2 content-type failure), the header value verbatim
+ *   when present.
+ * - **Cascading linkage.** Both foreign keys cascade: deleting a run
+ *   removes its payload (§11.3's cleanup deletes expired runs — their
+ *   payloads are older still), deleting an account removes its payloads
+ *   (§8.2 purge), and archiving is an UPDATE that retains them. The
+ *   `raw_responses_account_time` index's leading `account_id` serves the
+ *   account cascade scan; the `run_id UNIQUE` autoindex serves the run
+ *   cascade — the D-034 one-index-two-jobs pattern, no extra FK indexes.
+ * - **Index naming.** `raw_responses_account_time (account_id,
+ *   captured_at)` follows the D-034 spec-wording precedent
+ *   (`snapshots_account_time`): the per-account scan task 103's policy
+ *   needs — newest-first for the 20-record cap, `captured_at` ranges for
+ *   the 30-day expiry — served and ordered by one index. §11.2's
+ *   required-index list names no raw_responses index; this one is the
+ *   shape that makes the policy enforceable.
+ */
+const RAW_RESPONSES_MIGRATION: Migration = {
+  name: '0006-raw-responses',
+  up: ({ database }) => {
+    database.exec(`
+      CREATE TABLE raw_responses (
+        run_id INTEGER NOT NULL UNIQUE,
+        account_id TEXT NOT NULL,
+        captured_at INTEGER NOT NULL,
+        http_status INTEGER,
+        content_type TEXT,
+        body TEXT NOT NULL,
+        run_outcome TEXT NOT NULL,
+        CONSTRAINT raw_responses_account_charset CHECK (
+          account_id GLOB '[A-Za-z0-9]*'
+          AND account_id NOT GLOB '*[^A-Za-z0-9_-]*'
+          AND length(account_id) BETWEEN 1 AND 64
+          AND instr(account_id, char(0)) = 0
+        ),
+        CONSTRAINT raw_responses_http_status_range CHECK (
+          http_status IS NULL OR http_status BETWEEN 100 AND 599
+        ),
+        CONSTRAINT raw_responses_content_type_nonempty CHECK (
+          content_type IS NULL OR content_type <> ''
+        ),
+        CONSTRAINT raw_responses_body_size CHECK (
+          octet_length(body) <= ${RAW_RESPONSE_MAX_PAYLOAD_BYTES}
+        ),
+        CONSTRAINT raw_responses_parse_error_only CHECK (run_outcome = 'parse_error'),
+        FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE,
+        FOREIGN KEY (account_id, run_id, run_outcome)
+          REFERENCES collection_runs (account_id, id, outcome) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX raw_responses_account_time
+        ON raw_responses (account_id, captured_at);
+    `);
+  },
+};
+
+/**
  * The application's canonical migration set (§11.4, D-031): the one ordered
  * list the composition root hands to {@link createMigrationRunner}, grown by
  * one entry per schema change — `0001-accounts` since task 081 (D-032),
  * `0002-collection-runs` since task 082 (D-034), `0003-snapshots` since
  * task 083 (D-036), `0004-metric-values` since task 084 (D-039),
- * `0005-quota-events` since task 085 (D-046); tasks 086–087 append theirs
- * after it. The journal table itself comes from the storage adapter, not
- * from a migration.
+ * `0005-quota-events` since task 085 (D-046), `0006-raw-responses` since
+ * task 086 (D-051); task 087 appends its migration after it. The journal
+ * table itself comes from the storage adapter, not from a migration.
  */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   ACCOUNTS_MIGRATION,
@@ -856,6 +994,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   SNAPSHOTS_MIGRATION,
   METRIC_VALUES_MIGRATION,
   QUOTA_EVENTS_MIGRATION,
+  RAW_RESPONSES_MIGRATION,
 ];
 
 /**

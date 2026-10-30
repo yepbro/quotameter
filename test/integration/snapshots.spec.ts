@@ -197,7 +197,8 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
         (migration) =>
           migration.name !== '0003-snapshots' &&
           migration.name !== '0004-metric-values' &&
-          migration.name !== '0005-quota-events',
+          migration.name !== '0005-quota-events' &&
+          migration.name !== '0006-raw-responses',
       );
       const db = new DatabaseSync(dbPath);
       await createMigrationRunner({
@@ -206,29 +207,34 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
         migrations: schemaTwoSet,
       }).up();
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 5,
+        supportedVersion: 6,
         appliedVersion: 2,
         relation: 'behind',
         newerThanSupported: [],
       });
 
-      // The canonical set, grown by tasks 083–085, completes it: the three
+      // The canonical set, grown by tasks 083–086, completes it: the four
       // newer migrations apply in order.
       const applied = await createMigrationRunner({
         database: db,
         clock: createFixedClock(T0 + 1),
         migrations: MIGRATIONS,
       }).up();
-      expect(applied).toEqual(['0003-snapshots', '0004-metric-values', '0005-quota-events']);
+      expect(applied).toEqual([
+        '0003-snapshots',
+        '0004-metric-values',
+        '0005-quota-events',
+        '0006-raw-responses',
+      ]);
       expect(schemaVersionStatus(db, MIGRATIONS)).toEqual({
-        supportedVersion: 5,
-        appliedVersion: 5,
+        supportedVersion: 6,
+        appliedVersion: 6,
         relation: 'up-to-date',
         newerThanSupported: [],
       });
       db.close();
 
-      // Journal proven through an independent connection: all five entries
+      // Journal proven through an independent connection: all six entries
       // with their own §11.1 epoch-ms timestamps.
       const reader = new DatabaseSync(dbPath);
       const journal = reader
@@ -240,6 +246,7 @@ describe('snapshots table (task 083, spec §11.2, decision D-036)', () => {
         { name: '0003-snapshots', applied_at: T0 + 1 },
         { name: '0004-metric-values', applied_at: T0 + 1 },
         { name: '0005-quota-events', applied_at: T0 + 1 },
+        { name: '0006-raw-responses', applied_at: T0 + 1 },
       ]);
       reader.close();
 
