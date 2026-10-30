@@ -56,11 +56,19 @@ Additional invariants:
   This is what makes "add a provider without rewriting the scheduler,
   persistence, history endpoints, or charts" (§8.1) mechanically true.
 - **One database gate.** SQL exists only inside `src/storage/`. Services
-  consume `QuotaRepository`; spec §8.1 names it among the core services, and
-  spec §3 requires all database access isolated behind a storage module — it
-  is therefore the storage layer's public facade (decision D-009). The
-  structural test enforces the gate: any file outside `src/storage/` that
-  imports `node:sqlite` fails `make check`.
+  consume `QuotaRepository` (`src/storage/repository.ts`, task 088); spec
+  §8.1 names it among the core services, and spec §3 requires all database
+  access isolated behind a storage module — it is therefore the storage
+  layer's public facade (decision D-009, API pinned by D-058). The gate is
+  enforced twice mechanically: any file outside `src/storage/` that imports
+  `node:sqlite` fails `make check` (the structural test above), and since
+  task 088 an uppercase house-style SQL statement literal outside
+  `src/storage/` fails it too (`test/unit/storage-sql-gate.spec.ts`,
+  decision D-058) — a tripwire against accidental ad hoc SQL that, together
+  with the import gate, covers both the handle-construction and the
+  received-handle routes in the house style; it is deliberately not a
+  security boundary (lowercase/concatenated SQL stays out of scope by
+  design — see D-058).
 - **Secrets stop at their layer.** Provider secrets travel from
   `src/config/` through services into adapters and are logged only through the
   redacting logger in `src/util/` (§15.4); no layer may print them.

@@ -585,3 +585,67 @@ Pinned interpretations (D-056):
   contract would freeze a writer convention into the on-disk schema and
   could reject states the service produces (the D-039 identical-states
   rule). Key lookups run on the primary-key autoindex.
+
+## `repository.ts` — the typed repository facade (task 088, spec §8.1/§11, decision D-058)
+
+`QuotaRepository` — the §8.1 core-service name, the storage layer's public
+facade (D-009) — over the migrated canonical schema:
+`createQuotaRepository({ database })` takes the configured `DatabaseSync`
+(the `database` field of task 079's `StorageConnection`; it owns no
+lifecycle) and returns the only sanctioned data path. Every method maps rows
+to readonly camelCase records over the §8.4 vocabulary; no snake_case row
+and no handle crosses the boundary. Pinned interpretations (D-058):
+
+- **Synchronous methods** — `DatabaseSync` cannot await anything; no async
+  facade theater. Multi-record atomicity is explicit:
+  `withTransaction(work)` runs the callback's inserts in one
+  `BEGIN IMMEDIATE` … `COMMIT` unit (rollback + rethrow on failure, loud
+  nesting refusal) — the seam task 089 composes into the §11.1 atomic cycle
+  write.
+- **No clock** — timestamps are writer-supplied arguments on every write and
+  every retention cutoff (D-021's discipline carried into the API surface).
+- **The named CHECK constraints are the write gate** — the repository
+  re-validates nothing; constraint failures propagate by name. It only maps
+  what SQL cannot express: `is_valid` ⇄ boolean and the `derived_fields`
+  bitmask ⇄ `DerivedMetricField[]` (D-039).
+- **FK carriers are internal** — `insertSnapshot` writes the `'success'`
+  carrier, `insertRawResponse` the `'parse_error'` carrier; callers cannot
+  express the D-036/D-051 linkages wrong (an error cycle can never gain a
+  snapshot; a successful run can never carry a raw payload).
+- **Retention deletes return counts** — `deleteCollectionRunsBefore` and
+  siblings report what they removed (task 091); `deleteAccount` is the §8.2
+  purge (the cascades remove the history), `archiveAccount` touches only an
+  active row so the archive timestamp is immutable.
+
+Surface, by consumer: accounts (`insertAccount`, `getAccount`,
+`listAccounts`, `updateAccountDetails`, `archiveAccount`, `deleteAccount` —
+090), runs (`insertCollectionRun` → assigned id, `getCollectionRun`,
+`listCollectionRuns`, `getLatestCollectionRun`,
+`deleteCollectionRunsBefore` — 110/091/142), snapshots (`insertSnapshot`,
+`getSnapshotByRun`, `getLatestSnapshot`, `listSnapshots`), metrics
+(`insertMetricValues`, `getMetricValuesForRun`, `getMetricSeries` — proven
+on the `metric_values_series_access` index), events (`insertQuotaEvent`,
+`listQuotaEvents`, `deleteQuotaEventsBefore`), raw responses
+(`insertRawResponse`, `getRawResponseByRun`, `listRawResponses` newest
+first, `deleteRawResponsesByRunIds` + `deleteRawResponsesBefore` — the
+identity delete and the time cutoff compose into 103's 20-per-account /
+30-day policy), sessions (`insertSession`,
+`getSession`, `touchSession`, `deleteSession`, `deleteAllSessions`,
+`deleteSessionsExpiredBefore` — 154/155), and meta (`getMetaValue`,
+`setMetaValue` upsert — 091).
+
+**Boundary enforcement.** "Application services issue no ad hoc SQL outside
+the storage module" is mechanically true, not conventional:
+`test/unit/package-layout.spec.ts` already gates `node:sqlite` imports to
+this directory (D-009), and `test/unit/storage-sql-gate.spec.ts`
+additionally fails `make check` on any uppercase house-style SQL statement
+literal outside `src/storage/` (positive-control fixtures prove the
+detector non-vacuous, D-058). The SQL gate is a tripwire against
+accidental violations in the house style — deliberately not a security
+boundary: lowercase or concatenated SQL, `SAVEPOINT`, and non-`.ts` files
+stay out of its scope by design (D-058 records the prose-safety rationale
+and the no-silent-widening rule). The per-table integration specs under
+`test/integration/` and `test/helpers/` are storage-module tests and
+remain sanctioned direct-SQL users. `test/integration/repository.spec.ts`
+pins the facade itself: round-trips per table, the structural rejections,
+transaction commit/rollback/nesting, and the bitmask round-trip.
