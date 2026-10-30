@@ -33,3 +33,41 @@ means adding a subdirectory and registering it; nothing else may change.
   unknown-id lookups throw (decision D-013): wiring mistakes must fail at
   startup, not silently shadow a provider or surface at first poll. `list()`
   returns a fresh array in registration order.
+
+## Response sanitization (task 102, spec §7.4, §15.4)
+
+`sanitize.ts` is the persistence-side twin of the redacting logger (D-025):
+the logger guards what leaves the process, this module guards what a failed
+parse leaves behind. One entry point, string in / string out (D-041):
+
+```ts
+sanitizeRawResponse(body: string, secrets: readonly string[]): string
+```
+
+Called with the response body exactly as the transport received it and the
+call's known secret values (the account key plus any discovered tokens), it
+returns text safe to persist (the `raw_responses` store, task 086) and to
+display (`quotameter doctor --raw`, task 103 — never HTTP/UI, §7.4).
+Guarantees:
+
+- **Exact secret values are redacted everywhere** — any depth, array
+  elements, substrings inside larger strings, object keys, and raw
+  unparsable bodies alike, in both the literal and the JSON-escaped
+  spelling of each secret (`[REDACTED]` replaces each occurrence).
+- **Sensitive named fields are emptied** — the logger's `SENSITIVE_KEY_NAMES`
+  vocabulary, matched by normalized equality (lowercase, non-alphanumerics
+  stripped), is imported from `src/util/logger.ts` so the two sanitizers
+  cannot drift. Usage-count fields (`tokens`, `total_tokens`,
+  `promptTokens`, …) survive: matching is equality, never substring, which
+  is exactly §7.4's "do not redact every field whose name contains `token`".
+- **Capped at `MAX_PAYLOAD_BYTES` (64 KiB = 65536 UTF-8 bytes), marker
+  included** — a hard bound the storage consumer can rely on. Bodies that
+  parse as JSON are walked structurally and re-serialized compactly (valid
+  JSON in, valid JSON out when the sanitized form fits); unparsable bodies
+  are scrubbed as raw text — half the point of a parse-failure diagnostic.
+  Oversized payloads are cut after sanitization at a codepoint boundary (no
+  split surrogate pairs, no partial `[REDACTED]`) and end with a
+  deterministic `[TRUNCATED at 65536 of <original> bytes]` marker reporting
+  the pre-truncation size.
+
+Blank `secrets` entries are ignored; output is deterministic.
