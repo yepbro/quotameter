@@ -59,4 +59,33 @@ describe('mock provider server', () => {
 
     await expect(fetch(`${server.url}/`)).rejects.toThrow();
   });
+
+  it('routes per-path behaviors, overriding the global one (task 099)', async () => {
+    server.setBehavior({ kind: 'respond', status: 500, body: 'global' });
+    server.setPathBehavior('/api/monitor/usage/quota/limit', {
+      kind: 'respond',
+      status: 200,
+      body: 'primary',
+    });
+    server.setPathBehavior('/api/biz/subscription/list?targetType=PERSONAL', {
+      kind: 'respond',
+      status: 200,
+      body: 'with-query',
+    });
+
+    const primary = await fetch(`${server.url}/api/monitor/usage/quota/limit`);
+    expect(primary.status).toBe(200);
+    expect(await primary.text()).toBe('primary');
+
+    // Exact match includes the query string.
+    const withQuery = await fetch(`${server.url}/api/biz/subscription/list?targetType=PERSONAL`);
+    expect(await withQuery.text()).toBe('with-query');
+    const withoutQuery = await fetch(`${server.url}/api/biz/subscription/list`);
+    expect(withoutQuery.status).toBe(500);
+
+    // Clearing restores the global behavior everywhere.
+    server.clearPathBehaviors();
+    const afterClear = await fetch(`${server.url}/api/monitor/usage/quota/limit`);
+    expect(afterClear.status).toBe(500);
+  });
 });

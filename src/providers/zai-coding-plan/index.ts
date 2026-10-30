@@ -9,4 +9,5 @@
  */
 
 export * from './provider';
+export * from './snapshot';
 export * from './validate';

@@ -113,13 +113,15 @@ cross-cutting request concerns so adapters stay pure parsing:
 runtime failure shapes (the logger-destination pattern); production always
 uses the Node 22 global.
 
-## The Z.ai Coding Plan adapter (task 098, spec §8.3)
+## The Z.ai Coding Plan adapter (tasks 098–099, spec §8.3)
 
-`zai-coding-plan/` is the first adapter island. Task 098 delivers its
-credential validation; `fetchSnapshot` (task 099) and the §8.4 metric
-mapping (task 100) follow. The implementation contract is the
+`zai-coding-plan/` is the first adapter island. Task 098 delivered its
+credential validation; task 099 the `fetchSnapshot` collection cycle with the
+§8.4 metric mapping (task 100 refines and verifies that mapping). The
+implementation contract is the
 [adapter-contract section of the provider dossier](../../docs/providers/zai-coding-plan.md)
-(task 096, decision D-047); the task-098 specifics are decision D-052.
+(task 096, decision D-047); the task-098 specifics are decision D-052, the
+task-099 specifics decision D-053.
 
 - **The check** — `ZaiCodingPlanProvider.validateCredentials(account)` sends
   exactly one signal-less `Authorization: Bearer <key>` GET to the dossier's
@@ -142,18 +144,68 @@ mapping (task 100) follow. The implementation contract is the
   discriminator — consumers that cannot import adapter types (services)
   discriminate on it without an `instanceof` against the island, per the 070
   contract's "provider-neutral error" wording.
-- **Key discipline (§8.1, §15.4)** — `account.secret` is read exactly once,
-  into the `Authorization` header. Errors are composed only from static
-  English and transport fields D-042 already scrubbed against the request's
-  own credential material; marker tests pin every failure path key-free
-  while proving the key actually traveled.
-- **Options** — `ZaiCodingPlanProviderOptions` carries `codingBaseUrl`
-  (injectable so tests point the adapter at the loopback mock provider
-  server) and `timeoutMs` (§7.2's per-request deadline; the 5–60 s
-  configuration range is enforced where configuration enters). Both are
-  validated at construction with echo-free `TypeError`s — wiring mistakes
-  fail fast (D-013's spirit).
-- **Not yet** — `fetchSnapshot` is a loud stub rejecting with a pinned
-  message (task 099 owns the method, but the 070 contract requires it to
-  exist for registry assembly); registration in the composition root is a
-  later assembly task — nothing in this island edits `src/server/**`.
+- **The collection cycle (`snapshot.ts`, task 099)** —
+  `fetchSnapshot(account, signal)` runs three sequential GETs through
+  `providerFetch`, each with the Bearer credential, the caller's §8.1 abort
+  signal (D-042 composes it into every exchange), and its own §7.2 deadline:
+  endpoint 1 `GET {apiBaseUrl}/api/monitor/usage/quota/limit` (primary),
+  endpoint 2 `GET {apiBaseUrl}/api/biz/subscription/list` (soft plan-name
+  context), endpoint 3 `GET {apiBaseUrl}/api/biz/customer-package-reset/list?targetType=PERSONAL`
+  (soft; the body is never parsed — endpoint 3 maps nothing in v1,
+  D-047.6). The default `apiBaseUrl` is `https://api.z.ai`: the quota
+  surface lives on the monitor/biz paths, _not_ under the coding base
+  (spec §8.3's warning). Failures surface exactly two ways: an endpoint-1
+  transport failure re-throws the D-042 `TransportError` unchanged (task
+  105 classifies the kind), and an endpoint-1 parse failure throws
+  `SnapshotParseError` — `reason` (static English) and `httpStatus` feed
+  105's `classifyParseFailure`, `sanitizedPayload` is the §7.4 hand-off
+  (task 102's sanitizer run over the raw body with the account secret;
+  storage 086/103 persists it, the adapter only carries it), and
+  `envelopeMessage` retains a non-success envelope's `msg`, sanitized (A2).
+  Every endpoints-2/3 failure — transport, parse violation, or a caller
+  abort mid-cycle — is soft: logged through the injected logger and
+  degraded, never cycle-fatal (D-047: metric values originate only on
+  endpoint 1).
+- **The metric mapping (`mapping.ts`, task 099; task 100 owns its
+  refinement)** — the pure translation of endpoint 1 into the §8.4 model
+  per the D-047 tables: recognition by `(type, unit)` (`mcp-monthly`
+  `MONTHLY`/`REQUESTS`; `tokens-5h` `ROLLING_WINDOW` with
+  `windowSeconds = number × 3600`; `weekly-quota` `WEEKLY` on either type
+  spelling), unknown pairs and first-wins key collisions skipped and
+  reported (`skips`, logged at warn by the cycle), the D-047.1 value
+  semantics (`usage` → `limit`, `currentValue` → `used`, `remaining` →
+  `remaining`, with the supplied-triple arithmetic check), the D-047.2
+  integer-percent pass-through (`percentRemaining` always derived so the
+  two sum to exactly 100; `percentUsed` derived only from _supplied_
+  `used`+`limit` — derivations never chain, §8.4), unit choice
+  `CREDITS`/`PERCENT` by present fields (A5), metadata (`resetsAt`,
+  `windowSeconds`) surviving invalid readings (D-010), and entries with
+  unusable values emitted invalid — never zero — with the pinned
+  `invalidReason` strings.
+- **Subscription context (A9)** — endpoint 2 is envelope-soft-checked
+  (`data` must be an array), the record with `inCurrentPeriod === true` is
+  selected (else the first `status === 'VALID'`), and its `productName` is
+  used only as the `planName` fallback when endpoint 1's `data.level` is
+  absent or not a usable string. Nothing else from a subscription record
+  travels — account-linked and monetary values stay out of snapshots
+  (fixture policy D-040).
+- **Key discipline (§8.1, §15.4)** — `account.secret` is read only inside
+  the cycle, into the shared `Authorization` header and the sanitizer's
+  known-secrets list (both in-memory, never logged). Errors are composed
+  only from static English and transport fields D-042 already scrubbed
+  against the request's own credential material, plus payload text — §7.4
+  hand-off, envelope diagnostic, skip reports — passed through task 102's
+  sanitizer; marker tests pin every failure path key-free while proving
+  the key actually traveled.
+- **Options** — `ZaiCodingPlanProviderOptions` carries `codingBaseUrl` and
+  `apiBaseUrl` (injectable so tests point the adapter at the loopback mock
+  provider server), `timeoutMs` (§7.2's per-request deadline; the 5–60 s
+  configuration range is enforced where configuration enters), `logger` (a
+  `Pick<Logger, 'warn'>` sink for skips and soft failures; absent means
+  silent — the composition root passes the application logger), and `clock`
+  (stamps `collectedAt`; defaults to the system clock). All are validated
+  at construction with echo-free `TypeError`s — wiring mistakes fail fast
+  (D-013's spirit).
+- **Not yet** — registration in the composition root is a later assembly
+  task — nothing in this island edits `src/server/**`; task 100 deepens
+  the mapping contract against every fixture row.

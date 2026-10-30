@@ -2,20 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { ProviderRegistry, type QuotaProvider } from '../../src/providers/registry';
 import {
   composeCredentialCheckUrl,
+  composeSnapshotUrls,
   CREDENTIAL_CHECK_PATH,
+  DEFAULT_API_BASE_URL,
   DEFAULT_CODING_BASE_URL,
-  SNAPSHOT_NOT_IMPLEMENTED_MESSAGE,
   ZaiCodingPlanProvider,
   ZAI_CODING_PLAN_PROVIDER_ID,
 } from '../../src/providers/zai-coding-plan/provider';
 
 /**
- * Locks the Z.ai Coding Plan provider skeleton (spec §8.1, §8.3; task 098):
- * the dossier identity, the registry conformance the 070 contract demands,
- * the credential-check URL composition with its fail-fast validation, and
- * the loud fetchSnapshot stub task 099 replaces. No HTTP here — the unit
- * suite runs under the no-network guard; end-to-end behavior is covered by
- * test/integration/zai-coding-plan-validate.spec.ts.
+ * Locks the Z.ai Coding Plan provider skeleton (spec §8.1, §8.3; tasks
+ * 098/099): the dossier identity, the registry conformance the 070 contract
+ * demands, the credential-check and snapshot URL compositions with their
+ * fail-fast validation, and the options surface task 099 added. No HTTP
+ * here — the unit suite runs under the no-network guard; end-to-end
+ * behavior is covered by test/integration/zai-coding-plan-{validate,snapshot}.spec.ts.
  */
 
 describe('ZaiCodingPlanProvider skeleton', () => {
@@ -36,12 +37,6 @@ describe('ZaiCodingPlanProvider skeleton', () => {
     expect(registry.has(ZAI_CODING_PLAN_PROVIDER_ID)).toBe(true);
     expect(registry.get(ZAI_CODING_PLAN_PROVIDER_ID)).toBe(provider);
     expect(registry.list()).toEqual([provider]);
-  });
-
-  it('rejects fetchSnapshot loudly until task 099 lands it', async () => {
-    const provider = new ZaiCodingPlanProvider();
-
-    await expect(provider.fetchSnapshot()).rejects.toThrow(SNAPSHOT_NOT_IMPLEMENTED_MESSAGE);
   });
 
   it('validates credentials without collecting (the method exists per 070)', () => {
@@ -98,11 +93,63 @@ describe('composeCredentialCheckUrl', () => {
   });
 });
 
+describe('composeSnapshotUrls', () => {
+  it('pins the production default to the dossier endpoint trio', () => {
+    expect(DEFAULT_API_BASE_URL).toBe('https://api.z.ai');
+    expect(composeSnapshotUrls(DEFAULT_API_BASE_URL)).toEqual({
+      quotaLimit: 'https://api.z.ai/api/monitor/usage/quota/limit',
+      subscriptionList: 'https://api.z.ai/api/biz/subscription/list',
+      resetCards: 'https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL',
+    });
+  });
+
+  it('normalizes trailing slashes and bare origins', () => {
+    const fromTrailing = composeSnapshotUrls('https://api.z.ai/');
+    expect(fromTrailing).toEqual(composeSnapshotUrls('https://api.z.ai'));
+    const loopback = composeSnapshotUrls('http://127.0.0.1:34567');
+    expect(loopback.quotaLimit).toBe('http://127.0.0.1:34567/api/monitor/usage/quota/limit');
+    expect(loopback.resetCards).toBe(
+      'http://127.0.0.1:34567/api/biz/customer-package-reset/list?targetType=PERSONAL',
+    );
+  });
+
+  it('rejects non-http(s), unparseable, and query/fragment bases echo-free', () => {
+    const invalid = [
+      'ftp://api.z.ai',
+      'api.z.ai',
+      '',
+      'https://api.z.ai?x=1',
+      'https://api.z.ai#fragment',
+      'https://user:pass@api.z.ai',
+    ];
+
+    for (const base of invalid) {
+      expect(() => composeSnapshotUrls(base)).toThrow(TypeError);
+    }
+    for (const base of invalid.filter((candidate) => candidate !== '')) {
+      try {
+        composeSnapshotUrls(base);
+      } catch (error) {
+        // Echo-free even though a base URL is not secret (§15.4 discipline).
+        expect((error as Error).message).not.toContain(base);
+      }
+    }
+  });
+});
+
 describe('ZaiCodingPlanProvider options validation', () => {
   it('rejects invalid coding base URLs at construction (fail fast, D-013 spirit)', () => {
     expect(() => new ZaiCodingPlanProvider({ codingBaseUrl: 'not a url' })).toThrow(TypeError);
     expect(() => new ZaiCodingPlanProvider({ codingBaseUrl: 'ftp://api.z.ai' })).toThrow(TypeError);
     expect(() => new ZaiCodingPlanProvider({ codingBaseUrl: 'https://api.z.ai/?q=1' })).toThrow(
+      TypeError,
+    );
+  });
+
+  it('rejects invalid quota-surface base URLs at construction (099)', () => {
+    expect(() => new ZaiCodingPlanProvider({ apiBaseUrl: 'not a url' })).toThrow(TypeError);
+    expect(() => new ZaiCodingPlanProvider({ apiBaseUrl: 'ftp://api.z.ai' })).toThrow(TypeError);
+    expect(() => new ZaiCodingPlanProvider({ apiBaseUrl: 'https://api.z.ai/#f' })).toThrow(
       TypeError,
     );
   });
@@ -117,6 +164,7 @@ describe('ZaiCodingPlanProvider options validation', () => {
     expect(
       () => new ZaiCodingPlanProvider({ codingBaseUrl: 'http://127.0.0.1:1/api/coding/paas/v4' }),
     ).not.toThrow();
+    expect(() => new ZaiCodingPlanProvider({ apiBaseUrl: 'http://127.0.0.1:34567' })).not.toThrow();
     expect(() => new ZaiCodingPlanProvider({ timeoutMs: 5_000 })).not.toThrow();
     expect(() => new ZaiCodingPlanProvider()).not.toThrow();
   });

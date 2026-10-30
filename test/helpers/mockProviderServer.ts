@@ -37,6 +37,15 @@ export interface MockProviderServer {
   port: number;
   /** Replace the behavior applied to every subsequent request. */
   setBehavior(behavior: ProviderBehavior): void;
+  /**
+   * Route one request path (exact match on the request target including its
+   * query string) to its own behavior, overriding the global behavior for
+   * that path — multi-endpoint provider cycles (task 099's Z.ai trio) need
+   * different responses per endpoint on one server.
+   */
+  setPathBehavior(path: string, behavior: ProviderBehavior): void;
+  /** Remove every path-specific behavior; the global behavior applies again. */
+  clearPathBehaviors(): void;
   /** All requests received so far, in arrival order. */
   requests: RecordedRequest[];
   /** Stop listening and reset state. Safe to call twice. */
@@ -46,6 +55,7 @@ export interface MockProviderServer {
 export async function startMockProviderServer(port = 0): Promise<MockProviderServer> {
   const requests: RecordedRequest[] = [];
   let behavior: ProviderBehavior = { kind: 'respond', status: 200, body: '{}' };
+  const pathBehaviors = new Map<string, ProviderBehavior>();
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
@@ -60,7 +70,8 @@ export async function startMockProviderServer(port = 0): Promise<MockProviderSer
 
       // Capture the current behavior so TypeScript can narrow the union
       // inside this closure (`behavior` itself stays assignable outside).
-      const current = behavior;
+      // A path-specific behavior wins over the global one.
+      const current = pathBehaviors.get(req.url ?? '/') ?? behavior;
       if (current.kind === 'abort') {
         res.socket?.destroy();
         return;
@@ -91,6 +102,12 @@ export async function startMockProviderServer(port = 0): Promise<MockProviderSer
     port: boundPort,
     setBehavior(next: ProviderBehavior) {
       behavior = next;
+    },
+    setPathBehavior(path: string, next: ProviderBehavior) {
+      pathBehaviors.set(path, next);
+    },
+    clearPathBehaviors() {
+      pathBehaviors.clear();
     },
     requests,
     close: async () => {
