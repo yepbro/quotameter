@@ -91,3 +91,36 @@ caller does (lost outcomes, duplicate rejections, clock regressions); the
 run writer (110) persists each probe cycle and the status derivation (111)
 consumes the `Auth rejected` contribution 105 already attaches. Time is an
 argument (D-021); the caller holds the (frozen) state object.
+
+Landed: [`polling-scheduler.ts`](./polling-scheduler.ts) — the §7.1 polling
+loop engine (task 109, decision D-066): `createPollingScheduler(options)`
+runs one dispatch loop over per-account state — each account's first poll
+fires immediately, accounts are polled sequentially with a random additive
+jitter of up to 10% of the configured interval (`pollingDelayMs`,
+§7.1-validated `intervalMs`), and per-account overlap is structural (an
+account with a live cycle is never dispatchable, and only one cycle starts
+at a time). A cycle unsettled past `cycleHangThresholdMs` (default 255.5 s
+— §7.2's own worst-case cycle) is skipped for dispatch so one hanging
+closure cannot starve the other accounts, while its account still never
+runs a second cycle. Next-poll dues live on the monotonic clock (§7.1);
+the wall clock feeds only the epoch-expressed gates — the D-062
+`Retry-After` `notBeforeEpochMs` (every dispatch, manual tests included)
+and the D-064 suspension cadence (hourly verification probes through
+`admitVerification`, releases by key change via `setAccounts`, manual test
+via `requestManualTest`, or a successful probe). Each account is an
+injectable closure pair: `attempt(signal)` (the raw fetch, wrapped in
+D-059's `runCycleWithRetries` by the engine, seams passed through) and
+`settleCycle(result)` — task 110's classify+persist seam, whose returned
+D-048 classification drives every scheduling decision; a throwing seam is
+contained (the account reschedules on the plain interval, §7.2 isolation).
+`setAccounts`/`setIntervalMs` handle mid-run changes (added accounts poll
+immediately; a key change mid-flight discards the stale cycle's outcome —
+an old key's 401 never suspends a new key; interval changes re-anchor);
+`requestManualTest` owes the account one attempt — a flag consumed at
+dispatch, so it survives an in-flight cycle and an interval change, and
+still respects the `Retry-After` gate. `stop()` is §5.6's stop-scheduling —
+abort every live flight, resolve promptly — with the optional structural
+in-flight tracker (D-020) for the server's graceful drain; a wiring-level
+loop failure is retained and observable (`running` turns false, `stop()`
+re-surfaces the error), and every wake is sliced to `MAX_WAKE_MS` (one
+hour) so a wall-regressed gate wait can never busy-spin.

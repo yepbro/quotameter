@@ -105,6 +105,12 @@ export interface FakeTimerOptions {
    * make the assertion flaky (spec §17.3 forbids flaky tests).
    */
   readonly shouldAdvanceTime?: boolean;
+  /**
+   * The fake clock's starting epoch (default: the current real time).
+   * Suites that assert absolute timestamps pin `0` so readings are plain
+   * elapsed milliseconds.
+   */
+  readonly now?: number;
 }
 
 /**
@@ -115,7 +121,7 @@ export async function withFakeTimers(
   body: (clock: FakeClock) => Promise<void> | void,
   options: FakeTimerOptions = {},
 ): Promise<void> {
-  vi.useFakeTimers({ shouldAdvanceTime: options.shouldAdvanceTime ?? true });
+  vi.useFakeTimers({ shouldAdvanceTime: options.shouldAdvanceTime ?? true, now: options.now });
   try {
     await body({
       advanceMs: (ms) => vi.advanceTimersByTime(ms),

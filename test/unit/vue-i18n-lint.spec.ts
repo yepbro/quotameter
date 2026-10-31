@@ -5,7 +5,10 @@ import { describe, expect, it } from 'vitest';
 /**
  * Guards the i18n linting contract (task 036): user-facing raw strings in
  * Vue templates must be caught unless they are explicitly exempted
- * placeholder content. Runs the project's real ESLint binary via stdin.
+ * placeholder content. Runs the project's real ESLint binary via stdin;
+ * each test carries an explicit timeout because spawning ESLint can take
+ * 2–7 s under parallel worker load, past Vitest's 5 s default (the same
+ * §17.3 flakiness the vue-template-lint spec documents).
  */
 function lintVueStdin(filename: string, source: string): { status: number; stdout: string } {
   const eslintBin = join(process.cwd(), 'node_modules', '.bin', 'eslint');
@@ -17,7 +20,7 @@ function lintVueStdin(filename: string, source: string): { status: number; stdou
 }
 
 describe('vue-i18n raw-text linting', () => {
-  it('catches a hardcoded UI label', () => {
+  it('catches a hardcoded UI label', { timeout: 30_000 }, () => {
     const { status, stdout } = lintVueStdin(
       // The filename mimics the ui/ path so the scoped i18n rule applies.
       'ui/SomePanel.vue',
@@ -28,7 +31,7 @@ describe('vue-i18n raw-text linting', () => {
     expect(stdout).toMatch(/Save changes/u);
   });
 
-  it('accepts catalog lookups instead of raw text', () => {
+  it('accepts catalog lookups instead of raw text', { timeout: 30_000 }, () => {
     const { status } = lintVueStdin(
       'ui/SomePanel.vue',
       '<script setup lang="ts">\nconst t = (key: string) => key;\n</script>\n<template>\n  <button type="button">{{ t(\'panel.save\') }}</button>\n</template>\n',
