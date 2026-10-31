@@ -40,8 +40,30 @@ import {
 /** The marker key (§15.4, §17.1): sent as the Bearer credential, never in an error. */
 const MARKER_KEY = 'qm-marker-key-t099';
 
-/** A per-request deadline comfortably above the mock server's fast paths. */
-const TIMEOUT_MS = 2_000;
+/**
+ * Deadline for every assertion about a *delivered* response (5 s: the
+ * transport suite's value for the same loopback mock round-trip, and §7.2's
+ * minimum configured timeout, so these run at a production-legal deadline).
+ * The value is justified against the mock round-trip, never runner speed:
+ * §7.2's deadline is one total bound that starts before the request is sent
+ * (D-042), so a short value here would silently assert "the runner finishes
+ * the whole exchange within N ms" and race instrumentation plus parallel
+ * load — the coupling D-087 removed from the validate suite (U-012); this
+ * suite's former single 2 s deadline was the same latent class, just wider.
+ * The abort tests share the value for the same reason: their ~50 ms caller
+ * abort must beat the deadline, and a fired deadline wins the D-072
+ * precedence, so a starved runner must stall for the full 5 s to invert one.
+ */
+const DELIVERED_RESPONSE_TIMEOUT_MS = 5_000;
+
+/**
+ * The short deadline, used only where the deadline itself is the subject
+ * (the expiry case in the transport-failure table): the mock delays the
+ * response 10× longer, and that delay timer starts at request arrival —
+ * strictly after the deadline — so parallel load can only move the response
+ * further past the deadline, never before it (D-087).
+ */
+const EXPIRY_TIMEOUT_MS = 120;
 
 /** The fixed collection timestamp the injected clock reports. */
 const COLLECTED_AT = 1_760_000_000_000;
@@ -108,7 +130,7 @@ describe('ZaiCodingPlanProvider.fetchSnapshot over real sockets', () => {
   ): ZaiCodingPlanProvider =>
     new ZaiCodingPlanProvider({
       apiBaseUrl: options.apiBaseUrl ?? server.url,
-      timeoutMs: options.timeoutMs ?? TIMEOUT_MS,
+      timeoutMs: options.timeoutMs ?? DELIVERED_RESPONSE_TIMEOUT_MS,
       clock,
       ...(options.withLogger === false ? {} : { logger: capturingLogger() }),
     });
@@ -370,10 +392,17 @@ describe('ZaiCodingPlanProvider.fetchSnapshot over real sockets', () => {
       },
       {
         name: 'timeout',
-        behavior: { kind: 'respond', status: 200, body: '{}', delayMs: 600 },
+        // The 10× arrival-anchored delay keeps the expiry deterministic
+        // under load (see EXPIRY_TIMEOUT_MS above, D-087).
+        behavior: {
+          kind: 'respond',
+          status: 200,
+          body: '{}',
+          delayMs: 10 * EXPIRY_TIMEOUT_MS,
+        },
         outcome: 'timeout',
         errorClass: TransportTimeoutError,
-        timeoutMs: 120,
+        timeoutMs: EXPIRY_TIMEOUT_MS,
       },
     ];
 
