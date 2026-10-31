@@ -462,6 +462,22 @@ export interface QuotaRepository {
     metricKey: string,
     query?: MetricSeriesQuery,
   ): ReadonlyArray<MetricValueRecord>;
+  /**
+   * The account's most recent **valid** value per metric key — §7.2's
+   * "retain and display the latest valid values and their collection time
+   * after an error", generalized past the failed-run case (a failed run owns
+   * no metric rows at all, D-036) to §8.4's per-metric validity: a later
+   * invalid row for one metric (NULL numerics, D-010) never erases that
+   * metric's last valid measurement and never surfaces as one, while the
+   * valid siblings of the same snapshot still update — so the returned rows
+   * may come from different snapshots, each carrying its own collection
+   * time (the D-039 denormalization pins it to the snapshot structurally).
+   * Equal collection stamps resolve to the later run. `metric_key`-ascending;
+   * an account with no valid rows (or none at all) yields an empty array —
+   * absence, never zero (§7.2). Served by `metric_values_series_access`
+   * (task 122, decision D-077).
+   */
+  getLatestValidMetricValues(accountId: string): ReadonlyArray<MetricValueRecord>;
 
   /* Quota events (spec §11.2, §12.1) */
 
@@ -962,6 +978,28 @@ export function createQuotaRepository(options: QuotaRepositoryOptions): QuotaRep
          WHERE ${where.join(' AND ')}
          ORDER BY collected_at ASC, run_id ASC`,
       ).all(...params) as unknown as MetricValueRow[];
+      return rows.map(toMetricRecord);
+    },
+
+    getLatestValidMetricValues(accountId) {
+      // One row per metric key — that key's newest valid row. The recency
+      // window orders collected_at DESC with run_id DESC as the tiebreak:
+      // collected_at is not unique across snapshots, and the later-inserted
+      // run (the strictly increasing rowid snapshots are keyed by, D-036) is
+      // the more recent collection. The is_valid filter is §7.2's erasure
+      // ban as SQL — an invalid row (NULL numerics, D-010) can neither win
+      // the window nor be returned as a measurement.
+      const rows = statement(
+        `SELECT ${METRIC_COLUMNS} FROM (
+           SELECT ${METRIC_COLUMNS}, ROW_NUMBER() OVER (
+             PARTITION BY metric_key
+             ORDER BY collected_at DESC, run_id DESC
+           ) AS recency
+           FROM metric_values
+           WHERE account_id = ? AND is_valid = 1
+         ) WHERE recency = 1
+         ORDER BY metric_key ASC`,
+      ).all(accountId) as unknown as MetricValueRow[];
       return rows.map(toMetricRecord);
     },
 

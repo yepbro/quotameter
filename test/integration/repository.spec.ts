@@ -162,6 +162,35 @@ function insertCycle(
   return runId;
 }
 
+/** Clears the five quota columns — the D-010 invalid-row shape. */
+const NO_QUOTA_VALUES = {
+  used: undefined,
+  remaining: undefined,
+  limit: undefined,
+  percentUsed: undefined,
+  percentRemaining: undefined,
+} as const;
+
+/**
+ * One successful cycle collected at `collectedAt` carrying `metrics` — the
+ * multi-cycle base the last-valid tests compose (the account must already
+ * exist); returns the run id.
+ */
+function insertCycleAt(
+  repository: QuotaRepository,
+  collectedAt: number,
+  metrics: ReadonlyArray<Partial<NewMetricValue>>,
+): number {
+  const runId = repository.insertCollectionRun(
+    run({ startedAt: collectedAt - 1_200, endedAt: collectedAt }),
+  );
+  repository.insertSnapshot(snapshot(runId, { collectedAt }));
+  repository.insertMetricValues(
+    metrics.map((overrides) => metric(runId, { collectedAt, ...overrides })),
+  );
+  return runId;
+}
+
 describe('repository accounts (task 088, spec §11.2, §8.2)', () => {
   it('round-trips an account with and without a plan', async () => {
     await withRepository((repository) => {
@@ -600,15 +629,10 @@ describe('repository metric values (task 088, spec §11.2, §8.4, D-039)', () =>
   it('propagates the validity invariants as named constraint failures', async () => {
     await withRepository((repository) => {
       const runId = insertCycle(repository);
-      const noValues = {
-        used: undefined,
-        remaining: undefined,
-        limit: undefined,
-        percentUsed: undefined,
-        percentRemaining: undefined,
-      } as const;
       expect(() =>
-        repository.insertMetricValues([metric(runId, { metricKey: 'empty-valid', ...noValues })]),
+        repository.insertMetricValues([
+          metric(runId, { metricKey: 'empty-valid', ...NO_QUOTA_VALUES }),
+        ]),
       ).toThrow(/CHECK constraint failed: metric_values_valid_has_value/);
       expect(() =>
         repository.insertMetricValues([
@@ -626,6 +650,320 @@ describe('repository metric values (task 088, spec §11.2, §8.4, D-039)', () =>
           }),
         ]),
       ).toThrow(/CHECK constraint failed: metric_values_derived_present/);
+    });
+  });
+});
+
+describe('repository last valid metric values (task 122, spec §7.2, §11.2, D-077)', () => {
+  it('returns each metric key once — its newest valid value with its own time', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      insertCycleAt(repository, T0, [
+        { metricKey: 'monthly-credits', used: 10, remaining: 90 },
+        {
+          metricKey: 'weekly-requests',
+          limitType: 'WEEKLY',
+          unit: 'REQUESTS',
+          used: 3,
+        },
+      ]);
+      const secondAt = T0 + 300_000;
+      const secondRun = insertCycleAt(repository, secondAt, [
+        {
+          metricKey: 'monthly-credits',
+          used: 44,
+          remaining: 56,
+          percentUsed: 44,
+          percentRemaining: 56,
+        },
+        { metricKey: 'weekly-requests', limitType: 'WEEKLY', unit: 'REQUESTS', used: 4 },
+      ]);
+
+      const latest = repository.getLatestValidMetricValues('work');
+      // metric_key-ascending under SQLite's BINARY collation.
+      expect(latest.map((row) => row.metricKey)).toEqual(['monthly-credits', 'weekly-requests']);
+      // The full §8.4 read model round-trips through the mapper.
+      expect(latest[0]).toEqual({
+        accountId: 'work',
+        runId: secondRun,
+        collectedAt: secondAt,
+        metricKey: 'monthly-credits',
+        limitType: 'MONTHLY',
+        unit: 'CREDITS',
+        windowSeconds: null,
+        used: 44,
+        remaining: 56,
+        limit: 100,
+        percentUsed: 44,
+        percentRemaining: 56,
+        resetsAt: T0 + 86_400_000,
+        isValid: true,
+        invalidReason: null,
+        derivedFields: null,
+      });
+      expect(latest[1]).toMatchObject({ metricKey: 'weekly-requests', used: 4 });
+    });
+  });
+
+  it('is unchanged by subsequent failed runs, whatever their class', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      const successRun = insertCycleAt(repository, T0, [{ metricKey: 'monthly-credits' }]);
+      // A parse failure with its §7.4 payload, then other §7.2 failure
+      // classes — each writes a run row, none can touch metric rows.
+      const parseRun = repository.insertCollectionRun(
+        run({
+          startedAt: T0 + 300_000,
+          endedAt: T0 + 301_200,
+          outcome: 'parse_error',
+          httpStatus: null,
+          errorMessage: 'envelope mismatch',
+        }),
+      );
+      repository.insertRawResponse(rawResponse(parseRun, { capturedAt: T0 + 301_200 }));
+      repository.insertCollectionRun(
+        run({
+          startedAt: T0 + 600_000,
+          endedAt: T0 + 630_000,
+          outcome: 'network_error',
+          httpStatus: null,
+          errorMessage: 'ECONNREFUSED',
+          attempts: 4,
+        }),
+      );
+      repository.insertCollectionRun(
+        run({
+          startedAt: T0 + 900_000,
+          endedAt: T0 + 901_000,
+          outcome: 'auth_error',
+          httpStatus: 401,
+          errorMessage: 'key rejected',
+        }),
+      );
+
+      const latest = repository.getLatestValidMetricValues('work');
+      expect(latest).toHaveLength(1);
+      expect(latest[0]).toMatchObject({
+        runId: successRun,
+        collectedAt: T0,
+        used: 80,
+        isValid: true,
+      });
+    });
+  });
+
+  it('never erases: a later invalid row keeps the last valid value, its sibling updates', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      const firstRun = insertCycleAt(repository, T0, [
+        { metricKey: 'monthly-credits', used: 80 },
+        {
+          metricKey: 'five-hour-credits',
+          limitType: 'ROLLING_WINDOW',
+          windowSeconds: 18_000,
+          used: 42,
+        },
+      ]);
+      const secondAt = T0 + 300_000;
+      const secondRun = insertCycleAt(repository, secondAt, [
+        {
+          metricKey: 'monthly-credits',
+          ...NO_QUOTA_VALUES,
+          isValid: false,
+          invalidReason: 'usage missing from response',
+          resetsAt: T0 + 400_000,
+        },
+        {
+          metricKey: 'five-hour-credits',
+          limitType: 'ROLLING_WINDOW',
+          windowSeconds: 18_000,
+          used: 7,
+        },
+      ]);
+
+      const latest = repository.getLatestValidMetricValues('work');
+      expect(latest.map((row) => row.metricKey)).toEqual(['five-hour-credits', 'monthly-credits']);
+      // §7.2 + §8.4: the invalid row neither surfaces nor erases — the
+      // metric keeps its last valid measurement with the collection time of
+      // the snapshot that produced it…
+      expect(latest[1]).toMatchObject({
+        runId: firstRun,
+        collectedAt: T0,
+        used: 80,
+        isValid: true,
+      });
+      // …while the valid sibling of the same snapshot advanced — the two
+      // last-valid values provably come from different snapshots.
+      expect(latest[0]).toMatchObject({ runId: secondRun, collectedAt: secondAt, used: 7 });
+    });
+  });
+
+  it('recovers: a valid row after invalid ones becomes the new last-valid value', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      insertCycleAt(repository, T0, [
+        {
+          metricKey: 'monthly-credits',
+          ...NO_QUOTA_VALUES,
+          isValid: false,
+          invalidReason: 'usage missing from response',
+        },
+      ]);
+      const recoveredAt = T0 + 300_000;
+      const recoveredRun = insertCycleAt(repository, recoveredAt, [
+        {
+          metricKey: 'monthly-credits',
+          used: 5,
+          remaining: 95,
+          percentUsed: 5,
+          percentRemaining: 95,
+        },
+      ]);
+
+      const latest = repository.getLatestValidMetricValues('work');
+      expect(latest).toHaveLength(1);
+      expect(latest[0]).toMatchObject({
+        runId: recoveredRun,
+        collectedAt: recoveredAt,
+        used: 5,
+        isValid: true,
+      });
+    });
+  });
+
+  it('answers empty for only-invalid data, a runless account, and an unknown account', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      insertCycleAt(repository, T0, [
+        {
+          metricKey: 'monthly-credits',
+          ...NO_QUOTA_VALUES,
+          isValid: false,
+          invalidReason: 'usage missing from response',
+        },
+      ]);
+      repository.insertAccount(account({ id: 'quiet', planName: null }));
+
+      // §7.2: absence, never zero.
+      expect(repository.getLatestValidMetricValues('work')).toEqual([]);
+      expect(repository.getLatestValidMetricValues('quiet')).toEqual([]);
+      expect(repository.getLatestValidMetricValues('ghost')).toEqual([]);
+    });
+  });
+
+  it('isolates accounts', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      repository.insertAccount(account({ id: 'personal', planName: null, label: 'Personal' }));
+      insertCycleAt(repository, T0, [{ metricKey: 'monthly-credits', used: 80 }]);
+      const runId = repository.insertCollectionRun(
+        run({ accountId: 'personal', startedAt: T0 + 60_000, endedAt: T0 + 61_200 }),
+      );
+      repository.insertSnapshot(
+        snapshot(runId, { accountId: 'personal', collectedAt: T0 + 60_000 }),
+      );
+      repository.insertMetricValues([
+        metric(runId, {
+          accountId: 'personal',
+          collectedAt: T0 + 60_000,
+          used: 10,
+        }),
+      ]);
+
+      const work = repository.getLatestValidMetricValues('work');
+      const personal = repository.getLatestValidMetricValues('personal');
+      expect(work).toHaveLength(1);
+      expect(work[0]).toMatchObject({ accountId: 'work', used: 80, collectedAt: T0 });
+      expect(personal).toHaveLength(1);
+      expect(personal[0]).toMatchObject({
+        accountId: 'personal',
+        used: 10,
+        collectedAt: T0 + 60_000,
+      });
+    });
+  });
+
+  it('breaks equal collection stamps by the later run', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      const sameStamp = T0 + 300_000;
+      insertCycleAt(repository, T0, [{ metricKey: 'monthly-credits', used: 80 }]);
+      insertCycleAt(repository, sameStamp, [
+        {
+          metricKey: 'monthly-credits',
+          used: 30,
+          remaining: 70,
+          percentUsed: 30,
+          percentRemaining: 70,
+        },
+      ]);
+      const laterRun = insertCycleAt(repository, sameStamp, [
+        {
+          metricKey: 'monthly-credits',
+          used: 50,
+          remaining: 50,
+          percentUsed: 50,
+          percentRemaining: 50,
+        },
+      ]);
+
+      const latest = repository.getLatestValidMetricValues('work');
+      expect(latest).toHaveLength(1);
+      expect(latest[0]).toMatchObject({ runId: laterRun, collectedAt: sameStamp, used: 50 });
+    });
+  });
+
+  it('orders by collection stamp first — a later run with an older stamp never wins', async () => {
+    await withRepository((repository) => {
+      repository.insertAccount(account());
+      // Inserted newest-first: recency reads the §8.4 stamp, not row order.
+      const newestStamp = T0 + 600_000;
+      const newestRun = insertCycleAt(repository, newestStamp, [
+        { metricKey: 'monthly-credits', used: 12 },
+      ]);
+      insertCycleAt(repository, T0 + 300_000, [{ metricKey: 'monthly-credits', used: 34 }]);
+
+      const latest = repository.getLatestValidMetricValues('work');
+      expect(latest).toHaveLength(1);
+      expect(latest[0]).toMatchObject({ runId: newestRun, collectedAt: newestStamp, used: 12 });
+    });
+  });
+
+  it('serves the last-valid query from the spec-named series index', async () => {
+    await withRepository((repository, database) => {
+      const runId = insertCycle(repository);
+      repository.insertMetricValues([metric(runId)]);
+      // The facade deliberately does not expose its SQL (D-058), so the pin
+      // captures what it actually prepares — a Proxy over the driver seam,
+      // not a hand-written mirror that could drift with the statement —
+      // and EXPLAINs the real text.
+      const prepared: string[] = [];
+      const observing = createQuotaRepository({
+        database: new Proxy(database, {
+          get(target, property) {
+            if (property === 'prepare') {
+              return (sql: string) => {
+                prepared.push(sql);
+                return target.prepare(sql);
+              };
+            }
+            // Native driver methods reject a Proxy receiver (no internal
+            // slots) — everything else passes through bound to the target.
+            const value = Reflect.get(target, property);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        }),
+      });
+      observing.getLatestValidMetricValues('work');
+
+      const statement = prepared.find((sql) => sql.includes('ROW_NUMBER()'));
+      expect(statement).toContain('is_valid = 1');
+      const plan = (
+        database.prepare(`EXPLAIN QUERY PLAN ${statement!}`).all() as Array<{ detail: string }>
+      )
+        .map((row) => row.detail)
+        .join(' | ');
+      expect(plan).toContain('metric_values_series_access');
     });
   });
 });

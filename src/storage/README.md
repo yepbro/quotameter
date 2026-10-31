@@ -630,7 +630,8 @@ Surface, by consumer: accounts (`insertAccount`, `getAccount`,
 `deleteCollectionRunsBefore` — 110/091/142), snapshots (`insertSnapshot`,
 `getSnapshotByRun`, `getLatestSnapshot`, `listSnapshots`), metrics
 (`insertMetricValues`, `getMetricValuesForRun`, `getMetricSeries` — proven
-on the `metric_values_series_access` index), events (`insertQuotaEvent`,
+on the `metric_values_series_access` index — and
+`getLatestValidMetricValues` — task 122, D-077), events (`insertQuotaEvent`,
 `listQuotaEvents`, `deleteQuotaEventsBefore`), raw responses
 (`insertRawResponse`, `getRawResponseByRun`, `listRawResponses` newest
 first, `deleteRawResponsesByRunIds` + `deleteRawResponsesBefore` — the
@@ -655,6 +656,24 @@ and the no-silent-widening rule). The per-table integration specs under
 remain sanctioned direct-SQL users. `test/integration/repository.spec.ts`
 pins the facade itself: round-trips per table, the structural rejections,
 transaction commit/rollback/nesting, and the bitmask round-trip.
+
+**Last-valid queries (task 122, spec §7.2, decision D-077).**
+`getLatestValidMetricValues(accountId)` returns each metric key's most
+recent **valid** row — §7.2's "retain and display the latest valid values
+and their collection time after an error", generalized past task 110's
+narrow seam proof (a failed run owns no metric rows at all, D-036) to
+§8.4's per-metric validity: a later invalid row for one metric (NULL
+numerics, D-010) neither erases that metric's last valid measurement nor
+surfaces as one, and it never holds back the valid siblings of its
+snapshot — different metrics' last-valid rows may come from different
+snapshots, each with its own snapshot-pinned `collected_at` (D-039, the
+D-070 `lastSuccessAt` precedent for which clock the answer reads). Equal
+collection stamps resolve to the later run (`run_id DESC`, the rowid
+tiebreak rationale); the output is `metric_key`-ascending; an account with
+no valid rows — or none at all — yields an empty array: absence, never
+zero (§7.2). One window-function statement (`ROW_NUMBER() OVER (PARTITION
+BY metric_key ORDER BY collected_at DESC, run_id DESC)`), served by the
+`metric_values_series_access` index (proven via `EXPLAIN QUERY PLAN`).
 
 ## `collection-cycles.ts` — the atomic cycle write (task 089, spec §11.1, decision D-060)
 
