@@ -174,6 +174,12 @@ function fieldsOfDate(dateMs: number): { year: number; month: number; day: numbe
 /** `YYYY-MM-DD` of the table above as a UTC epoch. */
 const utcDay = (iso: string): number => Date.parse(`${iso}T00:00:00Z`);
 
+// The exhaustive sweeps are compute-bound under load too: worst 7.1 s
+// per test (the first-executed one, which also pays the coverage
+// warm-up) in a full coverage `make check` under the six-hog rig, up
+// to ~8 s at ambient sibling-wave load, vs 1.4 s clean isolated —
+// hence the 25 s per-test timeout, ≈3× that worst per D-094's sizing
+// rule (U-025).
 describe('every minute of every §17.1 transition day agrees with the scan oracle', () => {
   for (const { zone, gap, overlap } of TRANSITION_DAYS) {
     for (const kind of ['gap', 'overlap'] as const) {
@@ -210,7 +216,7 @@ describe('every minute of every §17.1 transition day agrees with the scan oracl
             ).toBe(expected);
           }
         }
-      }, 15_000);
+      }, 25_000);
     }
   }
 });
@@ -249,8 +255,12 @@ describe('generated readings (fast-check)', () => {
   });
 
   // Each of the 100 runs sweeps ±50 h at minute steps (the oracle's
-  // window) — a few seconds of real time in total, hence the raised
-  // timeout.
+  // window) — 7.6 s clean isolated, 16.8/19.3 s worst in full coverage
+  // `make check` runs under the six-hog starvation rig, and ~20 s at
+  // ambient sibling-wave load alone (U-025, the D-094 method) — hence
+  // the 60 s timeout: ≈3× the measured worst, so the worst observed
+  // wave could double again and stay green while a stuck run still
+  // fails within a bounded minute.
   it('arbitrary dates in any matrix zone agree with the scan oracle', () => {
     const allZones = [...TRANSITION_DAYS.map((row) => row.zone), ...FIXED_ZONES] as const;
     fc.assert(
@@ -266,5 +276,5 @@ describe('generated readings (fast-check)', () => {
         },
       ),
     );
-  }, 30_000);
+  }, 60_000);
 });
