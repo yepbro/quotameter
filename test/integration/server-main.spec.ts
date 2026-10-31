@@ -408,10 +408,17 @@ describe('runServer (in-process)', () => {
         runtime: { nodeVersion: '22.13.0', uid: 1000 },
       });
       const handler = await sigtermHandlerAfter(onSpy, started);
-      shutdownTriggers.push(() => handler('SIGTERM'));
+      const manualShutdown = () => handler('SIGTERM');
+      shutdownTriggers.push(manualShutdown);
 
-      handler('SIGTERM');
+      manualShutdown();
       await expect(server).resolves.toBe(1);
+      // The manual call consumed this test's shutdown trigger — drop it so
+      // the afterEach safety net does not fire a second shutdown after
+      // captureStderr restored, whose fatal diagnostics then reach the real
+      // stderr (the "broken stop" line noising up full-suite runs; U-010).
+      const consumed = shutdownTriggers.indexOf(manualShutdown);
+      if (consumed !== -1) shutdownTriggers.splice(consumed, 1);
 
       expect(hooks).toEqual(['stop:ok']);
       expect(stderr.lines()).toMatch(/one or more components failed to stop: broken stop/);

@@ -505,14 +505,25 @@ describe('ZaiCodingPlanProvider.fetchSnapshot over real sockets', () => {
         delayMs: 1_000,
       });
       const controller = new AbortController();
+      // The request log accumulates across the file's tests — gate only on
+      // this cycle's own records (the spec's established baseline slice).
       const before = server.requests.length;
 
       const pending = provider().fetchSnapshot(account, controller.signal);
-      // Abort as soon as the primary endpoint answered — the context GETs
-      // then fail on the already-fired signal and degrade softly.
+      // Abort only once the endpoint-2 GET is on the wire. The exchanges
+      // are strictly sequential (endpoint 1 await -> parse -> endpoint 2),
+      // so this cycle's subscription request arriving is causal proof that
+      // the primary exchange already completed client-side — the old "first
+      // request arrived" gate let the abort land inside the primary's
+      // arrival-to-read window under parallel-suite load, where abort
+      // propagation is the designed §8.1 behavior (U-010).
       await new Promise<void>((resolve, reject) => {
         const poll = setInterval(() => {
-          if (server.requests.length > before) {
+          if (
+            server.requests
+              .slice(before)
+              .some((recorded) => recorded.url.startsWith(SUBSCRIPTION_PATH))
+          ) {
             clearInterval(poll);
             controller.abort();
             resolve();
@@ -520,7 +531,7 @@ describe('ZaiCodingPlanProvider.fetchSnapshot over real sockets', () => {
         }, 5);
         setTimeout(() => {
           clearInterval(poll);
-          reject(new Error('endpoint 1 never answered'));
+          reject(new Error('endpoint 2 (subscription) request never arrived'));
         }, 2_000).unref();
       });
 
