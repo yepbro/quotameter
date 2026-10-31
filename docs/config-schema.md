@@ -52,7 +52,10 @@ current editors and Ajv v8 support out of the box.
 
 The published schema carries the **structural** rules of the contract: types,
 ranges, patterns, closed enums, spec defaults, and unknown-key rejection
-(`additionalProperties: false`) at every level.
+(`additionalProperties: false`) at every level. Numbers must be finite: a JSON
+literal too large for a double (`1e400`) parses to `Infinity`, which both
+validation engines reject as a type violation with a field-level error
+(`multiplier: expected a number, got a non-finite number` — decision D-071).
 
 Some rules are **cross-field** and live in the application instead (decision
 D-014, spec §6.2): exactly one of `apiKey`/`apiKeyEnv` per account, unique

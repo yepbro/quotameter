@@ -377,10 +377,18 @@ function actualTypeSuffix(instancePath: string, data: unknown | undefined): stri
   return `, got ${name === 'null' ? name : withArticle(name)}`;
 }
 
-/** JSON type name of a parsed value (`typeof` corrected for `null`/arrays). */
+/**
+ * JSON type name of a parsed value (`typeof` corrected for `null`/arrays).
+ * Non-finite numbers are named distinctly: they are not JSON values (strict
+ * `JSON.parse` yields `Infinity` for an out-of-range literal such as `1e400`,
+ * and both TypeBox and Ajv exclude non-finite doubles from the `number` type
+ * — verified on the pinned runtime, task 113/D-071), so a type error must
+ * never read "expected a number, got a number".
+ */
 function jsonTypeName(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
+  if (typeof value === 'number' && !Number.isFinite(value)) return 'non-finite number';
   return typeof value;
 }
 

@@ -197,7 +197,9 @@ describe('parseConfigWithEnv — precedence (spec §6.3)', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.problems).toEqual(['server.port: expected an integer, got a number']);
+      expect(result.problems).toEqual([
+        'server.port: expected an integer, got a non-finite number',
+      ]);
     }
   });
 });
