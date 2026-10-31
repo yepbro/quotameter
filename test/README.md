@@ -23,14 +23,15 @@ Conventions:
 
 All test commands run inside the development container (`make shell`) or any Node.js `>=22.13.0` environment:
 
-| Command                    | Effect                                                                     |
-| -------------------------- | -------------------------------------------------------------------------- |
-| `npm run test`             | Run the full unit + integration suite once; exits non-zero on any failure. |
-| `npm run test:unit`        | Run only `test/unit/`.                                                     |
-| `npm run test:integration` | Run only `test/integration/`.                                              |
-| `npm run test:component`   | Run only `test/component/`.                                                |
-| `npm run test:watch`       | Watch mode for local development.                                          |
-| `npm run test:ci`          | Full suite with an additional JUnit report at `reports/junit.xml` for CI.  |
+| Command                    | Effect                                                                                                                                                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run test`             | Run the full unit + integration suite once; exits non-zero on any failure.                                                                                                                                                                              |
+| `npm run test:unit`        | Run only `test/unit/`.                                                                                                                                                                                                                                  |
+| `npm run test:integration` | Run only `test/integration/`.                                                                                                                                                                                                                           |
+| `npm run test:component`   | Run only `test/component/`.                                                                                                                                                                                                                             |
+| `npm run test:time`        | Run the time/peak-hours suite — the twelve spec files CI's `timezone` matrix runs under each process `TZ` (see `scripts/verify-tz.mjs` and `test/unit/time-suite-manifest.spec.ts`; locally `make test-time ZONE=<zone>` verifies a matrix zone first). |
+| `npm run test:watch`       | Watch mode for local development.                                                                                                                                                                                                                       |
+| `npm run test:ci`          | Full suite with an additional JUnit report at `reports/junit.xml` for CI.                                                                                                                                                                               |
 
 ## Failure semantics
 

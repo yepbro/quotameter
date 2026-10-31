@@ -24,6 +24,7 @@
     "test:integration": "vitest run --project integration",
     "test:component": "vitest run --project component",
     "test:watch": "vitest",
+    "test:time": "vitest run clock rolling-ranges peak-hours compare-epoch-ms",
     "test:coverage": "vitest run --coverage",
     "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile.junit=${REPORTS_DIR:-reports}/junit.xml",
     "test:e2e": "playwright test",

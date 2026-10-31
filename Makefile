@@ -62,6 +62,7 @@ check-all: ## Full CI parity: every check CI runs, locally in the container
 	@set -e; \
 	$(MAKE) --no-print-directory format-check lint typecheck-all audit licenses; \
 	$(RUN) npm run test:ci; \
+	$(MAKE) --no-print-directory test-time-matrix; \
 	$(MAKE) --no-print-directory build; \
 	$(RUN) npm run test:e2e; \
 	$(MAKE) --no-print-directory package; \
@@ -84,6 +85,28 @@ test-integration: deps ## Run only integration tests
 .PHONY: test-component
 test-component: deps ## Run only Vue component tests
 	@$(RUN) npm run test:component
+
+.PHONY: test-time
+test-time: deps ## Run the time/peak-hours suite (ZONE=<iana-zone> verifies and runs under it)
+	@if [ -n "$(ZONE)" ]; then \
+	  echo "Running the time/peak-hours suite under TZ=$(ZONE)"; \
+	  $(RUN) env TZ=$(ZONE) sh -c 'node scripts/verify-tz.mjs && npm run test:time'; \
+	else \
+	  $(RUN) npm run test:time; \
+	fi
+
+# The nine §17.1 matrix zones (task 126, decision D-097) — kept in step with
+# scripts/verify-tz.mjs and .github/workflows/ci.yml's timezone job (both
+# pinned by test/integration/tz-verify-script.spec.ts).
+TIMEZONE_MATRIX := UTC America/New_York Europe/London Asia/Shanghai Asia/Kolkata Asia/Kathmandu Australia/Lord_Howe Pacific/Chatham Pacific/Kiritimati
+
+.PHONY: test-time-matrix
+test-time-matrix: deps ## Run the time/peak-hours suite under all nine matrix TZ values
+	@$(RUN) sh -c 'set -e; for tz in $(TIMEZONE_MATRIX); do \
+	  echo "=== TZ=$$tz ==="; \
+	  TZ=$$tz node scripts/verify-tz.mjs; \
+	  TZ=$$tz npm run --silent test:time; \
+	done'
 
 .PHONY: test-coverage
 test-coverage: deps ## Run tests with coverage report and thresholds

@@ -1,10 +1,11 @@
 # Continuous integration (spec §4.4, §17.3).
 #
 # Jobs: `static` (lint/format/types/audit/licenses), `test` (unit,
-# integration, component, E2E) and `build`. The final gate job is named
-# `CI` to match the required status check configured on `master` (task 004):
-# it runs after every other job, fails if any of them failed, and is the
-# single check that blocks pull requests.
+# integration, component, E2E), `timezone` (the §17.1 time-zone regression
+# matrix) and `build`. The final gate job is named `CI` to match the
+# required status check configured on `master` (task 004): it runs after
+# every other job, fails if any of them failed, and is the single check
+# that blocks pull requests.
 name: CI
 
 on:
@@ -108,6 +109,53 @@ jobs:
             playwright-report/
           retention-days: 30
           if-no-files-found: ignore
+
+  # Time-zone regression matrix (task 126, spec §17.1, decision D-097): the
+  # time/peak-hours suite (`npm run test:time`) runs once per process `TZ`,
+  # covering DST and non-DST offsets at whole-, half-, and quarter-hour
+  # granularity — the seven §17.1-required identifiers as process `TZ`
+  # values plus Asia/Kathmandu (never-DST quarter-hour) and
+  # Pacific/Kiritimati (+14:00 dateline edge). Node is pinned to the
+  # declared minimum so scripts/verify-tz.mjs's zone-facts table (generated
+  # from that runtime's ICU) stays a genuine oracle; the runtime dimension
+  # already belongs to the `test` job's matrix. Keep the zone list in sync
+  # with scripts/verify-tz.mjs — membership is pinned by
+  # test/integration/tz-verify-script.spec.ts.
+  timezone:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tz:
+          - UTC
+          - America/New_York
+          - Europe/London
+          - Asia/Shanghai
+          - Asia/Kolkata
+          - Asia/Kathmandu
+          - Australia/Lord_Howe
+          - Pacific/Chatham
+          - Pacific/Kiritimati
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify the runner's time-zone facts
+        run: node scripts/verify-tz.mjs
+
+      - name: Run the time/peak-hours suite
+        run: npm run test:time
 
   build:
     runs-on: ubuntu-latest
@@ -258,7 +306,7 @@ jobs:
   # required check is exactly `CI`) while the pipeline grows behind it.
   CI:
     name: CI
-    needs: [static, test, build, install, package, unsupported-node]
+    needs: [static, test, timezone, build, install, package, unsupported-node]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
