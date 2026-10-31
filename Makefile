@@ -55,7 +55,7 @@ exec: ## Run a one-off command, e.g. make exec CMD="node -v"
 #@ ─ Everyday checks ───────────────────────────────────────────────────
 
 .PHONY: check
-check: format-check lint typecheck test ## Minimal gate: format, lint, types, tests
+check: format-check lint typecheck test-ci ## Minimal gate: format, lint, types, tests (CI parity: coverage thresholds)
 
 .PHONY: check-all
 check-all: ## Full CI parity: every check CI runs, locally in the container
