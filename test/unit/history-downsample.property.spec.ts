@@ -24,6 +24,17 @@ import {
  * budget ceilings.
  */
 
+/**
+ * The three compute-bound properties below each walk ~100 generated
+ * max-size series (220–400 points) through brute-force oracles: 0.4–1.0 s
+ * clean, worst measured 6.8 s in a full v8-coverage run under the six-hog
+ * starvation rig (U-020; docs/agents/gotchas.md) — past Vitest's 5 s
+ * default, the U-012 flake family. 20 s ≈ 3× that worst case (the
+ * peak-hours-dst house margin), so parallel-wave load cannot trip the
+ * default while a genuinely stuck run still fails fast.
+ */
+const COMPUTE_BOUND_TIMEOUT_MS = 20_000;
+
 /** 2026-10-31T12:00:00Z — the base collection timestamp of every series. */
 const T0 = Date.UTC(2026, 9, 31, 12, 0, 0);
 
@@ -226,18 +237,22 @@ function checkPreservation(
 }
 
 describe('downsampleHistorySeries: preservation properties (§13, §17.1)', () => {
-  it('preserves extrema, first/last members, boundaries, and the budget over arbitrary series', () => {
-    fc.assert(
-      fc.property(caseArb, maxPointsArb, ({ points, resetEvents, gaps }, maxPoints) => {
-        checkPreservation(points, maxPoints, { resetEvents, gaps });
-      }),
-    );
-    // Vacuity tripwires: the generator must have produced all three shapes —
-    // an overfull series, an at-or-under-budget one, and a separated one
-    // (the default fast-check array size never reaches the 100-point budget
-    // floor; found in review).
-    expect([sawDownsampled, sawPassthrough, sawSeparated]).toEqual([true, true, true]);
-  });
+  it(
+    'preserves extrema, first/last members, boundaries, and the budget over arbitrary series',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    () => {
+      fc.assert(
+        fc.property(caseArb, maxPointsArb, ({ points, resetEvents, gaps }, maxPoints) => {
+          checkPreservation(points, maxPoints, { resetEvents, gaps });
+        }),
+      );
+      // Vacuity tripwires: the generator must have produced all three shapes —
+      // an overfull series, an at-or-under-budget one, and a separated one
+      // (the default fast-check array size never reaches the 100-point budget
+      // floor; found in review).
+      expect([sawDownsampled, sawPassthrough, sawSeparated]).toEqual([true, true, true]);
+    },
+  );
 
   it('pins the §13 boundary: exactly maxPoints points pass through, one more aggregates', () => {
     fc.assert(
@@ -370,27 +385,31 @@ describe('downsampleHistorySeries: equal-timestamp clusters under boundaries', (
       return { points, resetEvents, gaps } as const;
     });
 
-  it('keeps every cluster whole, walks members exactly, and never spans a boundary', () => {
-    let sawDuplicateStamp = 0;
-    let sawBoundaryAtClusterStamp = 0; // a boundary landing exactly on an observed stamp
-    fc.assert(
-      fc.property(clusterCaseArb, ({ points, resetEvents, gaps }) => {
-        const stamps = new Set(points.map((point) => point.collectedAt));
-        if (stamps.size < points.length) sawDuplicateStamp += 1;
-        if (
-          resetEvents.some((event) => stamps.has(event.eventAt)) ||
-          gaps.some((gap) => stamps.has(gap.fromEpochMs) && stamps.has(gap.toEpochMs))
-        ) {
-          sawBoundaryAtClusterStamp += 1;
-        }
-        // min budget 100, always below the ≥101-point series: always aggregated.
-        checkClustered(points, 100, { resetEvents, gaps });
-      }),
-    );
-    // Vacuity tripwires: duplicates and on-stamp boundaries must occur.
-    expect(sawDuplicateStamp).toBeGreaterThan(0);
-    expect(sawBoundaryAtClusterStamp).toBeGreaterThan(0);
-  });
+  it(
+    'keeps every cluster whole, walks members exactly, and never spans a boundary',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    () => {
+      let sawDuplicateStamp = 0;
+      let sawBoundaryAtClusterStamp = 0; // a boundary landing exactly on an observed stamp
+      fc.assert(
+        fc.property(clusterCaseArb, ({ points, resetEvents, gaps }) => {
+          const stamps = new Set(points.map((point) => point.collectedAt));
+          if (stamps.size < points.length) sawDuplicateStamp += 1;
+          if (
+            resetEvents.some((event) => stamps.has(event.eventAt)) ||
+            gaps.some((gap) => stamps.has(gap.fromEpochMs) && stamps.has(gap.toEpochMs))
+          ) {
+            sawBoundaryAtClusterStamp += 1;
+          }
+          // min budget 100, always below the ≥101-point series: always aggregated.
+          checkClustered(points, 100, { resetEvents, gaps });
+        }),
+      );
+      // Vacuity tripwires: duplicates and on-stamp boundaries must occur.
+      expect(sawDuplicateStamp).toBeGreaterThan(0);
+      expect(sawBoundaryAtClusterStamp).toBeGreaterThan(0);
+    },
+  );
 });
 
 describe('downsampleHistorySeries: a degenerate zero-span overfull series', () => {
@@ -465,15 +484,19 @@ describe('downsampleHistorySeries: generator growth to the budget ceilings', () 
       return { points, resetEvents, gaps } as const;
     });
 
-  it('preserves extrema, members, boundaries, and the budget at scale', () => {
-    fc.assert(
-      fc.property(
-        growthCaseArb,
-        fc.integer({ min: 100, max: 5000 }),
-        ({ points, resetEvents, gaps }, maxPoints) => {
-          checkPreservation(points, maxPoints, { resetEvents, gaps });
-        },
-      ),
-    );
-  });
+  it(
+    'preserves extrema, members, boundaries, and the budget at scale',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    () => {
+      fc.assert(
+        fc.property(
+          growthCaseArb,
+          fc.integer({ min: 100, max: 5000 }),
+          ({ points, resetEvents, gaps }, maxPoints) => {
+            checkPreservation(points, maxPoints, { resetEvents, gaps });
+          },
+        ),
+      );
+    },
+  );
 });

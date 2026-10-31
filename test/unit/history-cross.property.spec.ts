@@ -52,6 +52,18 @@ import { COLLECTION_OUTCOMES } from '../../src/services/polling-outcomes';
 /** 2026-10-31T12:00:00Z — the anchor of every generated scenario. */
 const T0 = Date.UTC(2026, 9, 31, 12, 0, 0);
 
+/**
+ * The detector-boundaries property runs ~100 generated 110–160-point
+ * series through the actual D-074/D-075 detectors and the D-081
+ * downsampler with brute-force boundary checks: 0.4–0.5 s clean, worst
+ * measured 5.9 s in a full v8-coverage run under the six-hog starvation
+ * rig (U-020; docs/agents/gotchas.md) — past Vitest's 5 s default, the
+ * U-012 flake family. 20 s ≈ 3× that worst case (the peak-hours-dst
+ * house margin), so parallel-wave load cannot trip the default while a
+ * stuck run still fails fast.
+ */
+const COMPUTE_BOUND_TIMEOUT_MS = 20_000;
+
 /** The §7.1 cadences the scenarios run under (the landed suites' pick). */
 const cadenceArb = fc.constantFrom(60, 300, 3600);
 
@@ -114,60 +126,64 @@ const detectorScenarioArb = fc
   });
 
 describe('detector boundaries survive downsampling (§13, cross-module)', () => {
-  it('preserves every emitted gap edge and reset instant through aggregation', () => {
-    let sawEvent = 0;
-    let sawGap = 0;
-    let sawBothKinds = 0;
-    let sawDeclaredEventTime = 0; // events stamped previous_resets_at
-    fc.assert(
-      fc.property(
-        detectorScenarioArb,
-        fc.double({ min: 0.1, max: 0.99, noNaN: true }),
-        ({ intervalSeconds, points }, budgetFraction) => {
-          const events = detectSeriesResetEvents(points);
-          const gaps = detectCollectionGaps(points, intervalSeconds);
-          sawEvent += events.length;
-          sawGap += gaps.length;
-          if (events.length > 0 && gaps.length > 0) sawBothKinds += 1;
-          sawDeclaredEventTime += events.filter(
-            (event) => event.details.eventTimeSource === 'previous_resets_at',
-          ).length;
+  it(
+    'preserves every emitted gap edge and reset instant through aggregation',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    () => {
+      let sawEvent = 0;
+      let sawGap = 0;
+      let sawBothKinds = 0;
+      let sawDeclaredEventTime = 0; // events stamped previous_resets_at
+      fc.assert(
+        fc.property(
+          detectorScenarioArb,
+          fc.double({ min: 0.1, max: 0.99, noNaN: true }),
+          ({ intervalSeconds, points }, budgetFraction) => {
+            const events = detectSeriesResetEvents(points);
+            const gaps = detectCollectionGaps(points, intervalSeconds);
+            sawEvent += events.length;
+            sawGap += gaps.length;
+            if (events.length > 0 && gaps.length > 0) sawBothKinds += 1;
+            sawDeclaredEventTime += events.filter(
+              (event) => event.details.eventTimeSource === 'previous_resets_at',
+            ).length;
 
-          // Always over budget: ≥110 points against at most 99% of them.
-          const maxPoints = Math.max(100, Math.floor(points.length * budgetFraction));
-          const boundaries: DownsampleBoundaries = { resetEvents: events, gaps };
-          const result = downsampleHistorySeries(points, maxPoints, boundaries);
-          expect(result.kind).toBe('downsampled');
-          if (result.kind !== 'downsampled') throw new Error('unreachable');
-          const { buckets } = result;
-          expect(buckets.length).toBeGreaterThan(0);
+            // Always over budget: ≥110 points against at most 99% of them.
+            const maxPoints = Math.max(100, Math.floor(points.length * budgetFraction));
+            const boundaries: DownsampleBoundaries = { resetEvents: events, gaps };
+            const result = downsampleHistorySeries(points, maxPoints, boundaries);
+            expect(result.kind).toBe('downsampled');
+            if (result.kind !== 'downsampled') throw new Error('unreachable');
+            const { buckets } = result;
+            expect(buckets.length).toBeGreaterThan(0);
 
-          // The pre-side gap edge closes a bucket and the post-side edge
-          // opens one: both silence edges stay visible after aggregation.
-          for (const gap of gaps) {
-            expect(buckets.some((bucket) => bucket.toEpochMs === gap.fromEpochMs)).toBe(true);
-            expect(buckets.some((bucket) => bucket.fromEpochMs === gap.toEpochMs)).toBe(true);
-          }
-          // Every reset instant falls strictly between consecutive buckets —
-          // the D-074 event never lands inside an aggregating bucket.
-          for (const event of events) {
-            const at = event.eventAt;
-            const straddled = buckets.some((bucket, index) => {
-              const next = buckets[index + 1];
-              return next !== undefined && bucket.toEpochMs < at && at <= next.fromEpochMs;
-            });
-            expect(straddled).toBe(true);
-          }
-        },
-      ),
-    );
-    // Vacuity tripwires: events, gaps, both together, and both event-time
-    // sources must all have occurred across the generated scenarios.
-    expect(sawEvent).toBeGreaterThan(0);
-    expect(sawGap).toBeGreaterThan(0);
-    expect(sawBothKinds).toBeGreaterThan(0);
-    expect(sawDeclaredEventTime).toBeGreaterThan(0);
-  });
+            // The pre-side gap edge closes a bucket and the post-side edge
+            // opens one: both silence edges stay visible after aggregation.
+            for (const gap of gaps) {
+              expect(buckets.some((bucket) => bucket.toEpochMs === gap.fromEpochMs)).toBe(true);
+              expect(buckets.some((bucket) => bucket.fromEpochMs === gap.toEpochMs)).toBe(true);
+            }
+            // Every reset instant falls strictly between consecutive buckets —
+            // the D-074 event never lands inside an aggregating bucket.
+            for (const event of events) {
+              const at = event.eventAt;
+              const straddled = buckets.some((bucket, index) => {
+                const next = buckets[index + 1];
+                return next !== undefined && bucket.toEpochMs < at && at <= next.fromEpochMs;
+              });
+              expect(straddled).toBe(true);
+            }
+          },
+        ),
+      );
+      // Vacuity tripwires: events, gaps, both together, and both event-time
+      // sources must all have occurred across the generated scenarios.
+      expect(sawEvent).toBeGreaterThan(0);
+      expect(sawGap).toBeGreaterThan(0);
+      expect(sawBothKinds).toBeGreaterThan(0);
+      expect(sawDeclaredEventTime).toBeGreaterThan(0);
+    },
+  );
 });
 
 /* ── Gaps and timeline indicators agree on shared silence ──────────────── */
