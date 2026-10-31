@@ -39,11 +39,15 @@ describe('createLogger', () => {
   it('defaults to the spec §16 level and name', () => {
     const sink = createMemoryLogSink();
     const logger = createLogger({ destination: sink });
+    // Both expectations are pinned as literals: deriving them from the
+    // DEFAULT_* exports could not fail when a mutation blanks those very
+    // constants (U-008 triage).
     expect(DEFAULT_LOG_LEVEL).toBe('warn');
+    expect(DEFAULT_LOGGER_NAME).toBe('quotameter');
     expect(logger.level).toBe('warn');
     logger.warn('hello');
     const record = sink.singleRecord();
-    expect(record.name).toBe(DEFAULT_LOGGER_NAME);
+    expect(record.name).toBe('quotameter');
     expect(record.msg).toBe('hello');
     expect(record.level).toBe(LEVEL_VALUES.warn);
     expect(typeof record.time).toBe('number');
@@ -87,8 +91,11 @@ describe('createLogger', () => {
   });
 
   it('rejects an unknown level at construction with the ladder listed', () => {
+    // The full message is pinned verbatim, §16 tail included: the ladder
+    // half alone cannot tell a truncated message from the real one.
     expect(() => createLogger({ level: 'verbose' as LadderLevel })).toThrow(
-      /log level must be one of: trace, debug, info, warn, error, fatal; got 'verbose'/,
+      "log level must be one of: trace, debug, info, warn, error, fatal; got 'verbose' " +
+        '(spec §16 supports error, warn, info, debug for configuration)',
     );
   });
 

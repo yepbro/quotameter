@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createConfigReloader,
   findReloadChanges,
   RELOAD_FIELDS,
   RESTART_REQUIRED_FIELDS,
+  type EffectiveConfig,
   type LiveReloadField,
   type RestartRequiredField,
 } from '../../src/config/reload';
@@ -198,5 +200,99 @@ describe('findReloadChanges — the §6.4 diff', () => {
       live: [],
       restart: ['server.host', 'server.port'],
     });
+  });
+
+  it('treats an absent accounts section as equal to an explicit empty list (U-008)', () => {
+    // The row's read falls back to [] on both sides — a missing section
+    // and an explicit empty list are the same "no accounts" state (the
+    // parser materializes exactly this shape).
+    const withAccounts = (accounts: AccountConfig[] | undefined): Config => ({
+      ...baseConfig(),
+      accounts,
+    });
+    expect(findReloadChanges(withAccounts(undefined), withAccounts([]))).toEqual({
+      live: [],
+      restart: [],
+    });
+  });
+
+  it('reports a provider key the baseline did not have (U-008)', () => {
+    // Key sets are part of the comparison, not just the shared keys'
+    // values: adding a provider is a change even when the existing one is
+    // untouched.
+    const next = baseConfig();
+    (next.providers as Record<string, ProviderConfig>).other = {
+      ...next.providers.zai!,
+      peakHours: { ...next.providers.zai!.peakHours, windows: [] },
+    };
+    expect(findReloadChanges(baseConfig(), next)).toEqual({ live: ['providers'], restart: [] });
+  });
+});
+
+describe('findReloadChanges — structural comparator type discipline (U-008)', () => {
+  // The comparator's guards decide malformed inputs a validated pipeline
+  // never produces (hand-built configurations) without throwing; the pairs
+  // below pin each guard through the public diff. Casts widen only the
+  // value under diff — every other field stays at its baseline.
+  const withPasswordHash = (passwordHash: unknown): Config =>
+    ({ ...baseConfig(), auth: { ...baseConfig().auth, passwordHash } }) as Config;
+  const withAccounts = (accounts: unknown): Config => ({ ...baseConfig(), accounts }) as Config;
+
+  it('classifies null against an object, either side, as changed without throwing', () => {
+    expect(findReloadChanges(withPasswordHash(null), withPasswordHash({}))).toEqual({
+      live: ['auth.passwordHash'],
+      restart: [],
+    });
+    expect(findReloadChanges(withPasswordHash({}), withPasswordHash(null))).toEqual({
+      live: ['auth.passwordHash'],
+      restart: [],
+    });
+  });
+
+  it('classifies a primitive against an object, either side, as changed', () => {
+    expect(findReloadChanges(withPasswordHash(5), withPasswordHash({}))).toEqual({
+      live: ['auth.passwordHash'],
+      restart: [],
+    });
+    expect(findReloadChanges(withPasswordHash({}), withPasswordHash(5))).toEqual({
+      live: ['auth.passwordHash'],
+      restart: [],
+    });
+  });
+
+  it('classifies an array against a record, and empty against empty, as changed', () => {
+    expect(findReloadChanges(withAccounts(['x']), withAccounts({ 0: 'x' }))).toEqual({
+      live: ['accounts'],
+      restart: [],
+    });
+    expect(findReloadChanges(withAccounts([]), withAccounts({}))).toEqual({
+      live: ['accounts'],
+      restart: [],
+    });
+  });
+
+  it('classifies an array-like record against an equal array as changed, without throwing', () => {
+    // Duck-typed length/indices must not pass for a real array.
+    const arrayLike = { length: 2, 0: 'x', 1: 'y' };
+    expect(findReloadChanges(withAccounts(arrayLike), withAccounts(['x', 'y']))).toEqual({
+      live: ['accounts'],
+      restart: [],
+    });
+  });
+});
+
+describe('createConfigReloader — adoption freezes without assuming clean data (U-008)', () => {
+  it('skips null children while deep-freezing the startup configuration', () => {
+    // Validated pipeline output never carries null, but adoption must not
+    // crash on one either: the freeze walks objects and arrays only.
+    // (The brand is cast on: this input deliberately never ran the parser.)
+    const initial: EffectiveConfig = {
+      config: { ...baseConfig(), providers: { zai: null } } as unknown as EffectiveConfig['config'],
+      sources: { fields: [], accountSecrets: [] },
+      fileAbsent: false,
+    };
+    expect(() =>
+      createConfigReloader({ initial, targetPath: '/unused/config.json' }),
+    ).not.toThrow();
   });
 });

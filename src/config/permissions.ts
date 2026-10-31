@@ -137,6 +137,7 @@ export async function enforceConfigPermissions(
 ): Promise<PermissionsResult> {
   const deps = {
     filesystem: options.filesystem ?? realFilesystem,
+    // Stryker disable next-line OptionalChaining: process.getuid exists on every supported POSIX runtime; the chain guards non-POSIX platforms only
     getuid: options.getuid ?? (() => process.getuid?.()),
     configDir: options.configDir,
     configFile: options.configFile,

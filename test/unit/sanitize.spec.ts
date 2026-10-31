@@ -74,6 +74,14 @@ describe('sanitizeRawResponse: exact secret values', () => {
     const body = '{"a":"b"}';
     expect(sanitizeRawResponse(body, ['', '   '])).toBe(body);
   });
+
+  it('ignores blank secret entries exactly — whitespace runs stay verbatim (U-008)', () => {
+    // The filter must drop blanks before the scrubber sees them: a kept
+    // '   ' would replace ordinary space runs inside the stored text.
+    const body = '{"a":"b   c"}';
+    expect(sanitizeRawResponse(body, ['', '   '])).toBe(body);
+    expect(sanitizeRawResponse('page with   spaces', [''])).toBe('page with   spaces');
+  });
 });
 
 describe('sanitizeRawResponse: sensitive field names', () => {
@@ -181,6 +189,28 @@ describe('sanitizeRawResponse: 64 KiB cap', () => {
     expect(out).toBe('A'.repeat(65_495) + marker);
     expect(out.includes('[RED')).toBe(false);
     expect(Buffer.byteLength(out)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+  });
+
+  it('keeps a complete [REDACTED] that ends exactly at the cut point (U-008)', () => {
+    // The partial-prefix list is built one entry short of the full marker
+    // on purpose: a redaction that happens to end flush with the cut is a
+    // complete marker and must survive. The filler length is solved as a
+    // fixed point over the marker's own byte length so the scrubbed head
+    // ends exactly at the marker boundary.
+    let filler = 0;
+    for (let round = 0; round < 5; round += 1) {
+      const total = filler + Buffer.byteLength(REDACTED, 'utf8') + 200_000;
+      const marker = `[TRUNCATED at ${MAX_PAYLOAD_BYTES} of ${total} bytes]`;
+      filler =
+        MAX_PAYLOAD_BYTES - Buffer.byteLength(marker, 'utf8') - Buffer.byteLength(REDACTED, 'utf8');
+    }
+    const total = filler + Buffer.byteLength(REDACTED, 'utf8') + 200_000;
+    const body = 'A'.repeat(filler) + 'SK' + 'A'.repeat(200_000);
+    const out = sanitizeRawResponse(body, ['SK']);
+    expect(out).toBe(
+      'A'.repeat(filler) + REDACTED + `[TRUNCATED at ${MAX_PAYLOAD_BYTES} of ${total} bytes]`,
+    );
+    expect(Buffer.byteLength(out)).toBe(MAX_PAYLOAD_BYTES);
   });
 
   it('trims repeated marker-like runs at the cut point until stable', () => {

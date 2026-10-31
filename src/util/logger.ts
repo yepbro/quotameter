@@ -180,6 +180,7 @@ function isSensitiveKey(key: string): boolean {
 function scrubSecrets(value: string, secrets: readonly string[]): string {
   let scrubbed = value;
   for (const secret of secrets) {
+    // Stryker disable next-line ConditionalExpression: the true variant is equivalent — split/join is a no-op when the secret is absent (co-excludes the killed false variant)
     if (scrubbed.includes(secret)) {
       // split/join instead of RegExp: secrets are arbitrary strings whose
       // regex metacharacters must be matched literally.
@@ -361,8 +362,10 @@ function makeEmitter(
       // Skip the sanitization cost when the level filter would drop the
       // record anyway (the default level is 'warn'; debug/trace/info calls
       // are the hot, usually-discarded path).
+      // Stryker disable next-line ConditionalExpression: pino drops disabled records itself, so the skip changes only cost (co-excludes killed line-mates)
       if (!instance.isLevelEnabled(level)) return;
       const sanitizedMessage = scrubSecrets(message, secrets);
+      // Stryker disable next-line ConditionalExpression: pino normalizes an undefined merging object identically (verified); co-excludes killed line-mates
       if (data === undefined) {
         instance[level](sanitizedMessage);
       } else {

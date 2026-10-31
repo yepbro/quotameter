@@ -54,22 +54,27 @@ function withUid(stats: Stats, uid: number): Stats {
 }
 
 /**
- * Real-filesystem seam that records chmod calls; any method can be
- * overridden to simulate conditions the kernel will not produce on demand.
+ * Real-filesystem seam that records mkdir and chmod calls; any method can
+ * be overridden to simulate conditions the kernel will not produce on demand.
  */
 function seam(overrides: Partial<PermissionsFilesystem> = {}): PermissionsFilesystem & {
   chmodCalls: Array<{ target: string; mode: number }>;
+  mkdirCalls: Array<{ target: string; mode: number }>;
 } {
   const chmodCalls: Array<{ target: string; mode: number }> = [];
+  const mkdirCalls: Array<{ target: string; mode: number }> = [];
   const base: PermissionsFilesystem = {
     lstat: (target) => lstat(target),
-    mkdir: (target, options) => mkdir(target, options),
+    mkdir: (target, options) => {
+      mkdirCalls.push({ target, mode: options.mode });
+      return mkdir(target, options);
+    },
     chmod: async (target, mode) => {
       chmodCalls.push({ target, mode });
       await chmod(target, mode);
     },
   };
-  return Object.assign(base, overrides, { chmodCalls });
+  return Object.assign(base, overrides, { chmodCalls, mkdirCalls });
 }
 
 /** Asserts that enforcement refuses with a message matching `pattern`. */
@@ -117,6 +122,47 @@ describe('enforceConfigPermissions — directory creation', () => {
       for (const level of [join(dir.path, 'a'), join(dir.path, 'a', 'b'), configDir]) {
         expect(await modeOf(level)).toBe(CONFIG_DIR_MODE);
       }
+    });
+  });
+
+  it('mkdirs exactly the missing levels, deepest-last, each with the 0700 mode hint (U-008)', async () => {
+    await withTempDir(async (dir) => {
+      const configDir = join(dir.path, 'a', 'b', 'quotameter');
+      const recorded = seam();
+
+      const result = await enforceConfigPermissions({
+        configDir,
+        configFile: join(configDir, 'config.json'),
+        filesystem: recorded,
+      });
+
+      expect(result.configDir).toBe('created');
+      // The walk stops at the existing ancestor (dir.path): only the
+      // missing levels below it are created, in parent-to-child order,
+      // and every mkdir carries the mode hint the per-level chmod then
+      // enforces whatever the umask did to it.
+      expect(recorded.mkdirCalls).toEqual([
+        { target: join(dir.path, 'a'), mode: CONFIG_DIR_MODE },
+        { target: join(dir.path, 'a', 'b'), mode: CONFIG_DIR_MODE },
+        { target: configDir, mode: CONFIG_DIR_MODE },
+      ]);
+    });
+  });
+
+  it('stops the ancestor walk at a level that already exists (U-008)', async () => {
+    await withTempDir(async (dir) => {
+      const existing = join(dir.path, 'present');
+      await mkdir(existing, { mode: 0o700 });
+      const configDir = join(existing, 'quotameter');
+      const recorded = seam();
+
+      await enforceConfigPermissions({
+        configDir,
+        configFile: join(configDir, 'config.json'),
+        filesystem: recorded,
+      });
+
+      expect(recorded.mkdirCalls).toEqual([{ target: configDir, mode: CONFIG_DIR_MODE }]);
     });
   });
 
@@ -552,9 +598,131 @@ describe('enforceConfigPermissions — uncorrectable refusals', () => {
       );
     });
   });
+
+  it('refuses when an ancestor cannot be inspected during the walk, naming the level (U-008)', async () => {
+    await withTempDir(async (dir) => {
+      const ancestor = join(dir.path, 'a');
+      const configDir = join(ancestor, 'quotameter');
+      const error = errnoError('EACCES', 'permission denied');
+      // The configuration directory itself reports ENOENT (the walk
+      // starts), and the parent then refuses inspection: the refusal must
+      // name the configuration-directory level that failed, and carry the
+      // original error as its cause.
+      const guarded = seam({
+        lstat: async (target) => {
+          if (target === ancestor) throw error;
+          return lstat(target);
+        },
+      });
+
+      const refusal = await expectRefusal(
+        enforceConfigPermissions({
+          configDir,
+          configFile: join(configDir, 'config.json'),
+          filesystem: guarded,
+        }),
+        /refusing to start: cannot inspect configuration directory .*a: \(EACCES\) permission denied/,
+      );
+      expect(refusal.cause).toBe(error);
+    });
+  });
+
+  it('refuses when the configuration file itself cannot be inspected, naming it (U-008)', async () => {
+    await withTempDir(async (dir) => {
+      const configDir = join(dir.path, 'quotameter');
+      await mkdir(configDir, { mode: 0o700 });
+      const configFile = join(configDir, 'config.json');
+      const error = errnoError('EACCES', 'permission denied');
+      const guarded = seam({
+        lstat: async (target) => {
+          if (target === configFile) throw error;
+          return lstat(target);
+        },
+      });
+
+      await expectRefusal(
+        enforceConfigPermissions({ configDir, configFile, filesystem: guarded }),
+        /refusing to start: cannot inspect configuration file .*config\.json: \(EACCES\) permission denied/,
+      );
+    });
+  });
+
+  it('preserves the cause when a level cannot be created (U-008)', async () => {
+    await withTempDir(async (dir) => {
+      const error = errnoError('EACCES', 'permission denied');
+      const refusal = await expectRefusal(
+        enforceConfigPermissions({
+          configDir: join(dir.path, 'blocked', 'quotameter'),
+          configFile: join(dir.path, 'blocked', 'quotameter', 'config.json'),
+          filesystem: seam({
+            mkdir: async () => {
+              throw error;
+            },
+          }),
+        }),
+        /refusing to start: cannot create configuration directory .*: \(EACCES\) permission denied/,
+      );
+      expect(refusal.cause).toBe(error);
+    });
+  });
+
+  it('preserves the cause when the corrected file cannot be inspected again (U-008)', async () => {
+    await withTempDir(async (dir) => {
+      const configDir = join(dir.path, 'quotameter');
+      await mkdir(configDir, { mode: 0o700 });
+      const configFile = join(configDir, 'config.json');
+      await writeFile(configFile, CONFIG_TEXT, 'utf8');
+      await chmod(configFile, 0o642);
+      const error = errnoError('EIO', 'input/output error');
+      let corrected = false;
+      const guarded = seam({
+        lstat: async (target) => {
+          if (target === configFile && corrected) throw error;
+          return lstat(target);
+        },
+        chmod: async (target, mode) => {
+          await chmod(target, mode);
+          corrected = true;
+        },
+      });
+
+      const refusal = await expectRefusal(
+        enforceConfigPermissions({ configDir, configFile, filesystem: guarded }),
+        /refusing to start: configuration file .* cannot be inspected after the change: \(EIO\) input\/output error/,
+      );
+      expect(refusal.cause).toBe(error);
+    });
+  });
+
+  it('still refuses readably when a primitive escapes the filesystem seam (U-008)', async () => {
+    await withTempDir(async (dir) => {
+      // errnoIs must tolerate a thrown non-Error (null here): the refusal
+      // path, not a TypeError from reading `.code`, is the contract.
+      await expectRefusal(
+        enforceConfigPermissions({
+          configDir: join(dir.path, 'quotameter'),
+          configFile: join(dir.path, 'quotameter', 'config.json'),
+          filesystem: seam({
+            lstat: async () => {
+              throw null;
+            },
+          }),
+        }),
+        /refusing to start: cannot inspect configuration directory .*: null$/,
+      );
+    });
+  });
 });
 
 describe('createPermissionsCheck — task 060 seam', () => {
+  it('reports the stable component name used in lifecycle events (U-008)', () => {
+    const check = createPermissionsCheck({
+      configDir: '/unused/config',
+      configFile: '/unused/config/config.json',
+    });
+    expect(check.name).toBe('config-permissions');
+  });
+
   it('starts cleanly when permissions are compliant and stops as a no-op', async () => {
     await withTempDir(async (dir) => {
       const configDir = join(dir.path, 'quotameter');

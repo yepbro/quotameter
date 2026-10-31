@@ -307,6 +307,26 @@ describe('parseConfigWithEnv — invalid env values flow through the parser', ()
     );
   });
 
+  it('rejects a trailing-garbage digit string as the string it is', () => {
+    // '12ab' fails DECIMAL_INTEGER, so it must reach the parser uncoerced:
+    // a lenient coercion would turn it into NaN and change the named
+    // actual type to "non-finite number" (U-008 triage).
+    rejectsWith(
+      { QUOTAMETER_SERVER_PORT: '12ab' },
+      'server.port: expected an integer, got a string',
+    );
+  });
+
+  it('rejects a pure-digits value on a string-kind field through the enum, not a coercion', () => {
+    // '8080' is a decimal integer string, but logging.level coerces
+    // strings only: the single enum line proves no Number() ran (a coerced
+    // 8080 would add "expected a string, got a number" lines).
+    rejectsWith(
+      { QUOTAMETER_LOGGING_LEVEL: '8080' },
+      "logging.level: must be one of: 'error', 'warn', 'info', 'debug'",
+    );
+  });
+
   it('applies the range checks of the contract (spec §5.3, §7.1, §11.3)', () => {
     rejectsWith({ QUOTAMETER_SERVER_PORT: '70000' }, 'server.port: must be <= 65535');
     rejectsWith({ QUOTAMETER_SERVER_PORT: '0' }, 'server.port: must be >= 1');
@@ -470,6 +490,17 @@ describe('parseConfigWithEnv — safety properties', () => {
     expect(parseConfigWithEnv(input, { QUOTAMETER_SERVER_PORT: '9000' })).toEqual({
       ok: false,
       problems: ['server: expected an object, got a number'],
+    });
+  });
+
+  it('does not silently repair a null file section either (spec §6.2, U-008)', () => {
+    // `typeof null === 'object'` makes null the one mergeable-looking
+    // non-object: the override must not splice a section into it, and the
+    // parser must name the null the file actually carries.
+    const input = { ...fileConfig(), server: null };
+    expect(parseConfigWithEnv(input, { QUOTAMETER_SERVER_HOST: '0.0.0.0' })).toEqual({
+      ok: false,
+      problems: ['server: expected an object, got null'],
     });
   });
 });

@@ -85,6 +85,7 @@ export function parseConfig(input: unknown): ConfigParseResult {
     // type also admits null: for the success case).
     const errors = structuralValidator.errors as ErrorObject[];
     const failedUnions = new Set(
+      // Stryker disable next-line MethodExpression, ConditionalExpression, EqualityOperator: every const error the contract emits belongs to a literal union at the same path, so widening the set changes no problem; the narrowing → false line-mate (empty set — per-branch const lines also print) is killed by the exact-array union pins — co-excluded by line granularity
       errors.filter((error) => error.keyword === 'anyOf').map((error) => error.instancePath),
     );
     const problems: string[] = [];
@@ -96,9 +97,11 @@ export function parseConfig(input: unknown): ConfigParseResult {
         const allowed = allowedValuesIn(errors, error.instancePath);
         problems.push(
           `${errorField(error.instancePath)}: ${
+            // Stryker disable next-line ConditionalExpression, EqualityOperator: every contract anyOf is a literal union, so the collected list is never empty; the fallback exists for schema growth — the narrowing line-mates (forcing the fallback for real unions) are killed by the exact must-be-one-of pins, co-excluded by line granularity
             allowed.length > 0
               ? `must be one of: ${allowed.join(', ')}`
-              : 'must be one of the allowed values'
+              : // Stryker disable next-line StringLiteral: reachable only when a non-literal union joins ConfigSchema — every union is literal-only today (U-009 analysis, adopted); the arm degrades gracefully under schema growth
+                'must be one of the allowed values'
           }`,
         );
         continue;
@@ -203,6 +206,7 @@ function completeAccount(account: AccountConfig): AccountConfig {
 function withoutInputSnippet(message: string): string {
   const snippetStart = message.indexOf('"');
   if (snippetStart === -1) return message;
+  // Stryker disable next-line Regex: the surviving variants are equivalent on V8-produced messages (verified over a 31-shape corpus — every snippet separator is ", "); co-excludes the unanchored variant the comma-token test pins
   return message.slice(0, snippetStart).replace(/,\s*(?:\.\.\.)?\s*$/, '');
 }
 
@@ -231,6 +235,7 @@ export interface ConfigReadFilesystem {
 }
 
 const realFilesystem: ConfigReadFilesystem = {
+  // Stryker disable next-line StringLiteral: readFile(p, '') returns a Buffer whose ToString is the same UTF-8 text, and JSON.parse coerces it back (verified)
   readFile: (target) => readFile(target, 'utf8'),
 };
 
@@ -324,9 +329,12 @@ function schemaErrorMessage(
       return `must be '${String(params.allowedValue)}'`;
     case 'pattern':
       return `must match the pattern '${String(params.pattern)}'`;
+    // Stryker disable next-line StringLiteral: the arm reproduces Ajv's own message text verbatim ("must be >= N"), so the default passthrough prints the identical line (verified)
     case 'minimum':
-    case 'maximum':
+    // Stryker disable next-line StringLiteral: the arm reproduces Ajv's own message text verbatim ("must be > N"), so the default passthrough prints the identical line (verified) — falls through
     case 'exclusiveMinimum':
+    // Stryker disable next-line StringLiteral: the arm reproduces Ajv's own message text verbatim ("must be <= N"), so the default passthrough prints the identical line (verified) — falls through
+    case 'maximum':
       return `must be ${String(params.comparison)} ${String(params.limit)}`;
     case 'minLength':
       return `must be at least ${String(params.limit)} ${plural(
@@ -369,6 +377,7 @@ function additionalPropertiesMessage(
  * data was supplied. Only the JSON type is reported, never the value.
  */
 function actualTypeSuffix(instancePath: string, data: unknown | undefined): string {
+  // Stryker disable next-line ConditionalExpression: valueAtPointer(undefined, …) also returns undefined, so the suffix is empty either way; the → true line-mate drops the `, got …` suffix for present values and is killed by the type-error pins — co-excluded by line granularity
   if (data === undefined) return '';
   const value = valueAtPointer(data, instancePath);
   if (value === undefined) return '';
@@ -448,9 +457,11 @@ function resolveParentSchema(
     .map((segment) => decodeSegment(segment.replace(/~1/g, '/').replace(/~0/g, '~')));
   let current: unknown = rootSchema;
   for (const key of segments.slice(0, -1)) {
+    // Stryker disable next-line ConditionalExpression, LogicalOperator: the typeof→false variant is equivalent (indexing a primitive schema segment yields only string chars or undefined); co-excludes the null-check variants the null-segment test pins
     if (current === null || typeof current !== 'object') return undefined;
     current = (current as Record<string, unknown>)[key];
   }
+  // Stryker disable next-line ConditionalExpression, LogicalOperator: the only value passing `typeof === 'object'` while failing `!== null` is null, whose patternProperties read is undefined either way
   return typeof current === 'object' && current !== null
     ? (current as Record<string, unknown>)
     : undefined;

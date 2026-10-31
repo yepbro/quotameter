@@ -3,6 +3,7 @@ import { createAccountContext } from '../../src/providers/registry';
 import {
   LOG_LEVEL_LADDER,
   REDACTED,
+  SENSITIVE_KEY_NAMES,
   createLogger,
   type LadderLevel,
   type LogData,
@@ -107,6 +108,25 @@ describe('marker matrix: no secret at any log level', () => {
     logger.warn(`using ${MARKER}`);
     expect(sink.lines()[0]?.includes(MARKER)).toBe(false);
   });
+
+  it('keeps whitespace runs verbatim when only blank markers are registered', () => {
+    // The blank filter must drop blanks before the scrubber sees them: a
+    // kept '' would interleave the placeholder between every character,
+    // and a kept '   ' would redact ordinary runs of spaces (U-008).
+    const sink = createMemoryLogSink();
+    const logger = createLogger({ level: 'warn', secrets: ['', '   '], destination: sink });
+    logger.warn('a  b   c');
+    expect(sink.singleRecord().msg).toBe('a  b   c');
+    expect(sink.singleLine().includes(REDACTED)).toBe(false);
+  });
+
+  it('scrubs nothing at all when no secrets are registered', () => {
+    // The absent-list default must be empty: any seeded placeholder would
+    // redact matching message text out of unconfigured loggers (U-008).
+    const sink = createMemoryLogSink();
+    createLogger({ level: 'warn', destination: sink }).warn('Stryker was here');
+    expect(sink.singleRecord().msg).toBe('Stryker was here');
+  });
 });
 
 describe('sensitive key names', () => {
@@ -175,6 +195,53 @@ describe('sensitive key names', () => {
       ok: true,
       missing: null,
     });
+  });
+
+  it('redacts every exported vocabulary name through a spelling only the deep walk matches', () => {
+    // The expected vocabulary is pinned HERE as literals, not read back
+    // from the export: a mutant that blanks an entry would otherwise
+    // vanish from the test's own iteration. Hyphen-joined spellings
+    // ('a-p-i-…') normalize onto the vocabulary but never equal Layer A's
+    // exact-spelling redact paths, so only Layer B's deep sanitizer can
+    // redact them (U-008 triage of the literal survivors).
+    const expected = [
+      'apikey',
+      'apikeyenv',
+      'apisecret',
+      'clientsecret',
+      'secret',
+      'password',
+      'passwordhash',
+      'newpassword',
+      'oldpassword',
+      'currentpassword',
+      'authorization',
+      'proxyauthorization',
+      'authheader',
+      'accesstoken',
+      'refreshtoken',
+      'idtoken',
+      'token',
+      'bearertoken',
+      'bearer',
+      'cookie',
+      'setcookie',
+      'sessionid',
+      'sessionkey',
+      'credentials',
+    ];
+    expect([...SENSITIVE_KEY_NAMES]).toEqual(expected);
+    const sink = createMemoryLogSink();
+    const logger = createLogger({ level: 'warn', destination: sink });
+    const data: Record<string, unknown> = {};
+    for (const name of expected) {
+      data[name.split('').join('-')] = `sentinel-for-${name}`;
+    }
+    logger.warn('vocabulary sweep', data);
+    const record = sink.singleRecord();
+    for (const name of expected) {
+      expect(record[name.split('').join('-')], `key derived from '${name}'`).toBe(REDACTED);
+    }
   });
 });
 

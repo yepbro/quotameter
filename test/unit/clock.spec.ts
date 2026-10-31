@@ -73,16 +73,34 @@ describe('createFixedClock', () => {
 
   it('rejects an advance whose sum overflows a reading to Infinity', () => {
     const clock = createFixedClock(Number.MAX_VALUE);
-    expect(() => clock.advance(Number.MAX_VALUE)).toThrow(/finite/);
+    expect(() => clock.advance(Number.MAX_VALUE)).toThrow(
+      'fixed clock epoch must be a finite number, got Infinity',
+    );
     expect(clock.now()).toBe(Number.MAX_VALUE);
+    // The monotonic reading overflows on its own: the epoch sum stays
+    // finite while the monotonic sum does not.
+    const monotonic = createFixedClock(0, Number.MAX_VALUE);
+    expect(() => monotonic.advance(1e308)).toThrow(
+      'fixed clock monotonic reading must be a finite number, got Infinity',
+    );
   });
 
-  it('rejects non-finite inputs at every seam', () => {
-    expect(() => createFixedClock(Number.NaN)).toThrow(/finite/);
-    expect(() => createFixedClock(0, Number.POSITIVE_INFINITY)).toThrow(/finite/);
+  it('rejects non-finite inputs at every seam, naming it', () => {
+    // Each seam names what was non-finite — the message a test double
+    // relies on to tell its own wiring mistakes apart (U-008 triage).
+    expect(() => createFixedClock(Number.NaN)).toThrow(
+      'fixed clock epoch must be a finite number, got NaN',
+    );
+    expect(() => createFixedClock(0, Number.POSITIVE_INFINITY)).toThrow(
+      'fixed clock monotonic start must be a finite number, got Infinity',
+    );
     const clock = createFixedClock(0);
-    expect(() => clock.set(Number.NaN)).toThrow(/finite/);
-    expect(() => clock.advance(Number.POSITIVE_INFINITY)).toThrow(/finite/);
+    expect(() => clock.set(Number.NaN)).toThrow(
+      'fixed clock epoch must be a finite number, got NaN',
+    );
+    expect(() => clock.advance(Number.POSITIVE_INFINITY)).toThrow(
+      'fixed clock advance must be a finite number, got Infinity',
+    );
   });
 });
 
@@ -197,6 +215,11 @@ describe('zonedDateTime', () => {
     expect(() => zonedDateTime(Number.NaN, utc)).toThrow(/invalid date-time/);
     expect(() => zonedDateTime(Number.POSITIVE_INFINITY, utc)).toThrow(/invalid date-time/);
     expect(() => zonedDateTime(9e15, utc)).toThrow(/invalid date-time/);
+    // The message names the epoch and the zone so the operator can tell
+    // which conversion failed (pinned verbatim, U-008 triage).
+    expect(() => zonedDateTime(Number.NaN, utc)).toThrow(
+      "invalid date-time for epoch NaN in zone 'UTC': invalid input",
+    );
   });
 
   it('throws on an unsupported zone despite the brand (erased at runtime)', () => {
@@ -251,12 +274,22 @@ describe('epochMsFromIso', () => {
     expect(() => epochMsFromIso('2026-10-30T12:00:00')).toThrow(/explicit offset/);
     expect(() => epochMsFromIso('2026-10-30')).toThrow(/explicit offset/);
     expect(() => epochMsFromIso('2026-10-30T12:00:00+03')).toThrow(/explicit offset/);
+    // The designator must anchor the end of the string: a text tail after
+    // an otherwise-valid offset is still an offset-less timestamp (the
+    // unanchored pattern would wave it through to a different failure).
+    expect(() => epochMsFromIso('2026-10-30T20:00:00+08:00tail')).toThrow(
+      "ISO 8601 timestamp must carry an explicit offset or 'Z': '2026-10-30T20:00:00+08:00tail'",
+    );
   });
 
   it('rejects invalid timestamps with the reason', () => {
     expect(() => epochMsFromIso('')).toThrow(/explicit offset/);
     expect(() => epochMsFromIso('not-a-dateZ')).toThrow(/invalid date-time/);
     expect(() => epochMsFromIso('2026-13-01T00:00:00Z')).toThrow(/invalid date-time/);
+    // The message echoes the rejected timestamp and Luxon's reason.
+    expect(() => epochMsFromIso('2026-13-01T00:00:00Z')).toThrow(
+      "invalid date-time for ISO timestamp '2026-13-01T00:00:00Z': unit out of range",
+    );
   });
 });
 

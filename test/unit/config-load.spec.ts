@@ -173,6 +173,18 @@ describe('parseJson', () => {
     }
   });
 
+  it('trims the separator tail but keeps a comma token verbatim (spec §15.4, U-008)', () => {
+    // V8 quotes the offending token itself: for `[,]` the token is ',' and
+    // the prefix carries the token-quoted comma before the `, ` separator.
+    // Only the trailing separator may be trimmed — a comma that is part
+    // of V8's token vocabulary must survive the strip.
+    const result = parseJson('[,]');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.problems).toEqual(["invalid JSON: Unexpected token ','"]);
+    }
+  });
+
   it('keeps position-only messages verbatim, with no input echo (spec §15.4)', () => {
     // The `Expected …`/`Unterminated …` families name the construct and the
     // position but never quote the input; the strip must not touch them.
@@ -345,6 +357,16 @@ describe('parseConfig — structural problems are field-specific and readable', 
         },
       },
       "providers.zai.peakHours.windows[0].days[0]: must be one of: 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'",
+    );
+  });
+
+  it('expands each failed literal union with only its own allowed values (U-008)', () => {
+    // Two unions failing in one document: every "must be one of" line
+    // lists exactly its own branch literals, never the other union's.
+    rejectsWith(
+      { app: { timezone: 'UTC' }, auth: { mode: 'bogus' }, logging: { level: 'bogus' } },
+      "auth.mode: must be one of: 'auto', 'required'",
+      "logging.level: must be one of: 'error', 'warn', 'info', 'debug'",
     );
   });
 
@@ -614,6 +636,53 @@ describe('formatSchemaError — total over any Ajv error (doctor reuse)', () => 
     );
   });
 
+  it('renders a token as an index only when it is entirely digits (U-008)', () => {
+    // '0'/'00'/'12' are array indices; 'a0'/'0a'/'a1b' are property names —
+    // leading zeros and mixed tokens must not flip between the spellings.
+    const typeAt = (path: string): ErrorObject =>
+      at({ keyword: 'type', params: { type: 'object' }, instancePath: path });
+    expect(formatSchemaError(typeAt('/0'), ConfigSchema)).toBe('[0]: expected an object');
+    expect(formatSchemaError(typeAt('/00'), ConfigSchema)).toBe('[00]: expected an object');
+    expect(formatSchemaError(typeAt('/12'), ConfigSchema)).toBe('[12]: expected an object');
+    expect(formatSchemaError(typeAt('/a0'), ConfigSchema)).toBe('a0: expected an object');
+    expect(formatSchemaError(typeAt('/0a'), ConfigSchema)).toBe('0a: expected an object');
+    expect(formatSchemaError(typeAt('/a1b'), ConfigSchema)).toBe('a1b: expected an object');
+    expect(formatSchemaError(typeAt('/accounts/0/id'), ConfigSchema)).toBe(
+      'accounts[0].id: expected an object',
+    );
+  });
+
+  it('unescapes ~1/~0 pointer escapes in the field path (U-008)', () => {
+    // A property literally named 'a/b' is addressed as 'a~1b'; the field
+    // label must carry the real name so operators can find the key.
+    const error = at({ keyword: 'type', params: { type: 'string' }, instancePath: '/a~1b/a~0c' });
+    expect(formatSchemaError(error, ConfigSchema)).toBe('a/b.a~c: expected a string');
+  });
+
+  it('walks escaped property names when naming the actual type (U-008)', () => {
+    // The data walk unescapes exactly like the label render; a walk that
+    // missed the escape would drop the ", got …" suffix entirely.
+    const error = at({ keyword: 'type', params: { type: 'string' }, instancePath: '/a~1b/a~0c' });
+    expect(formatSchemaError(error, ConfigSchema, { 'a/b': { 'a~c': 42 } })).toBe(
+      'a/b.a~c: expected a string, got a number',
+    );
+  });
+
+  it('stops the data walk at null without throwing, dropping the type suffix (U-008)', () => {
+    const error = at({ keyword: 'type', params: { type: 'string' }, instancePath: '/a/b' });
+    expect(formatSchemaError(error, ConfigSchema, { a: null })).toBe('a.b: expected a string');
+  });
+
+  it('never reads properties of a scalar along the data walk (U-008)', () => {
+    // A string's own 'length' is not configuration data: walking into it
+    // would name a bogus actual type ("got a number") for a field that is
+    // not even there.
+    const error = at({ keyword: 'type', params: { type: 'string' }, instancePath: '/a/length' });
+    expect(formatSchemaError(error, ConfigSchema, { a: 'str' })).toBe(
+      'a.length: expected a string',
+    );
+  });
+
   it('never throws on malformed percent escapes in hand-built schema paths', () => {
     // Ajv always encodes correctly (`%` → `%25`), but the exported formatter
     // promises totality for any error object; a stray `%` must not throw and
@@ -657,6 +726,49 @@ describe('formatSchemaError — total over any Ajv error (doctor reuse)', () => 
     expect(formatSchemaError(error, root)).toBe(
       "server: property name 'h!' must match the pattern '^h$'",
     );
+  });
+
+  it('unescapes ~1 in schema paths when resolving the parent (U-008)', () => {
+    // A schema property literally named 'a/b' is addressed through the
+    // escaped segment 'a~1b'; the parent must still resolve so keyed
+    // records report their pattern rule instead of "unknown property".
+    const root: Record<string, unknown> = {
+      properties: { 'a/b': { patternProperties: { '^h$': {} }, additionalProperties: false } },
+    };
+    const error = at({
+      keyword: 'additionalProperties',
+      instancePath: '/a~1b',
+      schemaPath: '#/properties/a~1b/additionalProperties',
+      params: { additionalProperty: 'h!' },
+    });
+    expect(formatSchemaError(error, root)).toBe(
+      "a/b: property name 'h!' must match the pattern '^h$'",
+    );
+    // A property literally named 'a~b' is addressed as 'a~0b' — the
+    // second escape must unescape just as faithfully.
+    const tildeRoot: Record<string, unknown> = {
+      definitions: { 'a~b': { patternProperties: { '^h$': {} }, additionalProperties: false } },
+    };
+    const tildeError = at({
+      keyword: 'additionalProperties',
+      instancePath: '/a~0b',
+      schemaPath: '#/definitions/a~0b/additionalProperties',
+      params: { additionalProperty: 'h!' },
+    });
+    expect(formatSchemaError(tildeError, tildeRoot)).toBe(
+      "a~b: property name 'h!' must match the pattern '^h$'",
+    );
+  });
+
+  it('stops the schema walk at a null segment without throwing (U-008)', () => {
+    const root: Record<string, unknown> = { properties: null };
+    const error = at({
+      keyword: 'additionalProperties',
+      instancePath: '/x',
+      schemaPath: '#/properties/p/additionalProperties',
+      params: { additionalProperty: 'k' },
+    });
+    expect(formatSchemaError(error, root)).toBe("x: unknown property 'k'");
   });
 
   it('falls back to "unknown property" when the schema walk cannot resolve a parent', () => {

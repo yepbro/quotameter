@@ -136,10 +136,12 @@ function requireFinite(value: number, what: string): number {
  */
 export function isValidTimeZone(name: string): boolean {
   const cached = zoneChecks.get(name);
+  // Stryker disable next-line ConditionalExpression: memoization is transparent — results are deterministic per name; the → true line-mate returns the undefined cache-miss read and is killed by the fresh-name assertions (the block variant is covered by this same directive's line)
   if (cached !== undefined) {
     return cached;
   }
   const valid = !name.startsWith('+') && !name.startsWith('-') && resolvableByIntl(name);
+  // Stryker disable next-line CallExpression: populating the transparent memoization cache changes no observable result
   zoneChecks.set(name, valid);
   return valid;
 }
@@ -211,6 +213,7 @@ export function epochMsFromIso(iso: string): EpochMs {
   if (!OFFSET_REQUIRED.test(iso)) {
     throw new Error(`ISO 8601 timestamp must carry an explicit offset or 'Z': '${iso}'`);
   }
+  // Stryker disable next-line ObjectLiteral: OFFSET_REQUIRED guarantees an explicit designator, so toMillis() is zone-invariant; the option only affects presentation fields
   const dateTime = DateTime.fromISO(iso, { zone: 'utc' });
   return requireValid(dateTime, `ISO timestamp '${iso}'`).toMillis();
 }

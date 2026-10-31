@@ -74,6 +74,7 @@ function isSensitiveKey(key: string): boolean {
  */
 function secretSpellings(secret: string): readonly string[] {
   const escaped = JSON.stringify(secret).slice(1, -1);
+  // Stryker disable next-line ConditionalExpression: the → false variant is equivalent (scrubbing twice when the spellings coincide is a no-op); the → true variant drops the JSON-escaped spelling and is killed by the escaped-spelling test — co-excluded by line granularity
   return escaped === secret ? [secret] : [secret, escaped];
 }
 
@@ -122,7 +123,9 @@ function sanitizeJsonValue(value: JsonValue, secrets: readonly string[]): JsonVa
     Object.defineProperty(record, scrubSecrets(key, secrets), {
       value: isSensitiveKey(key) ? REDACTED : sanitizeJsonValue(entry, secrets),
       enumerable: true,
+      // Stryker disable next-line BooleanLiteral: descriptor flags are unobservable through the public API — the record is JSON.stringify-ed immediately
       writable: true,
+      // Stryker disable next-line BooleanLiteral: descriptor flags are unobservable through the public API — the record is JSON.stringify-ed immediately
       configurable: true,
     });
   }
@@ -135,6 +138,7 @@ function sanitizeJsonValue(value: JsonValue, secrets: readonly string[]): JsonVa
  * Proper prefixes of {@link REDACTED}, longest first — what a byte-level
  * cut can leave dangling at the end of a truncated payload.
  */
+// Stryker disable next-line MethodExpression: prefix order is irrelevant — only one prefix length can be a suffix at a time, and the loop repeats until stable (co-excludes killed line-mates)
 const PARTIAL_REDACTED_PREFIXES: readonly string[] = Array.from(
   { length: REDACTED.length - 1 },
   (_, index) => REDACTED.slice(0, index + 1),
@@ -170,13 +174,17 @@ function trimPartialRedactionMarker(head: string): string {
  * codepoint or surrogate pair) and never leaves half a `[REDACTED]`.
  */
 function capPayload(sanitized: string): string {
+  // Stryker disable next-line StringLiteral: Node normalizes the empty encoding name to UTF-8 (verified)
   const originalBytes = Buffer.byteLength(sanitized, 'utf8');
   if (originalBytes <= MAX_PAYLOAD_BYTES) {
     return sanitized;
   }
   const marker = `[TRUNCATED at ${MAX_PAYLOAD_BYTES} of ${originalBytes} bytes]`;
+  // Stryker disable next-line StringLiteral: Node normalizes the empty encoding name to UTF-8 (verified)
   const bytes = Buffer.from(sanitized, 'utf8');
+  // Stryker disable next-line StringLiteral: Node normalizes the empty encoding name to UTF-8 (verified)
   let end = MAX_PAYLOAD_BYTES - Buffer.byteLength(marker, 'utf8');
+  // Stryker disable next-line ConditionalExpression, EqualityOperator: valid UTF-8 always exposes a lead byte before index 0 matters, so both bound variants exit at the same end (co-excludes killed line-mates)
   while (end > 0 && (bytes.readUInt8(end) & 0xc0) === 0x80) {
     end -= 1;
   }

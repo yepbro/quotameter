@@ -188,12 +188,14 @@ export async function loadConfigWithEnv(
   // The not-found message is pinned verbatim by the task 064 tests; matching
   // it exactly is the sanctioned way to detect absence without re-reading.
   const notFound = `configuration file not found: ${targetPath}`;
+  // Stryker disable next-line ConditionalExpression: the `length !== 1` → false variant is equivalent (loadConfigFile yields exactly one problem, or the single notFound); co-excludes killed line-mates
   if (file.problems.length !== 1 || file.problems[0] !== notFound) return file;
   if (!hasOverride(env)) {
     // Nothing valid comes from the environment, so the missing file is the
     // problem — but a typo'd QUOTAMETER_* name is still scanned and reported
     // beside it rather than surfacing only after a file or override appears.
     const unknownProblems = unknownVariableProblems(env);
+    // Stryker disable next-line ConditionalExpression, EqualityOperator: with zero unknowns the concatenated [notFound] list is deep-equal to `file`, so both variants are output-equivalent (co-excludes killed line-mates)
     return unknownProblems.length > 0
       ? { ok: false, problems: [notFound, ...unknownProblems] }
       : file;
@@ -247,7 +249,10 @@ function unknownVariableProblems(env: NodeJS.ProcessEnv): string[] {
     .filter(([name, value]) => isSet(value) && name.startsWith('QUOTAMETER_'))
     .map(([name]) => name)
     .filter((name) => !KNOWN_VARIABLES.has(name))
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort((a, b) =>
+      // Stryker disable next-line ConditionalExpression, EqualityOperator: comparator arms differ only for equal keys, which Object key enumeration never yields (V8-verified equivalent; co-excludes killed line-mates)
+      a < b ? -1 : a > b ? 1 : 0,
+    )
     .map((name) => `${name}: unsupported environment variable`);
 }
 
@@ -312,12 +317,16 @@ function sourcesOf(
   fields: readonly EnvOverrideField[],
   config: Validated<Config>,
 ): EnvironmentSources {
+  // Defaults completion materializes `accounts: []` before the value is
+  // branded `Validated<Config>` (the brand's only sanctioned construction
+  // site, `parseConfig`), so the non-null assertion states that invariant
+  // instead of an unreachable fallback a mutant could hide in (U-009
+  // analysis, adopted).
+  const accounts = config.accounts!;
   return Object.freeze({
     fields: Object.freeze(fields),
     accountSecrets: Object.freeze(
-      (config.accounts ?? [])
-        .filter((account) => account.apiKeyEnv !== undefined)
-        .map((account) => account.id),
+      accounts.filter((account) => account.apiKeyEnv !== undefined).map((account) => account.id),
     ),
   });
 }

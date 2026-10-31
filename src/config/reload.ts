@@ -331,6 +331,7 @@ export function createConfigReloader(options: ConfigReloaderOptions): ConfigRelo
     // schema-guaranteed to be one of the four §16 levels, all on the ladder,
     // so this cannot throw; the fallback mirrors `env.ts` — the type cannot
     // express that the canonical parser always materializes the section.
+    // Stryker disable next-line OptionalChaining: the canonical parser always materializes logging, so the logging?. chain never short-circuits (the fallback mirrors env.ts); co-excludes the killed logger?. line-mate
     options.logger?.setLevel(next.config.logging?.level ?? CONFIG_DEFAULTS.logging.level);
     current = next;
     options.logger?.info('configuration reloaded', { outcome, applied, restartRequired });
