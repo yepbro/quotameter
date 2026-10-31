@@ -188,6 +188,22 @@ beyond 3660 local days, and non-IANA zones; `from === to` yields an empty
 timeline. Scoped coverage is 100% (the §17.3 peak-hours target), and the
 suite is green under `TZ` = UTC, America/New_York, Pacific/Kiritimati,
 and Asia/Kathmandu.
+
+Landed: [`history-gaps.ts`](./history-gaps.ts) — the §12.2 collection-gap
+detection (task 119, decision D-075): a pure seam mapping successful
+metric points (§8.4 identity: account, metric, collection time) plus the
+effective-interval source to `CollectionGap` records. A gap is an elapsed
+interval strictly greater than three effective polling intervals (the
+spec's "exceeds"), where the effective interval is the configured seconds
+plus §7.1's 10% jitter allowance (`effectivePollingIntervalMs`, sourced
+from the scheduler's single `POLLING_JITTER_FRACTION` constant); a pair's
+cadence is the earlier point's interval, widened to the span's most
+permissive interval when a change lands between the two points, so a
+legitimate D-066 re-anchor grow never false-flags as a gap. Successful
+points only — edges exist only between observed points — grouped by
+account and metric with deterministic output order and fail-fast
+validation against the scheduler's §7.1 bounds. No storage, no clock
+(D-021); task 120's timeline consumes the gaps as data.
 Landed: [`events-detection.ts`](./events-detection.ts) — the §12.1
 conservative quota-reset detection (task 117, decision D-074): a pure
 seam mapping consecutive valid points of one (account, metric) series to
