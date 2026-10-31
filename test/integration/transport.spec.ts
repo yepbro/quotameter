@@ -32,6 +32,21 @@ import { runCycleWithRetries } from '../../src/services/polling-retry';
 /** The marker-secret scenario value (§15.4, §17.1); must never survive. */
 const MARKER = 'qm-marker-secret-t104-integration';
 
+/**
+ * Short deadlines for the deadline-expiry cases, used only where the
+ * deadline itself is the subject (D-087): 60 ms against a 10×-delayed
+ * response for the headers case and the retry cycle's cut attempt, 120 ms
+ * for the slow-body read whose body completes 10× later. Each delay timer
+ * starts at request arrival — strictly after the deadline starts inside
+ * providerFetch (D-042) — so parallel load can only move the response
+ * further past the deadline, never before it. Every other case in this
+ * suite is a delivered-response assertion at a generous deadline — the
+ * 5 s house value, except the custom-cap boundary case, which passes no
+ * deadline and runs at the transport's 15 s default.
+ */
+const EXPIRY_TIMEOUT_MS = 60;
+const BODY_EXPIRY_TIMEOUT_MS = 120;
+
 /** A request whose credential surfaces (query + header) carry the marker. */
 function markerRequest(url: string): ProviderHttpRequest {
   return { url: `${url}?token=${MARKER}`, headers: { authorization: `Bearer ${MARKER}` } };
@@ -129,14 +144,21 @@ describe('providerFetch over real sockets', () => {
   });
 
   it('times out while awaiting response headers (spec §7.2 deadline)', async () => {
-    server.setBehavior({ kind: 'respond', status: 200, body: '{}', delayMs: 400 });
+    // The 10× arrival-anchored delay keeps the expiry deterministic under
+    // load (see EXPIRY_TIMEOUT_MS above, D-087).
+    server.setBehavior({
+      kind: 'respond',
+      status: 200,
+      body: '{}',
+      delayMs: 10 * EXPIRY_TIMEOUT_MS,
+    });
     const startedAt = Date.now();
-    const error = await providerFetch(markerRequest(`${server.url}/`), { timeoutMs: 60 }).catch(
-      (thrown: unknown) => thrown,
-    );
+    const error = await providerFetch(markerRequest(`${server.url}/`), {
+      timeoutMs: EXPIRY_TIMEOUT_MS,
+    }).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(TransportTimeoutError);
     expect((error as TransportTimeoutError).kind).toBe('timeout');
-    // The deadline really cut the 400 ms delay.
+    // The deadline really cut the 10× delay.
     expect(Date.now() - startedAt).toBeLessThan(350);
     expect(errorSurface(error)).not.toContain(MARKER);
   });
@@ -148,14 +170,16 @@ describe('providerFetch over real sockets', () => {
       res.write('{"chunked":');
       const interval = setInterval(() => res.write('1'), 60);
       res.on('close', () => clearInterval(interval));
+      // The body completes 10× after arrival — strictly after the deadline
+      // starts — so load can only move completion further past it (D-087).
       setTimeout(() => {
         clearInterval(interval);
         res.end('}');
-      }, 800);
+      }, 10 * BODY_EXPIRY_TIMEOUT_MS);
     });
     try {
       const error = await providerFetch(markerRequest(`${trickle.url}/`), {
-        timeoutMs: 120,
+        timeoutMs: BODY_EXPIRY_TIMEOUT_MS,
       }).catch((thrown: unknown) => thrown);
       expect(error).toBeInstanceOf(TransportTimeoutError);
       expect(errorSurface(error)).not.toContain(MARKER);
@@ -499,11 +523,18 @@ describe('runCycleWithRetries over real sockets (spec §7.2, task 106)', () => {
 
   it('retries a real request timeout: the deadline cuts, the cycle recovers', async () => {
     // Interaction with the transport's per-attempt §7.2 timeout (D-042):
-    // attempt 1 burns its own 60 ms deadline against a 400 ms response and
-    // rejects TransportTimeoutError — retryable — and attempt 2 succeeds.
-    retryServer.setBehavior({ kind: 'respond', status: 200, body: '{}', delayMs: 400 });
+    // attempt 1 burns its own 60 ms deadline against the 10×-delayed
+    // response and rejects TransportTimeoutError — retryable — and
+    // attempt 2 succeeds (the arrival-anchored 10× margin is D-087's
+    // load-uninvertible expiry shape; see EXPIRY_TIMEOUT_MS above).
+    retryServer.setBehavior({
+      kind: 'respond',
+      status: 200,
+      body: '{}',
+      delayMs: 10 * EXPIRY_TIMEOUT_MS,
+    });
     const result = await runCycleWithRetries(
-      () => providerFetch({ url: `${retryServer.url}/` }, { timeoutMs: 60 }),
+      () => providerFetch({ url: `${retryServer.url}/` }, { timeoutMs: EXPIRY_TIMEOUT_MS }),
       {
         random: () => 0,
         sleep: async () => {
