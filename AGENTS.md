@@ -31,7 +31,7 @@ Every change ships with updates to the markdown files it affects: task statuses,
 
 All commands go through `make` and run inside the worktree's container (no host Node.js needed):
 
-- `make check` — fast local gate (format, lint, types, tests).
+- `make check` — fast local gate (format, lint, type checks server + UI, tests).
 - `make check-all` — full CI parity; **run it before a push is requested** (plain `make test` does not enforce coverage thresholds; CI does).
 - Individual checks: `make test-unit`, `make lint`, `make typecheck`, …; `make help` lists everything.
 - Fresh checkout: `make image up` once; everything else auto-starts.

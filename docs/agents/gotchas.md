@@ -10,7 +10,7 @@ Lessons already paid for — do not repeat them.
 
 ## CI parity
 
-- CI runs `test:ci` (coverage + thresholds), `check:package`, and e2e on every push; mutation testing runs once a day in `.github/workflows/mutation.yml` (rolling `mutation-report` issue, DECISIONS.md D-045), not per push. A green local `make test` proves nothing about thresholds — `make check` runs the same `test:ci` coverage pass (global 90% plus the D-085 critical-module 100% keys), so a threshold failure is caught before committing; `make check-all` remains the pre-push gate (it mirrors the per-push CI exactly; run `make mutation` manually when you need Stryker locally).
+- CI runs `typecheck:all` (server `tsc` + `vue-tsc`), `test:ci` (coverage + thresholds), `check:package`, and e2e on every push; mutation testing runs once a day in `.github/workflows/mutation.yml` (rolling `mutation-report` issue, DECISIONS.md D-045), not per push. A green local `make test` proves nothing about thresholds — `make check` runs the same `test:ci` coverage pass (global 90% plus the D-085 critical-module 100% keys) — and both `make check` and `make check-all` run `typecheck-all`, the same `typecheck:all` command CI's `static` job runs, so a UI type error is caught before committing too (D-092; the standalone `make typecheck` remains the fast server-only loop); `make check-all` remains the pre-push gate (it mirrors the per-push CI exactly; run `make mutation` manually when you need Stryker locally).
 - Commit message conventions are checked by humans only, but the workflow files are linted with `actionlint` (docker: `rhysd/actionlint`) — run it after editing workflows.
 
 ## Tooling quirks

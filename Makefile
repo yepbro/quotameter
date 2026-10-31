@@ -55,12 +55,12 @@ exec: ## Run a one-off command, e.g. make exec CMD="node -v"
 #@ ─ Everyday checks ───────────────────────────────────────────────────
 
 .PHONY: check
-check: format-check lint typecheck test-ci ## Minimal gate: format, lint, types, tests (CI parity: coverage thresholds)
+check: format-check lint typecheck-all test-ci ## Minimal gate: format, lint, types (server + UI), tests (CI parity: coverage thresholds)
 
 .PHONY: check-all
 check-all: ## Full CI parity: every check CI runs, locally in the container
 	@set -e; \
-	$(MAKE) --no-print-directory format-check lint typecheck audit licenses; \
+	$(MAKE) --no-print-directory format-check lint typecheck-all audit licenses; \
 	$(RUN) npm run test:ci; \
 	$(MAKE) --no-print-directory build; \
 	$(RUN) npm run test:e2e; \
