@@ -471,7 +471,10 @@ export async function providerFetch(
   }
 
   const contentType = response.headers.get('content-type') ?? '';
-  const mediaType = contentType.split(';', 1)[0] ?? '';
+  // `split` never returns an empty array, so element 0 always exists; the
+  // non-null assertion states that invariant instead of an unreachable
+  // fallback a mutant could hide in.
+  const mediaType = contentType.split(';', 1)[0]!;
   if (mediaType.trim().toLowerCase() !== 'application/json') {
     await response.body?.cancel().catch(ignoreReleaseFailure);
     throw new TransportContentTypeError(scrub(contentType, secrets));

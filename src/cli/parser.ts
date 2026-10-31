@@ -103,7 +103,10 @@ export function parseCommandArgs(
   const flags = parsed.values as Record<string, boolean | string>;
   const positionals = [...parsed.positionals];
   if (positionals.length > maxPositionals) {
-    const extra = positionals[maxPositionals] ?? '';
+    // The length guard makes the indexed access total for the
+    // non-negative counts the dispatch table declares; no fallback
+    // exists to mutate or to hide an impossible `undefined`.
+    const extra = positionals[maxPositionals]!;
     throw new UsageError(commandPath, `unexpected argument '${extra}'`);
   }
   return { flags, positionals };

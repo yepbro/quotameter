@@ -162,6 +162,50 @@ describe('storage connection (§11.1 settings)', () => {
     });
   });
 
+  it('rethrows a close failure that is not the tolerated double-close', async () => {
+    await withTempDir(async (dir) => {
+      // A real database (the §11.1 settings must genuinely apply) whose
+      // `close()` fails the way an I/O error would at shutdown: the proxy
+      // keeps every other method, so only the failure under test is faked.
+      const ioerr = Object.assign(new Error('SQLITE_IOERR: disk I/O error'), {
+        code: 'SQLITE_IOERR',
+      });
+      const handle = new DatabaseSync(databaseFilePath(dir.path));
+      const sabotaged = new Proxy(handle, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          // Native methods demand the real instance as `this`; an unbound
+          // passthrough would fail with "Illegal invocation".
+          if (property === 'close') {
+            return () => {
+              throw ioerr;
+            };
+          }
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+
+      const connection = openStorageConnection({
+        dataDir: dir.path,
+        openDatabase: () => sabotaged,
+      });
+
+      try {
+        // Swallowing the failure would report a clean shutdown (D-020)
+        // over a database whose state is unknown: the original error —
+        // unwrapped — must reach the shutdown path.
+        const failure = captureFailure(() => connection.close());
+        expect(failure).toBe(ioerr);
+        // The state flipped before the underlying close; the spent
+        // connection stays idempotent even after the failed close.
+        expect(connection.isOpen).toBe(false);
+        expect(() => connection.close()).not.toThrow();
+      } finally {
+        handle.close();
+      }
+    });
+  });
+
   it('reports a missing parent directory loudly and creates nothing', async () => {
     await withTempDir(async (dir) => {
       const missing = join(dir.path, 'does-not-exist');

@@ -115,7 +115,15 @@ configured break threshold`. Thresholds live in
      reason when it does. Ignored mutants leave the score denominator
      (D-055) but stay visible as a count in the report.
 2. **`noCoverage` mutants** — no test executes the line at all; add the
-   missing test before anything finer-grained.
+   missing test before anything finer-grained. A file that _is_ executed
+   by a child-process suite still counts as no-coverage: per-test
+   analysis attributes nothing across the process boundary and mutants
+   are not activated in the child, so only in-process tests cover
+   mutants (learned in U-009, where `src/cli/output.ts` read 0% while
+   the launcher tests printed through it). A fallback that no test can
+   reach by construction (a guard makes the index total, a language
+   invariant makes the element exist) is dead code to remove, not a
+   test to write.
 3. **Job red (below break threshold)** — treat as a regression of the
    quality gate: triage the worst files first, land killing tests, and
    re-run the workflow manually (`gh workflow run mutation.yml`) to
