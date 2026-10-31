@@ -26,7 +26,10 @@ import { describe, expect, it } from 'vitest';
  * those are exactly the layers the gate denies; within the CLI, D-067
  * records the doctor `--raw` path as the sanctioned consumer. Widening the
  * allowlist is a successor decision, never a silent edit — the same
- * no-silent-widening rule the SQL gate records.
+ * no-silent-widening rule the SQL gate records. One such widening has
+ * landed: decision D-069 (task 110) sanctions `src/services/polling-
+ * persist.ts` — the write-side cycle composer that feeds D-060's
+ * parse-failure branch its §7.4 payload (see `isSanctioned`).
  *
  * The detector's subject is the **typed facade surface** — every camelCase
  * identifier the stored payloads travel through: the read methods
@@ -65,7 +68,16 @@ const RAW_RESPONSE_PATTERN = /(?<!sanitize)[Rr]awResponse|[Rr]awDiagnostics|raw-
 function isSanctioned(relativeFile: string): boolean {
   return (
     relativeFile.startsWith(`src${path.sep}storage${path.sep}`) ||
-    relativeFile.startsWith(`src${path.sep}cli${path.sep}`)
+    relativeFile.startsWith(`src${path.sep}cli${path.sep}`) ||
+    // D-069 (task 110), the successor decision D-067 reserves this list
+    // for: the cycle recorder is the write-side composer of D-060's
+    // parse-failure branch — the one services file that hands the §7.4
+    // payload to `persistCollectionCycle`, which requires naming the
+    // classified-cycle field and its input type. It composes no read of
+    // the stored table; the exposure guarantee (reads confined to storage
+    // and `doctor --raw`) is unchanged, which is why this entry sanctions
+    // exactly one file, never the services layer.
+    relativeFile === path.join('src', 'services', 'polling-persist.ts')
   );
 }
 

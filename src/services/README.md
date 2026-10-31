@@ -92,6 +92,30 @@ run writer (110) persists each probe cycle and the status derivation (111)
 consumes the `Auth rejected` contribution 105 already attaches. Time is an
 argument (D-021); the caller holds the (frozen) state object.
 
+Landed: [`polling-persist.ts`](./polling-persist.ts) — the run writer behind
+the scheduler's settle seam (task 110, decision D-069):
+`createCycleRecorder({ account, provider, repository, clock, intervalSeconds })`
+produces one account's D-066 closure pair: `attempt(signal)` stamps the
+cycle's wall-clock start (§7.1's actual collection timestamps) and makes the
+raw `fetchSnapshot` call D-059's wrapper needs unwrapped;
+`settleCycle(result)` classifies the retried cycle with task 105, persists it
+through `persistCollectionCycle` (D-060's §11.1 transaction — one
+`collection_runs` row per cycle, the snapshot with its metric rows only for a
+successful one, the §7.4 sanitized payload beside a parse-error run), and
+returns the classification the engine gates on. A provider-level success
+whose value fails §8.4 validation (the seam's input is `unknown`) becomes a
+`parse_error` run without a snapshot; a caller abort classifies `'cancelled'`
+and is deliberately unpersisted (service lifecycle — §12.2's no-record
+class); an error outside both taxonomies throws, contained per §7.2. The
+adapter parse failure is recognized structurally (`reason`/
+`sanitizedPayload`/`httpStatus` — the layout forbids importing the adapter
+island), `retry_after_seconds` is `deferNextPoll`'s decision at the settle
+reading (D-062: seconds only for a deferred 429, `NULL` otherwise),
+`intervalSeconds` is read at settle (§11.2's "interval in effect"), and §12.1
+reset-event detection (tasks 117/118) plugs into the success write's empty
+`events` array. The one-file widening of D-067's raw-payload gate for this
+write-side composer is recorded in D-069.
+
 Landed: [`polling-scheduler.ts`](./polling-scheduler.ts) — the §7.1 polling
 loop engine (task 109, decision D-066): `createPollingScheduler(options)`
 runs one dispatch loop over per-account state — each account's first poll
