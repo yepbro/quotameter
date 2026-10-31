@@ -92,6 +92,27 @@ run writer (110) persists each probe cycle and the status derivation (111)
 consumes the `Auth rejected` contribution 105 already attaches. Time is an
 argument (D-021); the caller holds the (frozen) state object.
 
+Landed: [`polling-status.ts`](./polling-status.ts) — the account status
+derivation (task 111, decision D-070): `deriveAccountStatus(input,
+nowEpochMs)` computes the primary displayed status of §7.3/§14.6 — the six
+ranked states (`Auth rejected`, `Format changed`, `Unreachable`, `Stale`,
+`Collecting`, `Fresh`) plus `Disabled` and `Not configured` as separate
+states — from the evidence the pipeline already produces: 105's
+`STATUS_CONTRIBUTION_BY_OUTCOME` for the failure ranks (a 429 or success
+contributes nothing and falls through to the age states), the D-064
+suspension state for rank 1 (an inconclusive probe while suspended keeps
+`Auth rejected`; a latest `auth_error` run covers the restart/release
+window for one cycle), and the age of the latest success — or of the first
+attempt when none exists — against three configured intervals. The
+configuration inputs are caller-resolved booleans: `enabled`
+(config §6.2) and `configured` (a usable secret: `apiKey` set or a set
+`apiKeyEnv` variable). `readPollingRunEvidence(repository, accountId)` is
+the storage seam — the three D-058 lookups designed for this consumer
+(latest cycle, latest snapshot's §8.4 stamp as the last success, oldest
+run as the no-success `Stale` anchor) frozen into one evidence object.
+Time is an argument (D-021); the §13 `/api/status` route, §5.2's
+`quotameter status`, and §14.3's overview are the consumers.
+
 Landed: [`polling-persist.ts`](./polling-persist.ts) — the run writer behind
 the scheduler's settle seam (task 110, decision D-069):
 `createCycleRecorder({ account, provider, repository, clock, intervalSeconds })`
