@@ -169,3 +169,22 @@ in-flight tracker (D-020) for the server's graceful drain; a wiring-level
 loop failure is retained and observable (`running` turns false, `stop()`
 re-surfaces the error), and every wake is sliced to `MAX_WAKE_MS` (one
 hour) so a wall-regressed gate wait can never busy-spin.
+
+Landed: [`peak-hours-intervals.ts`](./peak-hours-intervals.ts) — the §9.3
+peak-hours interval calculation (task 114, decision D-073): a validated
+`PeakHoursConfig` (§9.2 contract, never re-validated) plus a half-open
+`[from, to)` epoch range map to a `PeakHoursTimeline` that partitions the
+range — peak intervals with exact UTC epoch-ms boundaries, `windowId`,
+`name`, `multiplier`, and both boundaries as `yyyy-MM-ddTHH:mm` local
+times in the schedule zone, plus the off-peak complement carrying
+`offPeakMultiplier`. The walk runs on the zone's local calendar days
+(anchored and count-bounded, one guard day early for `24:00` windows), and
+every wall-clock→instant conversion goes through the injectable
+`LocalInstantResolver` seam — the single §9.3 DST-policy siting point
+task 115 pins — whose default delegates to Luxon. D-021 discipline
+throughout: the `resolveTimeZone` gate, the `zonedDateTime` bridge, no
+machine zone or clock. Fail-fast on non-finite or inverted ranges, spans
+beyond 3660 local days, and non-IANA zones; `from === to` yields an empty
+timeline. Scoped coverage is 100% (the §17.3 peak-hours target), and the
+suite is green under `TZ` = UTC, America/New_York, Pacific/Kiritimati,
+and Asia/Kathmandu.
