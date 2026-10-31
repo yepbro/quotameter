@@ -218,7 +218,26 @@ fires, suffixed `rolling_window_conservative`. Event time is the
 previous `resetsAt` when it lies strictly between the two snapshots,
 else the new `collectedAt`. The output is structurally
 `CycleEventInput` (the D-046 evidence vocabulary, reason in
-`details.reason`), so the cycle-persistence seam (task 110, wiring in
-task 118) consumes it with zero conversion; `detectSeriesResetEvents`
+`details.reason`), so the cycle-persistence seam (task 110, wired by task
+118's [`events-cycle.ts`](./events-cycle.ts)) consumes it with zero
+conversion; `detectSeriesResetEvents`
 folds a flat interleaved list by account and metric, skipping invalid
 points entirely.
+
+Landed: [`events-cycle.ts`](./events-cycle.ts) — the §12.1
+storage-reading half of reset persistence (task 118, decision D-078):
+`detectCycleResetEvents(repository, accountId, snapshot)` builds task
+117's point inputs from a new snapshot's valid metrics, reads each
+series' previous point as the last valid stored row through
+`getMetricSeries` (walked back past trailing invalid rows), and runs the
+pure detector pairwise — exactly one comparison per metric per cycle, so
+detection is idempotent and never re-folds persisted history.
+`createCycleRecorder`'s success branch carries exactly the detector's
+output as the cycle's `events` through the §11.1 transaction (D-060);
+the read happens strictly before the transaction opens — a snapshot's
+own points can never be its comparison base — and failed or aborted
+cycles never reach detection at all. Events are produced going forward
+only; there is deliberately no backfill over pre-existing history
+(D-078). Flagged follow-up (recorded in D-078's consequences): the
+per-cycle read materializes the full retained series per metric until
+the repository gains a latest-valid-point read.

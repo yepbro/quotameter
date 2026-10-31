@@ -17,6 +17,7 @@ import { createCycleRecorder, type CycleRecorder } from '../../src/services/poll
 import type { CycleOutcome } from '../../src/services/polling-outcomes';
 import { runCycleWithRetries } from '../../src/services/polling-retry';
 import type {
+  MetricValueRecord,
   NewCollectionRun,
   NewMetricValue,
   NewQuotaEvent,
@@ -51,25 +52,38 @@ interface RecordingRepository {
   readonly metrics: NewMetricValue[];
   readonly events: NewQuotaEvent[];
   readonly raws: NewRawResponse[];
+  /**
+   * The seam's call order: `read:<account>/<metric>` series reads against
+   * `tx` transaction entries — the pin that §12.1 detection reads the
+   * stored series strictly before the cycle write opens its transaction
+   * (D-078 pin 3).
+   */
+  readonly order: string[];
   readonly repository: QuotaRepository;
 }
 
 /**
  * A recording stand-in for the facade: the write methods
  * `persistCollectionCycle` calls (plus the two the §7.4 cap composes) record
- * their rows and return plausible identities; `withTransaction` runs the
- * callback immediately. The read surface the recorder never touches is
- * intentionally absent — the cast documents the partiality.
+ * their rows and return plausible identities; `getMetricSeries` serves the
+ * stored series `detectCycleResetEvents` reads (§12.1, task 118) in the
+ * facade's `collected_at`/`run_id`-ascending order, recording each lookup;
+ * `withTransaction` logs its entry and runs the callback immediately. The
+ * rest of the read surface the recorder never touches is intentionally
+ * absent — the cast documents the partiality.
  */
-function recordingRepository(): RecordingRepository {
+function recordingRepository(series: ReadonlyArray<MetricValueRecord> = []): RecordingRepository {
   const runs: NewCollectionRun[] = [];
   const snapshots: NewSnapshot[] = [];
   const metrics: NewMetricValue[] = [];
   const events: NewQuotaEvent[] = [];
   const raws: NewRawResponse[] = [];
+  const order: string[] = [];
   const repository = {
-    withTransaction: <T>(work: (repo: QuotaRepository) => T): T =>
-      work(repository as QuotaRepository),
+    withTransaction: <T>(work: (repo: QuotaRepository) => T): T => {
+      order.push('tx');
+      return work(repository as QuotaRepository);
+    },
     insertCollectionRun: (run: NewCollectionRun): number => {
       runs.push(run);
       return runs.length;
@@ -88,8 +102,37 @@ function recordingRepository(): RecordingRepository {
     },
     listRawResponses: (): NewRawResponse[] => [],
     deleteRawResponsesByRunIds: (): number => 0,
+    getMetricSeries: (accountId: string, metricKey: string): MetricValueRecord[] => {
+      order.push(`read:${accountId}/${metricKey}`);
+      return series
+        .filter((row) => row.accountId === accountId && row.metricKey === metricKey)
+        .sort((a, b) => a.collectedAt - b.collectedAt || a.runId - b.runId);
+    },
   } as unknown as QuotaRepository;
-  return { runs, snapshots, metrics, events, raws, repository };
+  return { runs, snapshots, metrics, events, raws, order, repository };
+}
+
+/** A stored `metric_values` row of the default series (§11.2 shape). */
+function storedMetricRow(overrides: Partial<MetricValueRecord> = {}): MetricValueRecord {
+  return {
+    accountId: 'work',
+    runId: 7,
+    collectedAt: T0,
+    metricKey: 'five-hour-credits',
+    limitType: 'ROLLING_WINDOW',
+    unit: 'CREDITS',
+    windowSeconds: 18_000,
+    used: 90,
+    remaining: 10,
+    limit: 100,
+    percentUsed: 90,
+    percentRemaining: 10,
+    resetsAt: null,
+    isValid: true,
+    invalidReason: null,
+    derivedFields: null,
+    ...overrides,
+  };
 }
 
 /** A §8.1 provider whose `fetchSnapshot` runs `collect`. */
@@ -146,13 +189,14 @@ interface RecorderHarness {
 /**
  * One recorder wired for a provider whose collection behaves as `collect`
  * (resolving a snapshot or throwing), driven through the production wrapper
- * with the backoff stubbed — the delay bounds are task 106's own pin.
+ * with the backoff stubbed — the delay bounds are task 106's own pin. The
+ * optional stored `series` seeds what §12.1 detection reads back.
  */
 function harness(
   collect: QuotaProvider['fetchSnapshot'],
-  overrides: { intervalSeconds?: () => number } = {},
+  overrides: { intervalSeconds?: () => number; series?: ReadonlyArray<MetricValueRecord> } = {},
 ): RecorderHarness {
-  const repo = recordingRepository();
+  const repo = recordingRepository(overrides.series);
   const clock = createFixedClock(T0);
   const recorder = createCycleRecorder({
     account: accountContext(),
@@ -280,6 +324,72 @@ describe('a successful cycle', () => {
     recorder.settleCycle({ ok: true, value: snapshot(), attempts: 1 });
 
     expect(repo.runs[0]?.intervalSeconds).toBe(3600);
+  });
+
+  it('carries §12.1 detection into the success write against the stored series (118)', async () => {
+    // A stored previous point of the same series (fixed-period here): its
+    // usage drop is reset evidence, so the cycle's write must carry exactly
+    // the detector's event beside its snapshot.
+    const value = snapshot({
+      metrics: [
+        metric({
+          limitType: 'DAILY',
+          unit: 'REQUESTS',
+          used: 5,
+          remaining: 95,
+          percentUsed: 5,
+          percentRemaining: 95,
+          resetsAt: undefined,
+        }),
+      ],
+    });
+    const { repo, runCycle } = harness(async () => value, {
+      series: [
+        storedMetricRow({
+          limitType: 'DAILY',
+          unit: 'REQUESTS',
+          used: 90,
+          remaining: 10,
+          percentUsed: 90,
+          percentRemaining: 10,
+        }),
+      ],
+    });
+
+    const outcome = await runCycle();
+
+    expect(outcome.outcome).toBe('success');
+    // D-078 pin 3: the series read precedes the write's transaction.
+    expect(repo.order).toEqual(['read:work/five-hour-credits', 'tx']);
+    expect(repo.events).toEqual([
+      {
+        accountId: 'work',
+        runId: 1, // the writer injects the cycle's run identity
+        metricKey: 'five-hour-credits',
+        eventType: 'RESET',
+        eventAt: value.collectedAt, // no declaration lay between: §12.1's other branch
+        details: {
+          reason: 'usage_decreased+remaining_increased',
+          previous: {
+            runId: 7, // the stored comparison base's own run
+            collectedAt: T0,
+            used: 90,
+            remaining: 10,
+            percentUsed: 90,
+            percentRemaining: 10,
+          },
+          current: {
+            collectedAt: value.collectedAt,
+            used: 5,
+            remaining: 95,
+            percentUsed: 5,
+            percentRemaining: 95,
+          },
+          tolerance: { absolute: 0, percent: 1 },
+          eventTimeSource: 'current_collected_at',
+        },
+      },
+    ]);
   });
 });
 

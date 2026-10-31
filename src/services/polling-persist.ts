@@ -71,10 +71,17 @@
  * - **`intervalSeconds` is read at settle** — §11.2's "interval in effect" at
  *   the cycle, not at recorder construction; the composition root wires the
  *   closure to the live configuration.
- * - **`events` arrives empty for now.** §12.1 reset detection (tasks 117/118)
- *   produces its events as data before D-060's writer is called; this
- *   recorder is where that detector will plug in, so the success write
- *   already carries the (empty) array through the same transaction.
+ * - **`events` is §12.1 detection against the stored series (task 118,
+ *   D-078).** The success write carries exactly `detectCycleResetEvents`'
+ *   output — task 117's pure detector (D-074) run pairwise, each valid
+ *   metric of the new snapshot against the last valid point of its stored
+ *   (account, metric) series, read before this write so only prior cycles
+ *   can form the base. Detection runs on the success branch only: a failed
+ *   cycle has no snapshot (and the D-046 composite foreign key makes an
+ *   event-without-its-snapshot row unrepresentable), a cancelled cycle
+ *   persists nothing, and no re-fold over already-persisted history ever
+ *   runs — the events of a cycle are a function of its own snapshot and
+ *   the stored tail alone.
  */
 
 import type { AccountContext, QuotaProvider } from '../providers/registry';
@@ -92,6 +99,7 @@ import {
   type CycleRawResponseInput,
 } from '../storage/collection-cycles';
 import type { Clock } from '../util/clock';
+import { detectCycleResetEvents } from './events-cycle';
 import {
   classifyParseFailure,
   classifySuccess,
@@ -364,6 +372,11 @@ export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorde
         // Sound: the problem finder has verified every §8.4 field of value.
         const snapshot = result.value as ProviderSnapshot;
         const classified = classifySuccess();
+        // §12.1 detection runs before the write opens its transaction — an
+        // explicit reading, not object-literal evaluation order (D-078 pin
+        // 3): the series read must see only prior cycles' points, so the
+        // new snapshot's own rows can never form their own comparison base.
+        const events = detectCycleResetEvents(repository, account.accountId, snapshot);
         persistCollectionCycle(repository, {
           ...evidence,
           httpStatus: classified.httpStatus,
@@ -372,9 +385,7 @@ export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorde
             collectedAt: snapshot.collectedAt,
             planName: snapshot.planName,
             metrics: snapshot.metrics.map(toMetricInput),
-            // §12.1 detection (117/118) plugs in here; until then a
-            // successful cycle carries its snapshot with no events.
-            events: [],
+            events,
           },
         });
         return classified;
