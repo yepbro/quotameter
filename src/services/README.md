@@ -250,8 +250,10 @@ Landed: [`events-cycle.ts`](./events-cycle.ts) — the §12.1
 storage-reading half of reset persistence (task 118, decision D-078):
 `detectCycleResetEvents(repository, accountId, snapshot)` builds task
 117's point inputs from a new snapshot's valid metrics, reads each
-series' previous point as the last valid stored row through
-`getMetricSeries` (walked back past trailing invalid rows), and runs the
+metric's previous point as its newest valid stored row through
+`getLatestValidMetricValues` (U-011, decision D-083 — trailing invalid
+rows skipped in SQL; one account-level read per cycle, performed only
+when a valid metric needs a base), and runs the
 pure detector pairwise — exactly one comparison per metric per cycle, so
 detection is idempotent and never re-folds persisted history.
 `createCycleRecorder`'s success branch carries exactly the detector's
@@ -260,9 +262,12 @@ the read happens strictly before the transaction opens — a snapshot's
 own points can never be its comparison base — and failed or aborted
 cycles never reach detection at all. Events are produced going forward
 only; there is deliberately no backfill over pre-existing history
-(D-078). Flagged follow-up (recorded in D-078's consequences): the
-per-cycle read materializes the full retained series per metric until
-the repository gains a latest-valid-point read.
+(D-078). D-078's flagged follow-up — the per-cycle read materializing
+the full retained series per metric — is closed by the U-011 read swap:
+the latest-valid-point read resolves to exactly the row the old
+full-series walk-back selected (the valid row maximizing
+`(collected_at, run_id)`), so the swap is a pure cost change with no
+observable behavior difference (D-083).
 
 Landed: [`history-timeline.ts`](./history-timeline.ts) — the §12.2
 collection-error and downtime timeline (task 120, decision D-080):

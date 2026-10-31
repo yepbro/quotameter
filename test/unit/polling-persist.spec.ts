@@ -53,7 +53,7 @@ interface RecordingRepository {
   readonly events: NewQuotaEvent[];
   readonly raws: NewRawResponse[];
   /**
-   * The seam's call order: `read:<account>/<metric>` series reads against
+   * The seam's call order: `read:<account>` latest-valid reads against
    * `tx` transaction entries — the pin that §12.1 detection reads the
    * stored series strictly before the cycle write opens its transaction
    * (D-078 pin 3).
@@ -65,12 +65,12 @@ interface RecordingRepository {
 /**
  * A recording stand-in for the facade: the write methods
  * `persistCollectionCycle` calls (plus the two the §7.4 cap composes) record
- * their rows and return plausible identities; `getMetricSeries` serves the
- * stored series `detectCycleResetEvents` reads (§12.1, task 118) in the
- * facade's `collected_at`/`run_id`-ascending order, recording each lookup;
- * `withTransaction` logs its entry and runs the callback immediately. The
- * rest of the read surface the recorder never touches is intentionally
- * absent — the cast documents the partiality.
+ * their rows and return plausible identities; `getLatestValidMetricValues`
+ * serves the stored points `detectCycleResetEvents` reads (§12.1, task 118,
+ * read swap D-083) in the facade's per-key newest-valid contract, recording
+ * each account-level lookup; `withTransaction` logs its entry and runs the
+ * callback immediately. The rest of the read surface the recorder never
+ * touches is intentionally absent — the cast documents the partiality.
  */
 function recordingRepository(series: ReadonlyArray<MetricValueRecord> = []): RecordingRepository {
   const runs: NewCollectionRun[] = [];
@@ -102,11 +102,25 @@ function recordingRepository(series: ReadonlyArray<MetricValueRecord> = []): Rec
     },
     listRawResponses: (): NewRawResponse[] => [],
     deleteRawResponsesByRunIds: (): number => 0,
-    getMetricSeries: (accountId: string, metricKey: string): MetricValueRecord[] => {
-      order.push(`read:${accountId}/${metricKey}`);
-      return series
-        .filter((row) => row.accountId === accountId && row.metricKey === metricKey)
-        .sort((a, b) => a.collectedAt - b.collectedAt || a.runId - b.runId);
+    // The facade's contract (D-077): per metric key, the account's valid
+    // row with the greatest (collectedAt, runId), metric_key-ascending.
+    getLatestValidMetricValues: (accountId: string): MetricValueRecord[] => {
+      order.push(`read:${accountId}`);
+      const newest = new Map<string, MetricValueRecord>();
+      for (const row of series) {
+        if (row.accountId !== accountId || !row.isValid) continue;
+        const held = newest.get(row.metricKey);
+        if (
+          held === undefined ||
+          row.collectedAt > held.collectedAt ||
+          (row.collectedAt === held.collectedAt && row.runId > held.runId)
+        ) {
+          newest.set(row.metricKey, row);
+        }
+      }
+      return [...newest.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([, row]) => row);
     },
   } as unknown as QuotaRepository;
   return { runs, snapshots, metrics, events, raws, order, repository };
@@ -359,8 +373,8 @@ describe('a successful cycle', () => {
     const outcome = await runCycle();
 
     expect(outcome.outcome).toBe('success');
-    // D-078 pin 3: the series read precedes the write's transaction.
-    expect(repo.order).toEqual(['read:work/five-hour-credits', 'tx']);
+    // D-078 pin 3: the latest-valid read precedes the write's transaction.
+    expect(repo.order).toEqual(['read:work', 'tx']);
     expect(repo.events).toEqual([
       {
         accountId: 'work',
