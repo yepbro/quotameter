@@ -5,9 +5,10 @@ pragmas (079), forward-only migrations with backups (078, 080–092),
 `QuotaRepository` — the typed facade the application consumes (088) — the
 atomic collection-cycle write composed over it (089), the §8.2 account
 archive/purge lifecycle operations (090), the §11.3 retention cleanup
-with its WAL-checkpoint maintenance primitive (091), and the §7.4
-raw-payload per-account cap (103). Rows are mapped to typed
-domain records from `src/schemas/` before leaving this layer.
+with its WAL-checkpoint maintenance primitive (091), the §7.4
+raw-payload per-account cap (103), and the retention-aware history
+queries (123). Rows are mapped to typed domain records from
+`src/schemas/` before leaving this layer.
 
 **Rule:** may import only `src/schemas/` and `src/util/`. No SQL is issued
 anywhere else; `QuotaRepository` satisfies the §8.1 "core services" list as
@@ -907,6 +908,71 @@ same-instant `run_id` tiebreak and an out-of-order arrival older than
 everything retained evict by the pinned order; and the standalone pass
 repairs a facade-seeded overshoot and rejects a blank account id before
 touching any row.
+
+## `history-retention.ts` — the retention-aware history queries (task 123, spec §11.3, §13, decision D-082)
+
+The query-side twin of `retention-cleanup.ts` (D-063 deletes what retention
+expires; this module bounds what history reads serve): §13's "reject or
+explicitly truncate requested ranges beyond retention and state that in the
+response" as one seam over the facade — the D-060/D-061/D-063/D-067 sibling
+pattern's fifth application, no facade methods touched (the raw reads stay
+unclamped, pinned by test) and no new SQL (the wrappers delegate to
+`getMetricSeries` / `listQuotaEvents` / `listCollectionRuns`, their index
+service already query-plan-proven).
+
+- **`boundHistoryRange(requested, window) → RetentionBoundedRange`** — the
+  pure clamp and report. `window = { now, retentionDays }` is caller-supplied
+  (D-021: the API layer derives it from the injectable clock and the loaded
+  `app.historyRetentionDays`; storage stays config-agnostic) and validated
+  before anything is read: §11.3's integer 7–3650 (D-063's exported
+  constants), finite `now`/`from`/`to`, and `from ≤ to` (an inverted range is
+  bad input, not a retention outcome). The horizon is D-063's `historyCutoff`
+  arithmetic exactly, and the outcome union carries what its §13 response
+  states: **`ok`** (`from ≥ horizon`) — the effective bounds are the requested
+  bounds; **`truncated`** (`from < horizon ≤ to`) — effective
+  `[horizon, to]` with `requestedFrom` naming the cut (`effectiveFrom` **is**
+  the horizon); **`rejected`** (`to < horizon`) — nothing queryable, the
+  horizon and the requested bounds reported. Frozen, like D-068's bounds.
+- **The wrappers** — `getMetricSeriesWithRetention(repository, accountId,
+metricKey, requested, window)`, `listQuotaEventsWithRetention(…, metricKey?)`,
+  `listCollectionRunsWithRetention(…, outcome?)` — return
+  `RetentionAwareRead<T> { range, rows }` (frozen, like the range): the
+  report beside the rows the effective bounds serve (empty on rejection;
+  the facade filters pass through). Only the lower bound clamps — `to`
+  passes through untouched (retention bounds old data; §10's rolling ranges
+  legitimately end at `now`). The wrappers carry exactly the filters §13's
+  range-bearing endpoints name (metric key, run outcome); a consumer
+  needing a filter they do not carry (e.g. the runs `limit`) composes
+  `boundHistoryRange` with the raw facade read — the exported clamp is the
+  seam, the wrappers the convenience.
+- **Closed intervals, aligned with the deletes** — the landed reads'
+  `>= from AND … <= to` convention (D-068), not D-073's half-open peak-hours
+  timeline. D-063's deletes are strict-before, so `[horizon, ∞)` is exactly
+  what cleanup leaves: after a cleanup with the same window, nothing the
+  clamp served is deleted and nothing it hid survives (pinned by test, down
+  to a row at exactly the horizon). Each read bounds its own time column
+  (series `collected_at`, events `event_at`, runs `started_at`); the one
+  divergent shape — a run started before the horizon whose snapshot
+  collected at or after it — is served until the cleanup deletes its run, a
+  divergence bounded by one run's duration (pinned by test; the alternative
+  is the series-to-runs join the D-039 denormalization exists to avoid).
+- **Enforcement is independent of cleanup timing** — rows older than the
+  horizon are never served through this seam even while still stored between
+  daily cleanups: out-of-policy data is not queryable, merely not yet
+  deleted.
+- **Consumers** — the Stage 12 history services and §13 routes call the
+  wrappers as their storage seam and turn the outcome into the response's
+  truncation/rejection statement (the seam keeps the spec's reject-or-truncate
+  choice open by returning it as data); `boundHistoryRange` alone also serves
+  range-only consumers such as §14.4's disable-ranges-exceeding-retention
+  rule. Reads outside §13's range vocabulary (`getLatestSnapshot`,
+  `getLatestValidMetricValues`) are not ranges and stay unwrapped.
+
+`test/integration/history-retention.spec.ts` pins the done-condition
+("callers can identify the effective history range") on both halves of every
+read — the report and the rows — plus every boundary of the horizon
+arithmetic, the validation table, per-account isolation, the pass-through
+filters, the unclamped facade, and the D-063 alignment.
 
 ## `backups.ts` — the automatic `VACUUM INTO` backup primitive (task 092, spec §5.6, §11.4, decision D-065)
 
