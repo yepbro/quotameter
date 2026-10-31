@@ -77,9 +77,16 @@
  * current-state reads keep their sources), no configuration (files, not
  * database rows), no connection setting (task 079's pragmas), and no
  * `meta` key except its own two markers.
+ *
+ * Since U-014 (decision D-091) the horizon arithmetic this module's cutoff
+ * and D-082's `boundHistoryRange` share is single-sited here as the
+ * exported `historyCutoff` — the query-side twin consumes the definition
+ * instead of re-deriving the day arithmetic, so the two-sided alignment is
+ * by construction.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import { DAY_MS } from '../util/rolling-ranges';
 import { runStorageMaintenance, type StorageMaintenanceResult } from './maintenance';
 import type { QuotaRepository } from './repository';
 
@@ -90,8 +97,21 @@ export const MAX_RETENTION_DAYS = 3650;
 /** §7.4's raw-payload age window in days — fixed policy, not configuration. */
 export const RAW_RESPONSE_MAX_AGE_DAYS = 30;
 
-/** §11.1 epoch milliseconds per day — the cutoff arithmetic's unit. */
-const MS_PER_DAY = 86_400_000;
+/**
+ * The §11.3 history horizon: the epoch-ms cutoff before which a retention
+ * window has expired history — `now − retentionDays` days (decision D-091:
+ * the single definition site of that arithmetic). This cleanup's
+ * strict-before deletes and D-082's query-side clamp both consume this one
+ * value, so their documented two-sided alignment — deletes take strictly
+ * earlier, reads serve at-or-after on the closed interval — holds by
+ * construction instead of by twin literals agreeing. Pure arithmetic on
+ * caller-supplied time (D-021): both consuming seams validate `now` and
+ * §11.3's 7–3650 window before calling, each with its own context-named
+ * error, so the helper adds no second error vocabulary.
+ */
+export function historyCutoff(now: number, retentionDays: number): number {
+  return now - retentionDays * DAY_MS;
+}
 
 /** Meta key holding the epoch-ms `now` of the last completed cleanup (§11.2 cleanup metadata). */
 export const RETENTION_LAST_RUN_KEY = 'retention:last-run';
@@ -171,8 +191,8 @@ export function runRetentionCleanup(
     );
   }
 
-  const historyCutoff = now - retentionDays * MS_PER_DAY;
-  const rawResponseCutoff = now - RAW_RESPONSE_MAX_AGE_DAYS * MS_PER_DAY;
+  const cutoff = historyCutoff(now, retentionDays);
+  const rawResponseCutoff = now - RAW_RESPONSE_MAX_AGE_DAYS * DAY_MS;
 
   // Deletes and markers are one transaction: a mid-cleanup failure rolls
   // everything back, so the last-run markers only ever describe a cleanup
@@ -181,8 +201,8 @@ export function runRetentionCleanup(
     // Runs first: their cascades remove the snapshot-linked events and
     // run-linked payloads of expired runs, so the event and raw counts
     // below describe only the rows the cutoffs expired on their own.
-    const collectionRuns = tx.deleteCollectionRunsBefore(historyCutoff);
-    const quotaEvents = tx.deleteQuotaEventsBefore(historyCutoff);
+    const collectionRuns = tx.deleteCollectionRunsBefore(cutoff);
+    const quotaEvents = tx.deleteQuotaEventsBefore(cutoff);
     const rawResponses = tx.deleteRawResponsesBefore(rawResponseCutoff);
     const sessions = tx.deleteSessionsExpiredBefore(now);
     tx.setMetaValue(RETENTION_LAST_RUN_KEY, String(now));
@@ -195,5 +215,5 @@ export function runRetentionCleanup(
   // next run's deletes are idempotent and the checkpoint retries then.
   const maintenance = runStorageMaintenance(options.database);
 
-  return { historyCutoff, rawResponseCutoff, removed, maintenance };
+  return { historyCutoff: cutoff, rawResponseCutoff, removed, maintenance };
 }

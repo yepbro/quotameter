@@ -17,7 +17,12 @@ import {
   type QuotaEventDetails,
   type QuotaRepository,
 } from '../../src/storage/repository';
-import { runRetentionCleanup } from '../../src/storage/retention-cleanup';
+import {
+  historyCutoff,
+  MAX_RETENTION_DAYS,
+  MIN_RETENTION_DAYS,
+  runRetentionCleanup,
+} from '../../src/storage/retention-cleanup';
 import { DAY_MS } from '../../src/util/rolling-ranges';
 import { withTempDir } from '../helpers/isolation';
 
@@ -570,6 +575,37 @@ describe('wrap-not-modify and the D-063 alignment (task 123, D-058, D-063, D-082
 
       runRetentionCleanup({ repository, database }, { now: NOW, retentionDays: RETENTION_DAYS });
       expect(repository.getMetricSeries('work', 'monthly-credits')).toEqual([]);
+    });
+  });
+
+  it('reports the horizon the shared D-063 definition computes, at both §11.3 bounds (D-091)', async () => {
+    await withHistoryRepository((repository) => {
+      // A request entirely older than each window's horizon — built from
+      // this spec's own DAY_MS arithmetic — so the rejected branch carries
+      // the horizon to compare against the exported helper. The pin: the
+      // reported horizon is the helper's value, never re-derived or
+      // adjusted inside the query seam. (The helper's own value oracle —
+      // against an independent day-ms literal — lives in
+      // retention-cleanup.spec.ts, beside the untouched D-063/D-082
+      // alignment suites.)
+      for (const retentionDays of [MIN_RETENTION_DAYS, RETENTION_DAYS, MAX_RETENTION_DAYS]) {
+        const to = NOW - retentionDays * DAY_MS - 1;
+        const from = to - DAY_MS;
+        const read = getMetricSeriesWithRetention(
+          repository,
+          'work',
+          'monthly-credits',
+          { from, to },
+          { now: NOW, retentionDays },
+        );
+        expect(read.range).toEqual({
+          outcome: 'rejected',
+          horizon: historyCutoff(NOW, retentionDays),
+          requestedFrom: from,
+          requestedTo: to,
+        });
+        expect(read.rows).toEqual([]);
+      }
     });
   });
 });

@@ -829,6 +829,19 @@ go), then at an earlier one (a harmless no-op).
   the storage boundary, not a replay of D-058's no-pre-validation rule (no
   schema CHECK can express a range about a query parameter); the config layer
   validates its own copy (`app.historyRetentionDays`).
+- **The horizon is one exported definition (U-014, decision D-091)** —
+  `historyCutoff(now, retentionDays)` is §11.3's cutoff arithmetic
+  (`now − retentionDays` days over `util`'s `DAY_MS`) as the single
+  definition site: this cleanup's delete cutoffs and D-082's
+  `boundHistoryRange` horizon both consume it, so the two-sided alignment
+  the alignment tests pin (strict-before deletes, closed-interval reads)
+  holds by construction instead of by twin literals agreeing. Pure
+  arithmetic on caller-supplied time (D-021); the consuming seams keep
+  their own test-pinned validation, so the helper adds no second error
+  vocabulary. The module's private day-ms constant is gone — `DAY_MS` is
+  the unit end-to-end, leaving no day-ms literal in the retention path
+  (`migrations.ts`'s two session constants are §15.2 policy, a different
+  single-sited family).
 - **The run is the retention unit** — snapshots and metric rows have no
   separate cutoff calls: a snapshot cannot outlive its run, and the report's
   run count covers the cascade (no O(history) counting reads at §11.3's
@@ -926,8 +939,9 @@ service already query-plan-proven).
   `app.historyRetentionDays`; storage stays config-agnostic) and validated
   before anything is read: §11.3's integer 7–3650 (D-063's exported
   constants), finite `now`/`from`/`to`, and `from ≤ to` (an inverted range is
-  bad input, not a retention outcome). The horizon is D-063's `historyCutoff`
-  arithmetic exactly, and the outcome union carries what its §13 response
+  bad input, not a retention outcome). The horizon **is** D-063's exported
+  `historyCutoff` — consumed, not re-derived (D-091's single definition
+  site) — and the outcome union carries what its §13 response
   states: **`ok`** (`from ≥ horizon`) — the effective bounds are the requested
   bounds; **`truncated`** (`from < horizon ≤ to`) — effective
   `[horizon, to]` with `requestedFrom` naming the cut (`effectiveFrom` **is**

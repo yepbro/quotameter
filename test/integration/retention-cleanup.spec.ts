@@ -12,6 +12,7 @@ import {
 } from '../../src/storage/collection-cycles';
 import { createMigrationRunner, MIGRATIONS } from '../../src/storage/migrations';
 import {
+  historyCutoff,
   MAX_RETENTION_DAYS,
   MIN_RETENTION_DAYS,
   RAW_RESPONSE_MAX_AGE_DAYS,
@@ -729,6 +730,47 @@ describe('retention cleanup — deletes and markers are one transaction (task 09
         sessions: 1,
       });
       expect(repository.getMetaValue(RETENTION_LAST_RUN_KEY)).toBe(String(NOW));
+    });
+  });
+});
+
+/* ── The exported horizon: one definition both sides consume (U-014) ──── */
+
+describe('historyCutoff — the single §11.3 horizon definition (task U-014, decision D-091)', () => {
+  it('is now minus retentionDays days, at the window bounds themselves', () => {
+    // This spec's own MS_PER_DAY literal is an oracle independent of the
+    // shared definition, so a corrupted DAY_MS or helper cannot pass
+    // unnoticed — the test-side twin of D-091's single-siting.
+    for (const retentionDays of [MIN_RETENTION_DAYS, 30, 180, MAX_RETENTION_DAYS]) {
+      expect(historyCutoff(NOW, retentionDays)).toBe(NOW - retentionDays * MS_PER_DAY);
+    }
+  });
+
+  it('drives the cleanup: the report cutoff is its value and the delete boundary is exactly there', async () => {
+    await withCleanup((repository, database) => {
+      repository.insertAccount(account());
+      const retentionDays = 30;
+      const cutoff = historyCutoff(NOW, retentionDays);
+      // One run 1 ms before the helper's cutoff and one exactly at it: the
+      // deletes are strict-before, so the boundary row survives — the same
+      // day-boundary semantics the D-063/D-082 alignment tests prove.
+      const expiredRunId = persistCollectionCycle(
+        repository,
+        successCycle({ startedAt: cutoff - 1 }),
+      );
+      const boundaryRunId = persistCollectionCycle(repository, successCycle({ startedAt: cutoff }));
+
+      const report = cleanup(repository, database, { now: NOW, retentionDays });
+
+      expect(report.historyCutoff).toBe(cutoff);
+      expect(report.removed).toEqual({
+        collectionRuns: 1,
+        quotaEvents: 0,
+        rawResponses: 0,
+        sessions: 0,
+      });
+      expect(repository.getCollectionRun(expiredRunId)).toBe(null);
+      expect(repository.getCollectionRun(boundaryRunId)).not.toBe(null);
     });
   });
 });

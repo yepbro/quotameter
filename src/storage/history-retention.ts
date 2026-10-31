@@ -44,8 +44,9 @@
  * - **The bounds share the landed reads' closed-interval convention**
  *   (`collected_at >= from AND … <= to`, D-068) — not the half-open
  *   intervals of D-073's peak-hours timeline, a different surface. The
- *   horizon arithmetic is identical to D-063's `historyCutoff`
- *   (`now − retentionDays` days), and the deletes there are strict-before,
+ *   horizon **is** D-063's exported `historyCutoff` — consumed, not
+ *   re-derived, the single definition site D-091 records — and the deletes
+ *   there are strict-before,
  *   so `[horizon, ∞)` is exactly the set of timestamps cleanup leaves —
  *   the effective range returns precisely what retention retains within
  *   the request, down to a row collected exactly at the horizon. Each read
@@ -62,7 +63,6 @@
  *   queryable through history reads, it is merely not yet deleted.
  */
 
-import { DAY_MS } from '../util/rolling-ranges';
 import type {
   CollectionRunRecord,
   MetricValueRecord,
@@ -70,7 +70,7 @@ import type {
   QuotaRepository,
   RunOutcome,
 } from './repository';
-import { MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from './retention-cleanup';
+import { historyCutoff, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from './retention-cleanup';
 
 /* ── Inputs ────────────────────────────────────────────────────────────── */
 
@@ -185,9 +185,9 @@ export function boundHistoryRange(
     );
   }
 
-  // D-063's historyCutoff arithmetic, exactly: the deletes are strict-before,
-  // so every timestamp >= horizon survives cleanup and nothing below does.
-  const horizon = now - retentionDays * DAY_MS;
+  // D-063's own definition (D-091): the deletes are strict-before, so every
+  // timestamp >= horizon survives cleanup and nothing below does.
+  const horizon = historyCutoff(now, retentionDays);
 
   if (to < horizon) {
     return Object.freeze({
