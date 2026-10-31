@@ -5,21 +5,23 @@ import {
   effectivePollingIntervalMs,
   gapThresholdMs,
   type CollectionGap,
+  type IntervalChange,
   type SuccessfulMetricPoint,
 } from '../../src/services/history-gaps';
 import { POLLING_JITTER_FRACTION } from '../../src/services/polling-scheduler';
 
 /**
  * Property-based coverage of the §12.2 gap rule (task 119, decision D-075),
- * the standing complement to `history-gaps.spec.ts` (task 124 will extend
- * this suite): a cadence the §7.1 scheduler can actually produce — every
- * inter-poll delay inside the additive jitter bounds of `pollingDelayMs`
- * (D-066) — never yields a gap at any §7.1 interval; a single stretched
- * delta yields exactly one gap at exactly that pair; the threshold boundary
- * is exact at every §7.1 interval; and over arbitrary multi-series input
- * the detector agrees with a direct oracle (sort each series, flag adjacent
- * pairs whose delta strictly exceeds three jitter-expanded intervals)
- * regardless of input order.
+ * the standing complement to `history-gaps.spec.ts`: a cadence the §7.1
+ * scheduler can actually produce — every inter-poll delay inside the
+ * additive jitter bounds of `pollingDelayMs` (D-066) — never yields a gap
+ * at any §7.1 interval; a single stretched delta yields exactly one gap at
+ * exactly that pair; the threshold boundary is exact at every §7.1
+ * interval; and over arbitrary multi-series input the detector agrees with
+ * a direct oracle (sort each series, flag adjacent pairs whose delta
+ * strictly exceeds three jitter-expanded intervals) regardless of input
+ * order. Task 124 extended the suite with the interval-change-timeline
+ * oracle that exercises the D-075 span-widening judgment.
  */
 
 /** 2026-10-31T12:00:00Z — the base collection timestamp of every series. */
@@ -265,5 +267,127 @@ describe('arbitrary multi-series input agrees with the oracle', () => {
         );
       }),
     );
+  });
+});
+
+/* ── Task 124 addition: generated interval-change timelines ────────────── */
+
+describe('arbitrary interval-change timelines agree with the widening oracle', () => {
+  /**
+   * One scenario: a canonical series with arbitrary deltas (duplicates and
+   * stretched silences included) judged by a timeline of interval changes —
+   * a covering first entry at `T0 − 1` plus up to four generated changes
+   * deduplicated onto distinct instants (the seam rejects duplicates), each
+   * landing anywhere in the observed span, on a point or between two.
+   */
+  const timelineCaseArb = fc
+    .tuple(
+      fc.array(fc.integer({ min: 0, max: 4_000_000 }), {
+        minLength: 1,
+        maxLength: 60,
+        size: 'max',
+      }),
+      fc.integer({ min: 60, max: 3600 }),
+      fc.array(
+        fc.record({
+          atOffset: fc.integer({ min: 1, max: 250_000_000 }),
+          seconds: fc.integer({ min: 60, max: 3600 }),
+        }),
+        { maxLength: 4 },
+      ),
+    )
+    .map(([deltas, initialSeconds, changeSpecs]) => {
+      const points = seriesFromDeltas(deltas);
+      const spanMs = Math.max(points.at(-1)!.collectedAt - points[0]!.collectedAt, 1);
+      const seenAt = new Set<number>();
+      const changes: IntervalChange[] = [
+        { effectiveFromEpochMs: T0 - 1, intervalSeconds: initialSeconds },
+      ];
+      for (const spec of changeSpecs) {
+        const at = T0 + ((spec.atOffset - 1) % spanMs);
+        if (seenAt.has(at)) continue; // unique effectiveFromEpochMs or the seam rejects
+        seenAt.add(at);
+        changes.push({ effectiveFromEpochMs: at, intervalSeconds: spec.seconds });
+      }
+      return { points, changes } as const;
+    });
+
+  /**
+   * A table-driven restatement of the D-075 judgment with no shared code
+   * path with the detector (it catches window-boundary, widening, and
+   * threshold mutations; the spec's own wording is pinned by the directed
+   * suite): each chronological adjacent pair is judged by its starting
+   * cadence widened to the most permissive interval of any change landing
+   * inside the span `(fromAt, toAt]`. Returns the expected gap records and
+   * how many judgments the widening actually changed.
+   */
+  function oracleTimelineGaps(
+    points: readonly SuccessfulMetricPoint[],
+    changes: readonly IntervalChange[],
+  ): { gaps: CollectionGap[]; widenedJudgments: number } {
+    const sorted = [...changes].sort((a, b) => a.effectiveFromEpochMs - b.effectiveFromEpochMs);
+    const intervalAt = (at: number): number => {
+      let resolved = sorted[0]!;
+      for (const change of sorted) {
+        if (change.effectiveFromEpochMs <= at) resolved = change;
+        else break;
+      }
+      return resolved.intervalSeconds;
+    };
+    const gaps: CollectionGap[] = [];
+    let widenedJudgments = 0;
+    for (let index = 0; index + 1 < points.length; index += 1) {
+      const fromAt = points[index]!.collectedAt;
+      const toAt = points[index + 1]!.collectedAt;
+      const fromSeconds = intervalAt(fromAt);
+      let judgeSeconds = fromSeconds;
+      for (const change of sorted) {
+        if (change.effectiveFromEpochMs > fromAt && change.effectiveFromEpochMs <= toAt) {
+          judgeSeconds = Math.max(judgeSeconds, change.intervalSeconds);
+        }
+      }
+      if (judgeSeconds !== fromSeconds) widenedJudgments += 1;
+      const thresholdMs = judgeSeconds * 3300;
+      const elapsedMs = toAt - fromAt;
+      if (elapsedMs > thresholdMs) {
+        gaps.push({
+          accountId: points[index]!.accountId,
+          metricKey: points[index]!.metricKey,
+          fromEpochMs: fromAt,
+          toEpochMs: toAt,
+          elapsedMs,
+          intervalSeconds: judgeSeconds,
+          thresholdMs,
+        });
+      }
+    }
+    return { gaps, widenedJudgments };
+  }
+
+  it('detects exactly the widened-cadence oracle gaps with exact records', () => {
+    let sawWidenedJudgment = 0; // a pair judged by a wider cadence than its start
+    let sawGap = 0;
+    fc.assert(
+      fc.property(timelineCaseArb, ({ points, changes }) => {
+        const { gaps, widenedJudgments } = oracleTimelineGaps(points, changes);
+        sawWidenedJudgment += widenedJudgments;
+        sawGap += gaps.length;
+        const actual = detectCollectionGaps(points, changes);
+        // Full-record equality: edges, elapsed, the judged interval seconds,
+        // and the threshold as one deterministic chronological list.
+        expect(actual).toEqual(gaps);
+        // Self-consistency of every emitted record.
+        for (const gap of actual) {
+          expect(gap.elapsedMs).toBe(gap.toEpochMs - gap.fromEpochMs);
+          expect(gap.thresholdMs).toBe(gapThresholdMs(gap.intervalSeconds));
+          expect(gap.elapsedMs).toBeGreaterThan(gap.thresholdMs);
+        }
+        // Determinism: a second pass is bit-identical.
+        expect(detectCollectionGaps(points, changes)).toEqual(actual);
+      }),
+    );
+    // Vacuity tripwires: the widening path and gaps must both be exercised.
+    expect(sawWidenedJudgment).toBeGreaterThan(0);
+    expect(sawGap).toBeGreaterThan(0);
   });
 });
