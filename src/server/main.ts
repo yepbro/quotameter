@@ -39,13 +39,16 @@ export function currentRuntime(): RuntimeFacts {
  * Refuses to run on an unsupported runtime (spec §5.1): Node.js below the
  * declared minimum, an unverifiable user, or a root user — the service must
  * run under a regular account, and the generated systemd unit sets `User=`
- * accordingly (§5.4).
+ * accordingly (§5.4). Version strings order by their numeric prefix: a
+ * prerelease-suffixed runtime such as a nightly build counts as its release
+ * line (task 129, decision D-098).
  */
 export function verifyRuntime(facts: RuntimeFacts): void {
   if (!satisfiesMinimum(facts.nodeVersion, MINIMUM_NODE_VERSION)) {
     throw new Error(
       `quotameter requires Node.js >= ${MINIMUM_NODE_VERSION} ` +
-        `(found ${facts.nodeVersion}); refusing to start`,
+        `(found ${facts.nodeVersion}); refusing to start. ` +
+        'Upgrade Node.js (for example via the official binaries or nvm) and try again.',
     );
   }
   if (facts.uid === undefined) {

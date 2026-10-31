@@ -81,13 +81,23 @@ import path) fails `make check`.
 
 ### Launcher notes (`bin/quotameter.mjs`)
 
-The launcher gates the runtime first, answers a leading `--version`/`-v`
-itself (a fixed CI contract: exactly the package version on stdout), then
-delegates via a dynamic import with `mod.runCli ?? mod.default?.runCli`
-(jiti mounts the TypeScript module as CommonJS during development and
-tests; the published build is real ESM). An installation without the
+The launcher gates the runtime first — deriving the declared minimum from
+the manifest's `engines.node` field, the single source of truth (an
+unexpected declaration is a fatal packaging error, and a runtime whose
+`process.versions.node` cannot be parsed fails closed with its own
+message) — then answers a leading `--version`/`-v` itself (a fixed CI
+contract: exactly the package version on stdout), then delegates via a
+dynamic import with `mod.runCli ?? mod.default?.runCli` (jiti mounts the
+TypeScript module as CommonJS during development and tests; the published
+build is real ESM). The gate precedes the fast path and every command
+module load, so a below-minimum runtime is rejected before any unsupported
+feature (for example `node:sqlite`) can load; the ordering, the boundary
+matrix (exactly 22.13.0 vs 22.12.x vs prerelease suffixes vs malformed
+values), and the engines-derived minimum are pinned by
+`test/integration/cli-bin-version-gate.spec.ts` against the real launcher
+in a child process (task 129, decision D-098). An installation without the
 compiled command modules (`ERR_MODULE_NOT_FOUND`) fails with a clear
 message until the packaging tasks (184–186) ship them; any other module
-failure surfaces as itself. Exits set `process.exitCode` and let the
+failure surfaces as itself. All exits set `process.exitCode` and let the
 event loop drain rather than calling `process.exit()`, so buffered pipe
 output cannot be truncated.

@@ -10,6 +10,10 @@
  * Compares two `major.minor.patch` version strings numerically.
  *
  * Missing segments are treated as `0`, so `"22.13"` equals `"22.13.0"`.
+ * A prerelease/build suffix — everything from the first `-` or `+` — is
+ * ignored: `"22.13.0-nightly…"` compares as `22.13.0`, because the runtime
+ * minimum gates the numeric release line, not semver precedence (task 129,
+ * decision D-098; a nightly below the line still compares below it).
  * Non-numeric input is rejected loudly rather than guessed.
  *
  * @returns negative when `a < b`, `0` when equal, positive when `a > b`.
@@ -31,7 +35,12 @@ export function satisfiesMinimum(version: string, minimum: string): boolean {
 }
 
 function parse(version: string): [number, number, number] {
-  const parts = version.split('.');
+  // Cut the prerelease/build suffix before splitting: nightly and custom
+  // builds report suffixed `process.versions.node`, and the suffix carries
+  // no ordering information a minimum-version gate needs.
+  const cut = version.search(/[+-]/);
+  const numeric = cut === -1 ? version : version.slice(0, cut);
+  const parts = numeric.split('.');
   // Written without nested regex quantifiers on purpose: keeps the security
   // lint ("detect-unsafe-regex") clean and the check trivially auditable.
   const valid = parts.length >= 1 && parts.length <= 3 && parts.every((p) => /^\d+$/.test(p));

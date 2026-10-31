@@ -76,7 +76,20 @@ describe('verifyRuntime', () => {
 
   it('refuses a Node.js below the declared minimum', () => {
     expect(() => verifyRuntime({ nodeVersion: '22.12.9', uid: 1000 })).toThrow(
-      /requires Node\.js >= 22\.13\.0 \(found 22\.12\.9\); refusing to start/,
+      /requires Node\.js >= 22\.13\.0 \(found 22\.12\.9\); refusing to start\. Upgrade Node\.js/,
+    );
+  });
+
+  it('orders prerelease-suffixed runtimes by their numeric prefix', () => {
+    // Nightly builds report suffixed process.versions.node; the gate counts
+    // them as their release line (task 129, decision D-098) — a nightly of
+    // a supported line runs, one below the line still refuses.
+    expect(() =>
+      verifyRuntime({ nodeVersion: '22.13.0-nightly.20261101abc', uid: 1000 }),
+    ).not.toThrow();
+    expect(() => verifyRuntime({ nodeVersion: '22.13.0+custom', uid: 1000 })).not.toThrow();
+    expect(() => verifyRuntime({ nodeVersion: '22.12.9-nightly.20261101abc', uid: 1000 })).toThrow(
+      /requires Node\.js >= 22\.13\.0 \(found 22\.12\.9-nightly\.20261101abc\); refusing to start/,
     );
   });
 

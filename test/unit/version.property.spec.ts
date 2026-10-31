@@ -51,4 +51,17 @@ describe('compareVersions properties', () => {
       }),
     );
   });
+
+  it('ignores a prerelease or build suffix for minimum satisfaction', () => {
+    // Task 129, decision D-098: the suffix (from the first '-' or '+'
+    // onward) carries no ordering information a minimum-version gate needs,
+    // for any suffix content whatsoever.
+    fc.assert(
+      fc.property(versionArb, fc.constantFrom('-', '+'), fc.string(), (base, separator, suffix) => {
+        expect(satisfiesMinimum(`${base}${separator}${suffix}`, '22.13.0')).toBe(
+          satisfiesMinimum(base, '22.13.0'),
+        );
+      }),
+    );
+  });
 });

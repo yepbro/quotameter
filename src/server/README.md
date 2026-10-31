@@ -1,8 +1,10 @@
 # `src/server/` — composition root and HTTP API
 
 The application assembly point (spec §3, §5.6, §13, §15): the process entry
-point `main.ts` — runtime gate (Node.js ≥ 22.13.0, non-root), signal wiring,
-exit codes — and the lifecycle skeleton `app.ts` (task 060), where components
+point `main.ts` — runtime gate (Node.js ≥ 22.13.0 by numeric prefix, so a
+nightly of a supported line runs while anything below the line refuses;
+non-root; task 129, decision D-098), signal wiring, exit codes — and the
+lifecycle skeleton `app.ts` (task 060), where components
 start in registration order and stop in reverse, realizing the §5.6 shutdown
 sequence by construction. `single-instance.ts` (task 074) guards each data
 directory with an atomically published lockfile: a second process on the same

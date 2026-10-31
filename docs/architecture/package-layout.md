@@ -18,15 +18,15 @@ reasoning behind these structural choices and their trade-offs is consolidated i
 
 ## Repository top level
 
-| Path       | Contents                                                                                         |
-| ---------- | ------------------------------------------------------------------------------------------------ |
-| `bin/`     | `quotameter.mjs` — thin, build-free launcher; delegates to `src/cli/`                            |
-| `src/`     | server-side application code, layered as described below                                         |
-| `ui/`      | Vue 3 + Vite frontend; talks only to the HTTP API, never to providers or SQLite                  |
-| `test/`    | automated tests — layout and conventions in [`test/README.md`](../../test/README.md)             |
-| `docs/`    | project documentation (this map, trust boundaries, providers, release, security, agent guides)   |
-| `scripts/` | repository tooling run by `make` targets and CI (build verification, package and license checks) |
-| `plan/`    | specification and task plan — the source of truth, never touched by application code             |
+| Path       | Contents                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------ |
+| `bin/`     | `quotameter.mjs` — thin, build-free launcher; gates the runtime from `engines.node`, delegates to `src/cli/` |
+| `src/`     | server-side application code, layered as described below                                                     |
+| `ui/`      | Vue 3 + Vite frontend; talks only to the HTTP API, never to providers or SQLite                              |
+| `test/`    | automated tests — layout and conventions in [`test/README.md`](../../test/README.md)                         |
+| `docs/`    | project documentation (this map, trust boundaries, providers, release, security, agent guides)               |
+| `scripts/` | repository tooling run by `make` targets and CI (build verification, package and license checks)             |
+| `plan/`    | specification and task plan — the source of truth, never touched by application code                         |
 
 ## `src/` layers and dependency rules
 
@@ -142,7 +142,10 @@ Spec §3 fixes the packaging shape the layout must support: no install-time
 build, no `postinstall`, no native modules; the tarball ships the built
 frontend `dist/`, a ready-to-run CLI, and the published JSON Schema
 (`schema/config.schema.json`, task 062). Concretely: `bin/quotameter.mjs`
-stays plain JavaScript; the TypeScript under `src/` is compiled at publish
+stays plain JavaScript and derives its runtime version gate from the
+manifest's `engines.node` declaration (task 129, decision D-098) — the
+single source of truth, so the gate and the declaration cannot drift; the
+TypeScript under `src/` is compiled at publish
 time; `ui/dist` is the served frontend output. The `files` allowlist, export
 paths, and build-artifact checks are finalized by tasks 184–186, which extend
 `package.json`, `scripts/verify-build.mjs`, and `scripts/check-package.mjs`
