@@ -1,7 +1,8 @@
 # `src/util/` — cross-cutting helpers
 
 Cross-cutting utilities shared across layers: the clock/time-zone API
-(`clock.ts`, task 071), the structured redacting logger (`logger.ts`,
+(`clock.ts`, task 071), rolling-range boundary calculations
+(`rolling-ranges.ts`, task 116), the structured redacting logger (`logger.ts`,
 task 072), and version-string helpers (`version.ts`).
 
 **Rule:** this layer is a leaf — it imports nothing from other `src/` modules.
@@ -45,7 +46,41 @@ never calls `Date.now()`, `new Date()`, or machine-local zone APIs itself.
 - **Deliberately absent:** local wall-clock → epoch conversion. That
   direction is where DST nonexistent/ambiguous times live, and spec §9.3
   fixes their resolution policy — task 115 owns it; peak-hours intervals
-  (114) and rolling ranges (116) build on `zonedDateTime`/`zonedParts`.
+  (114) build on `zonedDateTime`/`zonedParts`. Rolling ranges (116) needed
+  neither — pure duration arithmetic, see the next section (D-068).
+
+## `rolling-ranges.ts` — explicit bounds for "last N hours/days" (spec §10, decision D-068)
+
+The closed vocabulary of spec §14.4 — `24h`, `3d`, `7d` (default), `14d`,
+`30d` — and the boundary arithmetic §10 requires: a rolling range is an
+interval ending **now**, so callers pass explicit `from`/`to` bounds (UTC
+epoch ms) to the server, which filters history server-side (§13's
+`/api/history`, `/api/events`, `/api/peak-hours` take those bounds as ISO
+8601 UTC; the HTTP layer itself is Stage 12).
+
+- **Pure duration arithmetic:** `rollingRangeBounds(range, now)` returns
+  `{ from: now − duration, to: now }` — exact milliseconds, no calendar or
+  DST wall-clock component. A "24h" range across a spring-forward transition
+  is still exactly 86 400 000 ms of absolute time.
+- **`now` is an argument, never the machine clock** (the D-021 discipline):
+  callers inject the `Clock`; the module reads no environment and no `TZ`,
+  so bounds are identical under any `TZ` setting by construction — verified
+  in real child processes by
+  `test/integration/rolling-ranges-tz.spec.ts` (the task-116
+  done-condition).
+- **Closed interval `[from, to]`** — both ends inclusive (the spec is
+  silent; pinned by D-068 and made executable through
+  `rollingRangeContains`, matching the server-side filter
+  `collected_at >= from AND collected_at <= to`).
+- **Loud failure:** an unknown range id throws with the valid ids listed
+  (the D-013 registry error discipline); a non-finite `now` throws. For
+  finite `now` the subtraction cannot overflow — at `±Number.MAX_VALUE` the
+  ≤ 30-day duration is absorbed (`from === now`), documented float-exact
+  behavior.
+- **Consumers:** the Stage 12 history/events endpoints (as the source of
+  the `from`/`to` they filter by, via `toUtcIso`), the §14.4 history view's
+  range selector, and retention-aware range disabling (compare
+  `rollingRangeDurationMs` with the configured retention; §14.4).
 
 ## `logger.ts` — the structured redacting logger (spec §16, §15.4, decision D-025)
 

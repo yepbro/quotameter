@@ -23,8 +23,9 @@
  *   that is where DST nonexistent/ambiguous times live, and spec §9.3 fixes
  *   their resolution policy — owned by task 115. This module exposes only
  *   the unambiguous epoch → wall-clock direction, plus the `zonedDateTime`
- *   Luxon bridge that peak-hours intervals (114), DST handling (115), and
- *   rolling ranges (116) build on.
+ *   Luxon bridge that peak-hours intervals (114) and DST handling (115)
+ *   build on. Rolling ranges (116) needed neither — pure duration
+ *   arithmetic in the sibling `rolling-ranges.ts` (decision D-068).
  */
 
 import { performance } from 'node:perf_hooks';
