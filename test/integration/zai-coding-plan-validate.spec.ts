@@ -24,7 +24,26 @@ import {
 /** The marker key (§15.4, §17.1): sent as the Bearer credential, must never survive in an error. */
 const MARKER_KEY = 'qm-marker-key-t098';
 
-/** A short deadline so the timeout scenario stays fast. */
+/**
+ * Deadline for every assertion about a *delivered* response (5 s: the
+ * transport suite's value for the same loopback mock round-trip, and §7.2's
+ * minimum configured timeout, so these run at a production-legal deadline).
+ * The value is justified against the mock round-trip, never runner speed:
+ * §7.2's deadline is one total bound that starts before the request is sent
+ * (D-042), so a short value here would silently assert "the runner finishes
+ * the whole exchange within N ms" and race instrumentation plus parallel
+ * load — observed once as a 120 ms expiry on this suite's own 200 case
+ * under v8 coverage (U-012).
+ */
+const DELIVERED_RESPONSE_TIMEOUT_MS = 5_000;
+
+/**
+ * The short deadline, used only where the deadline itself is the subject
+ * (the expiry test below): the mock delays the response 10× longer, and
+ * that delay timer starts at request arrival — strictly after the deadline
+ * — so parallel load can only move the response further past the deadline,
+ * never before it. The expiry pin stays deterministic under load.
+ */
 const TIMEOUT_MS = 120;
 
 /** The never-captured `/models` body fixture (D-49: a stand-in, never parsed). */
@@ -69,11 +88,17 @@ describe('ZaiCodingPlanProvider.validateCredentials over real sockets', () => {
   let server: MockProviderServer;
   let account: AccountContext;
 
-  /** A provider pointed at the mock server's coding base. */
-  const provider = (codingBaseUrl?: string): ZaiCodingPlanProvider =>
+  /**
+   * A provider pointed at the mock server's coding base. The deadline is
+   * overridable so the expiry test can pass its own short one (U-012).
+   */
+  const provider = (
+    codingBaseUrl?: string,
+    timeoutMs = DELIVERED_RESPONSE_TIMEOUT_MS,
+  ): ZaiCodingPlanProvider =>
     new ZaiCodingPlanProvider({
       codingBaseUrl: codingBaseUrl ?? `${server.url}/api/coding/paas/v4`,
-      timeoutMs: TIMEOUT_MS,
+      timeoutMs,
     });
 
   /** How many requests the server had seen, for the no-retry pin. */
@@ -194,7 +219,10 @@ describe('ZaiCodingPlanProvider.validateCredentials over real sockets', () => {
         delayMs: 10 * TIMEOUT_MS,
       });
 
-      const error = await provider()
+      // The one test where the short total deadline is the subject: the
+      // 10× response delay makes its expiry deterministic under load (see
+      // TIMEOUT_MS above, U-012).
+      const error = await provider(undefined, TIMEOUT_MS)
         .validateCredentials(account)
         .catch((thrown: unknown) => thrown);
 
@@ -209,7 +237,10 @@ describe('ZaiCodingPlanProvider.validateCredentials over real sockets', () => {
 
       const error = await new ZaiCodingPlanProvider({
         codingBaseUrl: `http://127.0.0.1:${port}`,
-        timeoutMs: TIMEOUT_MS,
+        // Delivered-response rule (U-012): loopback refuses are immediate,
+        // but a starved event loop must not let a short deadline reclassify
+        // the refusal as a timeout — D-042 consults signal state first.
+        timeoutMs: DELIVERED_RESPONSE_TIMEOUT_MS,
       })
         .validateCredentials(account)
         .catch((thrown: unknown) => thrown);
