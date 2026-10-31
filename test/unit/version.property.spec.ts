@@ -16,7 +16,10 @@ describe('compareVersions properties', () => {
       fc.property(versionArb, versionArb, (a, b) => {
         const forward = Math.sign(compareVersions(a, b));
         const backward = Math.sign(compareVersions(b, a));
-        expect(forward).toBe(-backward);
+        // Sum form: `toBe(-backward)` fails on Object.is(+0, -0) when the
+        // versions are equal — the signed-zero trap U-013's comparator suite
+        // avoided; observed live 2026-11-01 with ["4.1.1","4.1.1"].
+        expect(forward + backward).toBe(0);
       }),
     );
   });
