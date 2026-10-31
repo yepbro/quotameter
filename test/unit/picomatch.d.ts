@@ -4,7 +4,8 @@
  * `resolveThresholds`' key compilation (`picomatch(key)`, default options;
  * see that spec for the verification). picomatch is a declared devDependency
  * (`^4.0.7`, the exact range the installed Vitest 5 declares, so the guard
- * and the runner resolve one instance), and the declared 4.0.7 ships no
+ * and the runner resolve one instance — an invariant the guard spec pins
+ * executably through a resolve-identity assertion, task U-027), and the declared 4.0.7 ships no
  * declarations — no `types`/`typings` field and no `.d.ts` in the package —
  * while `@types/picomatch` is not a dependency; the guard needs exactly this
  * factory-and-matcher surface, so this file stays. Remove it if picomatch

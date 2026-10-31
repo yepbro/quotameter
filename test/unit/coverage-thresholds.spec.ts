@@ -1,4 +1,5 @@
 import { existsSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pm from 'picomatch';
@@ -38,6 +39,16 @@ import vitestConfig from '../../vitest.config';
  * fails; threshold VALUES (the D-089 branch maxima) are coverage policy, not
  * structure, and are out of scope. The rename behavior is demonstrated by the
  * scratch experiment recorded in the task's commit body, not asserted live.
+ *
+ * Single-instance premise (task U-027, U-024's review P3): the mirror holds
+ * only while this spec's `import 'picomatch'` and the runner's own load resolve
+ * the SAME instance — true today because the declared devDependency range
+ * (`^4.0.7`) matches the installed vitest 5.0.5's own picomatch range, so npm
+ * keeps one root copy. A future range divergence would nest a second copy
+ * under `node_modules/vitest/node_modules/` and split the mirror silently
+ * (the guard would judge keys with semantics the runner no longer applies).
+ * The resolve-identity test below pins that premise executably, upgrading
+ * U-024's prose resolution evidence to an assertion.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -210,5 +221,29 @@ describe('coverage threshold guard (task U-015, spec §17.3; decision D-093)', (
     expect(exact('src/util/clock.ts')).toBe(true);
     expect(exact('src/util/clock.spec.ts')).toBe(false);
     expect(exact('test/unit/clock.spec.ts')).toBe(false);
+  });
+
+  it('the guard and the runner resolve one picomatch instance (resolve identity)', () => {
+    // The premise the mirror above rests on (task U-027): this spec's
+    // `import 'picomatch'` and the runner's own load must reach the same
+    // package. Resolving with `paths` rooted at the installed vitest's package
+    // directory reproduces the runner's candidate walk — a nested
+    // `node_modules/vitest/node_modules/picomatch` shadows the root copy
+    // exactly as it would for vitest's own import.
+    const specRequire = createRequire(import.meta.url);
+    const guardPath = specRequire.resolve('picomatch');
+    const vitestDir = path.dirname(specRequire.resolve('vitest/package.json'));
+    const runnerPath = specRequire.resolve('picomatch', { paths: [vitestDir] });
+    expect(
+      runnerPath,
+      "picomatch resolves to two instances — the guard mirrors the runner's " +
+        "threshold-key matching only through ONE picomatch (U-024's dedupe, the " +
+        "premise of D-093's mirror): the declared devDependency range no longer " +
+        "tracks the installed vitest's own picomatch range, so npm nested a " +
+        `divergent copy under the runner. The guard resolves ${guardPath}; the ` +
+        `runner resolves ${runnerPath}. Re-pin the picomatch range to vitest's ` +
+        'declared range (or dedupe the tree), then re-run this spec — a split ' +
+        'mirror is silent everywhere else in the suite',
+    ).toBe(guardPath);
   });
 });
