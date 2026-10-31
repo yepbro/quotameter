@@ -188,3 +188,21 @@ beyond 3660 local days, and non-IANA zones; `from === to` yields an empty
 timeline. Scoped coverage is 100% (the §17.3 peak-hours target), and the
 suite is green under `TZ` = UTC, America/New_York, Pacific/Kiritimati,
 and Asia/Kathmandu.
+Landed: [`events-detection.ts`](./events-detection.ts) — the §12.1
+conservative quota-reset detection (task 117, decision D-074): a pure
+seam mapping consecutive valid points of one (account, metric) series to
+`RESET` events. Condition 1 (value evidence: usage falls, remaining
+rises) is judged jointly across every carried field pair with the D-074
+tolerances (0 absolute, 1 percent — D-047 integer-percent noise), and any
+beyond-tolerance anti-predicted movement on any pair vetoes the event;
+for rolling-window metrics value evidence is inadmissible entirely
+(replenishment explains any magnitude), so only condition 2 — the
+previous `resetsAt` already passed plus a strictly later `resetsAt` —
+fires, suffixed `rolling_window_conservative`. Event time is the
+previous `resetsAt` when it lies strictly between the two snapshots,
+else the new `collectedAt`. The output is structurally
+`CycleEventInput` (the D-046 evidence vocabulary, reason in
+`details.reason`), so the cycle-persistence seam (task 110, wiring in
+task 118) consumes it with zero conversion; `detectSeriesResetEvents`
+folds a flat interleaved list by account and metric, skipping invalid
+points entirely.
