@@ -57,6 +57,16 @@ export interface InitAnswers {
   readonly accountLabel?: string;
   /** Initial account API key; `undefined` when skipped (add later in the UI). */
   readonly accountApiKey?: string;
+  /**
+   * Environment variable supplying the initial account's key instead of a
+   * stored value (spec §6.3 `apiKeyEnv`; decision D-100). Set only by
+   * `init --yes --api-key-env` — the interactive flow asks for the value, so
+   * this field and {@link accountApiKey} are mutually exclusive by
+   * construction, and neither ever appears in output (spec §15.4; the name
+   * alone is publishable — the value is checked for presence only and is
+   * never stored or printed).
+   */
+  readonly accountApiKeyEnv?: string;
 }
 
 /** Injected collaborators of {@link askInitQuestions}. */

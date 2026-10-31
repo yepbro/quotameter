@@ -79,6 +79,14 @@ const WeekDaySchema = Type.Union([
  */
 const ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
 
+/**
+ * POSIX environment-variable name a `apiKeyEnv` secret source may point at
+ * (spec §6.3). Exported because `init --yes` validates its `--api-key-env`
+ * value against the same shape the account schema will persist (task 131,
+ * decision D-100) — one pattern, two consumers, no drift.
+ */
+export const API_KEY_ENV_NAME_PATTERN = '^[A-Za-z_][A-Za-z0-9_]*$';
+
 /** HTTP listener settings (spec §5.3, §15.1). */
 export const ServerConfigSchema = Type.Object(
   {
@@ -298,7 +306,7 @@ export const AccountConfigSchema = Type.Object(
     apiKeyEnv: Type.Optional(
       Type.String({
         minLength: 1,
-        pattern: '^[A-Za-z_][A-Za-z0-9_]*$',
+        pattern: API_KEY_ENV_NAME_PATTERN,
         description: 'Environment variable name supplying the key (spec §6.3).',
       }),
     ),

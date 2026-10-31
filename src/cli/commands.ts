@@ -92,13 +92,39 @@ function stub(name: string, summary: string, commandPath: readonly string[]): Le
  */
 export function buildCommandTable(): Command[] {
   return [
-    // Task 130 (spec §5.3): the interactive question flow. The --yes mode
-    // and its explicit options (task 131) extend this row's options later.
+    // Tasks 130–131 (spec §5.3): the interactive question flow and the
+    // non-interactive --yes layer (decision D-100). --yes is required for
+    // any of the value options; --timezone is mandatory in that mode.
     {
       kind: 'leaf',
       name: 'init',
       summary: 'First-time configuration and service setup',
-      options: {},
+      options: {
+        yes: {
+          type: 'boolean',
+          short: 'y',
+          description: 'Non-interactive mode: take every value from the options below',
+        },
+        timezone: {
+          type: 'string',
+          description: 'IANA time zone, required with --yes (e.g. Europe/Berlin)',
+        },
+        host: { type: 'string', description: 'Bind host (default 127.0.0.1)' },
+        port: { type: 'string', description: 'Bind port, 1-65535 (default 8787)' },
+        'polling-interval': {
+          type: 'string',
+          description: 'Polling interval in seconds, 60-3600 (default 300)',
+        },
+        'account-label': {
+          type: 'string',
+          description: 'Label of the optional initial Z.ai account',
+        },
+        'api-key-env': {
+          type: 'string',
+          description:
+            'Environment variable supplying the initial account key (by name, never a value)',
+        },
+      },
       maxPositionals: 0,
       run: runInitCommand(),
     },

@@ -20,7 +20,8 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `output.ts`          | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                              |
 | `prompts.ts`         | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets   |
 | `init-questions.ts`  | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly         |
-| `init.ts`            | the `init` handler: wiring, cancellation, the masked summary                                          |
+| `init-yes.ts`        | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel     |
+| `init.ts`            | the `init` handler: mode branch, cancellation, the masked summary                                     |
 | `raw-diagnostics.ts` | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
 
 Everything a handler touches is injected: output (writer seam), version
@@ -108,6 +109,58 @@ through three modules:
 The remaining §5.3 steps (existing-config detection, account connection
 test, service installation) extend `InitAnswers`/`buildInitConfig` rather
 than re-deriving validation.
+
+## The `init --yes` layer (task 131, spec §5.3, decision D-100)
+
+`quotameter init --yes` is the non-interactive half of §5.3: every value
+comes from explicit options — `--timezone` (mandatory), `--host`,
+`--port`, `--polling-interval`, `--account-label`, and the key channel
+below — and stdin is never opened; the handler branches before a prompter
+is constructed, so a prompt fallback is impossible by construction and the
+command works with input closed. Rules:
+
+- **Validation is the interactive flow's, reused.** `init-yes.ts` feeds
+  every value through the task-130 exported parsers; an absent optional
+  flag is the parser's empty input, so "omitted" inherits the same
+  default as "pressed Enter" (`127.0.0.1`/`8787`/`300`, and no account).
+  A missing or empty `--timezone` is one dedicated failure naming the flag
+  (`--timezone is required with --yes: Quotameter never applies the system
+time zone automatically…`, exit 1) — a set `QUOTAMETER_APP_TIMEZONE`
+  does not satisfy it; service-load overrides play no role at collection
+  time. An invalid value fails exactly like the typed answer.
+- **All value problems are reported at once**, one `quotameter init: …`
+  stderr line each, then exit 1 — a script gets the complete diagnosis in
+  one run. Usage errors (unknown option, stray positional) stay exit 2
+  via the strict parser; mode-conditional requirements are handler
+  failures.
+- **The API key enters only through the environment, by name.** There is
+  deliberately no `--api-key <value>` option — a value flag would put the
+  secret in the process listing and shell history (§15.4). Instead
+  `--api-key-env <variable>` names the variable (§6.3's `apiKeyEnv`
+  mechanism): init checks the name's shape (the account schema's exported
+  pattern), rejects the reserved `QUOTAMETER_` prefix (the service's
+  environment scan would reject such a variable once set), and requires the
+  variable to be set as an own property with a non-empty value (empty
+  counts as unset, D-011; inherited prototype names such as `toString`
+  resolve on `process.env` and do not count — `Object.hasOwn`). Only the
+  **name** is recorded (`InitAnswers.accountApiKeyEnv`); the value is
+  consulted exactly once, for the non-empty check, and is never retained
+  or printed — and no `--api-key-env` problem ever contains the supplied
+  argument: a mistyped key (the value pasted where the name belongs — an
+  underscore-only key is a syntactically valid variable name) must never
+  reach stderr (§15.4). Task 133 consumes the name for the connection test
+  and the secret-source decision.
+- **A key source needs an account:** `--api-key-env` without
+  `--account-label` is a problem (the label is what creates the account,
+  exactly as in the interactive flow). `--account-label` alone means
+  "account with the key added later in the UI".
+- **Reproducibility:** `buildYesAnswers` is pure over flags + an
+  environment snapshot, and the summary rendered from its answers contains
+  no timestamps, hints, or randomness — the same invocation prints
+  byte-identical output (pinned by running the real launcher twice).
+- **Value options require `--yes`:** any of the six without it is a clear
+  failure (`--<name> requires --yes (non-interactive mode)`), never a
+  silently ignored flag and never a half-prefilled wizard.
 
 ## The `doctor --raw` diagnostic read path (task 103, spec §7.4/§5.5, decision D-067)
 
