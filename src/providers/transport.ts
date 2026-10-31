@@ -27,7 +27,13 @@
  * the body = `fetch failed`/`terminated` + cause `UND_ERR_SOCKET`; a
  * deadline firing mid-body rejects with the timeout signal's own
  * `TimeoutError` DOMException — which is why the signal state, not the
- * rejection shape, is the classification authority.
+ * rejection shape, is the classification authority. That authority is
+ * consulted on the success returns as well (D-072): undici can lose the
+ * abort-vs-read race and close an aborted body as `done`, so a `done`
+ * read or a bodiless 2xx is delivered only while both signals are quiet —
+ * while delivered non-2xx/content-type/over-cap observations stay
+ * observations, the arrived fact being more actionable than the race it
+ * lost.
  */
 
 import { SENSITIVE_KEY_NAMES } from '../util/logger';
@@ -336,11 +342,27 @@ function classifyNetworkFailure(error: unknown): TransportError {
 }
 
 /**
+ * The signal-state classification authority (D-042, D-072): consulted by
+ * every point that must decide an exchange whose signals may have fired —
+ * the failure mapper below and both success returns. When both signals
+ * fired in the same window, the deadline wins: a timed-out request is the
+ * actionable §7.2 diagnosis for the poller. Returns `undefined` only while
+ * neither signal has fired.
+ */
+function classifyAbortedExchange(
+  deadline: AbortSignal,
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): TransportTimeoutError | TransportAbortError | undefined {
+  if (deadline.aborted) return new TransportTimeoutError(timeoutMs);
+  if (callerSignal?.aborted === true) return new TransportAbortError();
+  return undefined;
+}
+
+/**
  * The classification authority for exchange failures: signal state first —
  * a mid-body deadline fires as the timeout signal's own DOMException, and
- * caller aborts arrive as `AbortError` — then the network taxonomy. When
- * both signals fired in the same window, the deadline wins: a timed-out
- * request is the actionable §7.2 diagnosis for the poller.
+ * caller aborts arrive as `AbortError` — then the network taxonomy.
  */
 function mapExchangeFailure(
   error: unknown,
@@ -348,9 +370,25 @@ function mapExchangeFailure(
   callerSignal: AbortSignal | undefined,
   timeoutMs: number,
 ): TransportError {
-  if (deadline.aborted) return new TransportTimeoutError(timeoutMs);
-  if (callerSignal?.aborted === true) return new TransportAbortError();
+  const aborted = classifyAbortedExchange(deadline, callerSignal, timeoutMs);
+  if (aborted !== undefined) return aborted;
   return classifyNetworkFailure(error);
+}
+
+/**
+ * Guards a success return (D-072): a `done` body read or a bodiless
+ * response is not by itself proof the exchange completed — under a lost
+ * abort-vs-read race undici closes an aborted stream as `done`, possibly
+ * truncated. If either signal has fired by the time success is about to be
+ * declared, the exchange is classified from the signal state instead.
+ */
+function throwIfExchangeAborted(
+  deadline: AbortSignal,
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): void {
+  const aborted = classifyAbortedExchange(deadline, callerSignal, timeoutMs);
+  if (aborted !== undefined) throw aborted;
 }
 
 /* ── Input validation ──────────────────────────────────────────────────── */
@@ -439,8 +477,12 @@ export async function providerFetch(
     throw new TransportContentTypeError(scrub(contentType, secrets));
   }
 
-  // A 2xx without a body (e.g. 204) is delivered as an empty body.
+  // A 2xx without a body (e.g. 204) is delivered as an empty body. Even
+  // here the exchange can have lost the abort race: undici may resolve the
+  // fetch after the deadline or caller signal fired, so success is declared
+  // only after the signal state says the exchange is clean (D-072).
   if (response.body === null) {
+    throwIfExchangeAborted(deadline, request.signal, timeoutMs);
     return { status: response.status, contentType, body: '', bytes: 0 };
   }
 
@@ -464,7 +506,17 @@ export async function providerFetch(
     } catch (error) {
       throw mapExchangeFailure(error, deadline, request.signal, timeoutMs);
     }
-    if (read.done) break;
+    if (read.done) {
+      // A `done` resolution is not by itself success (U-007): under a lost
+      // abort-vs-read race the runtime closes an aborted stream as `done`,
+      // possibly truncated, and the CI-observed failure mode is exactly a
+      // deadline-exceeded exchange resolving as a 200. The signal state is
+      // the classification authority (D-042), so it is consulted here too.
+      // Everything between this check and the return is synchronous, so no
+      // timer can change the answer in between.
+      throwIfExchangeAborted(deadline, request.signal, timeoutMs);
+      break;
+    }
     chunks.push(read.value);
     total += read.value.byteLength;
     if (total > maxResponseBytes) {

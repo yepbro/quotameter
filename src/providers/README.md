@@ -83,7 +83,12 @@ cross-cutting request concerns so adapters stay pure parsing:
   implemented with `AbortSignal.timeout` composed with the caller's §8.1
   signal via `AbortSignal.any`. A deadline expiry throws
   `TransportTimeoutError`; a caller abort throws `TransportAbortError`.
-  Signal state — not the rejection shape — is the classification authority.
+  Signal state — not the rejection shape — is the classification authority,
+  and it is consulted on the success returns too (U-007, D-072): a body
+  read that ends `done` or a bodiless 2xx is delivered only while both
+  signals are quiet, because undici can lose the abort-vs-read race and
+  close an aborted stream as `done`. Delivered non-2xx, content-type, and
+  over-cap observations keep their classes even when a signal raced them.
 - **Bounded body (D-042)** — responses are read streamed and rejected the
   moment they exceed `MAX_RESPONSE_BODY_BYTES` (64 KiB, aligned with §7.4's
   sanitized-response cap), with a `Content-Length` fast path; a body of

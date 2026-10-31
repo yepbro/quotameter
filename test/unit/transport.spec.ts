@@ -59,6 +59,37 @@ function abortRejectingFetch(error: () => unknown): typeof globalThis.fetch {
     })) as typeof globalThis.fetch;
 }
 
+/**
+ * A fetch double reproducing the lost abort-vs-read race (U-007): it waits
+ * for the composed signal to abort — deadline or caller, whichever the test
+ * arms — and then resolves the response anyway, exactly what undici does
+ * when the abort loses to an already-delivered reply and the body closes
+ * `done` instead of rejecting. `afterAbortMs` delays the resolution past
+ * further events (e.g. a second signal firing).
+ */
+function abortLosingFetch(build: () => Response, afterAbortMs = 0): typeof globalThis.fetch {
+  type FetchInput = Parameters<typeof globalThis.fetch>[0];
+  type FetchInit = Parameters<typeof globalThis.fetch>[1];
+  return ((_input: FetchInput, init?: FetchInit) =>
+    new Promise<Response>((resolve) => {
+      init?.signal?.addEventListener(
+        'abort',
+        () => {
+          setTimeout(() => resolve(build()), afterAbortMs);
+        },
+        { once: true },
+      );
+    })) as typeof globalThis.fetch;
+}
+
+/** A bodiless 2xx the content-type gate accepts. */
+function bodilessJsonResponse(status: number): Response {
+  return new Response(null, {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 /** Renders every string an error could leak a secret through. */
 function errorSurface(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
@@ -196,6 +227,186 @@ describe('providerFetch failure classification (verified runtime shapes)', () =>
     expect(error).toBeInstanceOf(TransportAbortError);
     expect((error as TransportAbortError).kind).toBe('aborted');
     expect(errorSurface(error)).not.toContain(MARKER);
+  });
+});
+
+describe('providerFetch success-path abort classification (U-007, D-072)', () => {
+  /**
+   * The lost abort-vs-read race behind CI run 41162981449: undici may close
+   * an aborted body stream as `done` instead of rejecting, so a
+   * deadline-exceeded or caller-aborted exchange can reach the success
+   * returns. D-042's signal-state authority applies there too — pinned here
+   * deterministically through the injected fetch, no sockets.
+   */
+
+  it('classifies a done body resolved after the deadline as a timeout', async () => {
+    const error = await providerFetch(markerRequest(), {
+      timeoutMs: 20,
+      fetchImpl: abortLosingFetch(
+        () => new Response('', { status: 200, headers: { 'content-type': 'application/json' } }),
+      ),
+    }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportTimeoutError);
+    expect((error as TransportTimeoutError).kind).toBe('timeout');
+    expect((error as TransportTimeoutError).message).toContain('20 ms');
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('classifies a truncated done body after the deadline as a timeout', async () => {
+    // The exact CI shape: the slow trickle body closed `done` mid-JSON and
+    // the exchange resolved as a 200 instead of the §7.2 timeout it was.
+    const error = await providerFetch(markerRequest(), {
+      timeoutMs: 20,
+      fetchImpl: abortLosingFetch(
+        () =>
+          new Response('{"partial":', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportTimeoutError);
+    expect((error as TransportTimeoutError).kind).toBe('timeout');
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('classifies a done body resolved after a caller abort as an abort', async () => {
+    const controller = new AbortController();
+    const promise = providerFetch(
+      { ...markerRequest(), signal: controller.signal },
+      {
+        timeoutMs: 5000,
+        fetchImpl: abortLosingFetch(
+          () =>
+            new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
+        ),
+      },
+    );
+    setTimeout(() => controller.abort(), 25);
+    const error = await promise.catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportAbortError);
+    expect((error as TransportAbortError).kind).toBe('aborted');
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('lets the deadline win when both signals fired before the body ended', async () => {
+    const controller = new AbortController();
+    const promise = providerFetch(
+      { ...markerRequest(), signal: controller.signal },
+      {
+        timeoutMs: 20,
+        // The composed signal aborts with the deadline at 20 ms; resolving
+        // 150 ms later outlives the caller's 50 ms abort, so both signals
+        // have fired when the body reaches `done` — the deadline outranks.
+        fetchImpl: abortLosingFetch(
+          () =>
+            new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
+          150,
+        ),
+      },
+    );
+    setTimeout(() => controller.abort(), 50);
+    const error = await promise.catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportTimeoutError);
+    expect((error as TransportTimeoutError).kind).toBe('timeout');
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('delivers a body that completes with neither signal fired', async () => {
+    const body = '{"ok":true}';
+    const fetchImpl = (async () =>
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof globalThis.fetch;
+    const result = await providerFetch(markerRequest(), { timeoutMs: 5000, fetchImpl });
+    expect(result).toEqual({
+      status: 200,
+      contentType: 'application/json',
+      body,
+      bytes: Buffer.byteLength(body),
+    });
+  });
+
+  it('classifies a bodiless 2xx resolved after the deadline as a timeout', async () => {
+    const error = await providerFetch(markerRequest(), {
+      timeoutMs: 20,
+      fetchImpl: abortLosingFetch(() => bodilessJsonResponse(204)),
+    }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportTimeoutError);
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('classifies a bodiless 2xx resolved after a caller abort as an abort', async () => {
+    const controller = new AbortController();
+    const promise = providerFetch(
+      { ...markerRequest(), signal: controller.signal },
+      { timeoutMs: 5000, fetchImpl: abortLosingFetch(() => bodilessJsonResponse(204)) },
+    );
+    setTimeout(() => controller.abort(), 25);
+    const error = await promise.catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportAbortError);
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('keeps a delivered non-2xx an observation even after the deadline fired', async () => {
+    // An arrived status is more actionable than the race it lost (D-072):
+    // re-classifying it as a timeout would misroute §7.2's 429 and 401/403
+    // rows into the retryable timeout row.
+    const error = await providerFetch(markerRequest(), {
+      timeoutMs: 20,
+      fetchImpl: abortLosingFetch(() => new Response('x', { status: 503 })),
+    }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportStatusError);
+    expect((error as TransportStatusError).status).toBe(503);
+    expect((error as TransportStatusError).kind).toBe('http-status');
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('keeps a delivered wrong content type an observation even after the deadline fired', async () => {
+    const error = await providerFetch(markerRequest(), {
+      timeoutMs: 20,
+      fetchImpl: abortLosingFetch(
+        () => new Response('<html/>', { status: 200, headers: { 'content-type': 'text/html' } }),
+      ),
+    }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportContentTypeError);
+    expect((error as TransportContentTypeError).kind).toBe('content-type');
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
+  it('keeps an over-cap response an observation even after the deadline fired', async () => {
+    // The third observation leg of D-072: the cap violation is the
+    // actionable truth — both the declared-length fast path and the
+    // mid-read enforcement classify by the cap, never by the race.
+    const fastPath = await providerFetch(markerRequest(), {
+      timeoutMs: 20,
+      maxResponseBytes: 8,
+      fetchImpl: abortLosingFetch(
+        () =>
+          new Response('x'.repeat(10), {
+            status: 200,
+            headers: { 'content-type': 'application/json', 'content-length': '10' },
+          }),
+      ),
+    }).catch((thrown: unknown) => thrown);
+    expect(fastPath).toBeInstanceOf(TransportResponseTooLargeError);
+    expect((fastPath as TransportResponseTooLargeError).kind).toBe('response-too-large');
+    expect((fastPath as TransportResponseTooLargeError).limitBytes).toBe(8);
+
+    const midRead = await providerFetch(markerRequest(), {
+      timeoutMs: 20,
+      maxResponseBytes: 8,
+      fetchImpl: abortLosingFetch(
+        () =>
+          new Response('x'.repeat(10), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    }).catch((thrown: unknown) => thrown);
+    expect(midRead).toBeInstanceOf(TransportResponseTooLargeError);
+    expect(errorSurface(midRead)).not.toContain(MARKER);
   });
 });
 
