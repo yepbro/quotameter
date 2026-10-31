@@ -15,6 +15,7 @@
 
 import type { CliOutput } from './output';
 import type { CliOptions } from './parser';
+import { runInitCommand } from './init';
 
 /** Everything a command handler receives; injected by the dispatcher. */
 export interface CliContext {
@@ -91,7 +92,16 @@ function stub(name: string, summary: string, commandPath: readonly string[]): Le
  */
 export function buildCommandTable(): Command[] {
   return [
-    stub('init', 'First-time configuration and service setup', ['init']),
+    // Task 130 (spec §5.3): the interactive question flow. The --yes mode
+    // and its explicit options (task 131) extend this row's options later.
+    {
+      kind: 'leaf',
+      name: 'init',
+      summary: 'First-time configuration and service setup',
+      options: {},
+      maxPositionals: 0,
+      run: runInitCommand(),
+    },
     stub('run', 'Foreground execution for systemd and debugging', ['run']),
     stub('start', 'Start an installed service through systemd', ['start']),
     stub('stop', 'Stop an installed service through systemd', ['stop']),

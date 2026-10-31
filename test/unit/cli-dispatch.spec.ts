@@ -421,8 +421,10 @@ describe('dispatch-table pinning (U-006 mutation triage)', () => {
   });
 
   it('reports every stubbed command with its exact full command path', async () => {
+    // `init` is real since task 130 (it prompts on stdin — exercising it in
+    // this table would touch the test runner's own stdin); its behavior is
+    // covered by the dedicated init suites.
     for (const path of [
-      ['init'],
       ['run'],
       ['start'],
       ['stop'],

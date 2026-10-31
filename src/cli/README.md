@@ -18,6 +18,9 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `parser.ts`          | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                             |
 | `help.ts`            | pure help renderers (general, command, group)                                                         |
 | `output.ts`          | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                              |
+| `prompts.ts`         | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets   |
+| `init-questions.ts`  | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly         |
+| `init.ts`            | the `init` handler: wiring, cancellation, the masked summary                                          |
 | `raw-diagnostics.ts` | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
 
 Everything a handler touches is injected: output (writer seam), version
@@ -60,6 +63,51 @@ that name or its short. Subcommand nesting is exactly one level
 (`service`), which is all §5.2 defines. Handlers receive parsed
 `flags`/`positionals`; thrown errors are reported as command failures
 (exit 1), so prefer returning precise codes.
+
+## The `init` question layer (task 130, spec §5.3, decision D-099)
+
+`quotameter init` asks the §5.3 questions in order — IANA time zone, bind
+host, port, polling interval, optional account label, optional API key —
+through three modules:
+
+- **`prompts.ts`** — the `Prompter` seam (`ask`/`askSecret`, both resolving
+  `string | null`). The production `createReadlinePrompter` never uses
+  `readline`'s `question()`: piped input delivering several answers in one
+  chunk would drop every line that fires while no question callback is
+  pending, and a close without a final line would leave the promise pending
+  forever. Instead it owns a line queue fed by the interface's `line`
+  events, settles pending questions with `null` on `close`, and routes all
+  echo through a mutable gate — `askSecret` mutes the gate so a typed key
+  never reaches the terminal (terminal/raw mode is enabled exactly when
+  stdin is a TTY, the only mode where muting can hide input), and
+  type-ahead never echoes either: a `data` listener attached before the
+  interface mutes any chunk carrying more than one answer (a paste) before
+  readline can echo it, and a line arriving with no question pending latches
+  a silent mode for the rest of the flow. Tests inject a scripted prompter;
+  the real one is pinned over PassThrough streams and in child processes
+  (piped, and under a real PTY via `script` for both typing and a
+  whole-block paste).
+- **`init-questions.ts`** — `askInitQuestions(deps)` runs the flow; every
+  invalid answer is a stderr complaint and the same question again; any
+  closed input cancels the whole flow with `null`. The per-value parsers
+  (`parseTimeZone`, `parseHost`, `parsePort`, `parseIntervalSeconds`,
+  `parseAccountLabel`, `parseApiKey`) are exported for `init --yes` (task
+  131), and `buildInitConfig` is the single answers→`Config` assembly
+  (server + app; the `accounts` array is task 133's). Empty-answer
+  semantics: the default shown in the prompt for host/port/interval, skip
+  for label/key, and a loud error for the time zone — the system zone is a
+  hint inside the prompt, never an adoptable default (§5.3 step 2).
+- **`init.ts`** — `runInitCommand(deps)` wires the flow into the command
+  table, turns closed input into the standard handler failure
+  (`quotameter init: input closed … — initialization cancelled`, exit 1),
+  and prints `renderInitSummary`: every collected value except the key,
+  which appears only as `configured (hidden)` / `skipped` (§6.3, §15.4), a
+  password note for non-loopback hosts (§5.3 step 4), and the explicit
+  "nothing has been written yet" line until the persistence tasks land.
+
+The remaining §5.3 steps (existing-config detection, account connection
+test, service installation) extend `InitAnswers`/`buildInitConfig` rather
+than re-deriving validation.
 
 ## The `doctor --raw` diagnostic read path (task 103, spec §7.4/§5.5, decision D-067)
 
