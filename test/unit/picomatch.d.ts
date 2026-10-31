@@ -1,11 +1,14 @@
 /**
- * Minimal ambient types for picomatch — the matcher the installed Vitest uses
- * for coverage threshold keys (`resolveThresholds` compiles each non-global key
- * with `picomatch(key)`, default options; see coverage-thresholds.spec.ts for
- * the verification). picomatch 4 ships no bundled declarations and
- * `@types/picomatch` is not a dependency; the guard needs exactly this
- * factory-and-matcher surface. Remove this file if picomatch types ever become
- * available from the package itself.
+ * Minimal ambient types for picomatch — the matcher the coverage-threshold
+ * guard (`coverage-thresholds.spec.ts`, decision D-093) imports to mirror
+ * `resolveThresholds`' key compilation (`picomatch(key)`, default options;
+ * see that spec for the verification). picomatch is a declared devDependency
+ * (`^4.0.7`, the exact range the installed Vitest 5 declares, so the guard
+ * and the runner resolve one instance), and the declared 4.0.7 ships no
+ * declarations — no `types`/`typings` field and no `.d.ts` in the package —
+ * while `@types/picomatch` is not a dependency; the guard needs exactly this
+ * factory-and-matcher surface, so this file stays. Remove it if picomatch
+ * types ever become available from the package itself.
  */
 
 declare module 'picomatch' {
