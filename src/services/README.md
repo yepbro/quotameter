@@ -263,3 +263,20 @@ only; there is deliberately no backfill over pre-existing history
 (D-078). Flagged follow-up (recorded in D-078's consequences): the
 per-cycle read materializes the full retained series per metric until
 the repository gains a latest-valid-point read.
+
+Landed: [`history-timeline.ts`](./history-timeline.ts) — the §12.2
+collection-error and downtime timeline (task 120, decision D-080):
+`buildTimelineIndicators(runs, range)` maps §11.2 run records plus an
+explicit range to a kind-discriminated indicator union — one
+`collection_error` indicator per failed run (never merged), typed by the
+D-048/D-034 outcome vocabulary and carrying the run's evidence (HTTP
+status, sanitized message, attempts, `Retry-After` seconds), and
+`stopped_service` regions as maximal run-less sub-intervals whose silence
+strictly exceeds the three jitter-expanded effective intervals shared
+with `history-gaps.ts` (`gapThresholdMs` — one source of truth), widened
+by the boundary records' per-run interval stamps (D-075's span rule) and
+clamped to the range edges. Failure types and no-collection activity are
+structurally distinguishable — the task's done-condition, made
+executable by the suite. Pure: no storage, no clock (D-021);
+`Retry-After` deferrals and suspension probes are deliberately not
+subtracted from the silence (D-080, following D-075's precedent).
