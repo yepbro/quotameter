@@ -3,8 +3,9 @@
 Cross-cutting utilities shared across layers: the clock/time-zone API
 (`clock.ts`, task 071), rolling-range boundary calculations
 (`rolling-ranges.ts`, task 116), the shared epoch-millisecond comparator
-(`compare-epoch-ms.ts`, task U-013), the structured redacting logger
-(`logger.ts`, task 072), and version-string helpers (`version.ts`).
+family (`compare-epoch-ms.ts`, tasks U-013 and U-023), the structured
+redacting logger (`logger.ts`, task 072), and version-string helpers
+(`version.ts`).
 
 **Rule:** this layer is a leaf — it imports nothing from other `src/` modules.
 External packages are allowed (`clock.ts` uses Luxon, `logger.ts` uses Pino —
@@ -128,13 +129,18 @@ spec §16; journald collects them). Never `console` — ESLint forbids it in
   the marker is absent from the raw JSON line — the task 072
   done-condition.
 
-## `compare-epoch-ms.ts` — the shared epoch-ms ordering (spec §10, decision D-090)
+## `compare-epoch-ms.ts` — the shared epoch-ms ordering family (spec §10, decisions D-090 and D-096)
 
-One comparator for every chronological sort over `EpochMs` data:
+One contract family for every chronological sort over `EpochMs` data.
 `compareEpochMs(a, b)` returns −1/0/1 and slots directly into
-`Array#sort`. It replaced the three byte-identical private copies the
+`Array#sort`; it replaced the three byte-identical private copies the
 history services carried (tasks 119–121 — task 121's review P3 asked for
 exactly this single-siting, and the parallel wave deferred it here).
+`compareByEpochMs(primary, tieBreak)` (U-023, D-096) builds the
+compound-key variant — order by the primary epoch, break exact ties by a
+second finite number ascending — and replaced the two subtraction-based
+sorts the U-013 census had flagged: `peak-hours-intervals.ts`'s
+`(start, end)` and `storage/backups.ts`'s `(timestampMs, seq)`.
 
 - **Total order over finite epoch-ms:** exact sign comparison — no
   subtraction, so no precision corners anywhere in the finite domain;
@@ -142,12 +148,26 @@ exactly this single-siting, and the parallel wave deferred it here).
   124's rolling-range properties generate over), where a difference-based
   comparator starts relying on IEEE-754 rounding for magnitudes ≥ 2⁵³.
 - **Non-finite input fails fast:** `NaN` and `±Infinity` throw a
-  `TypeError` naming both values. Timestamps are validated-finite data
-  under D-021 (the clock and every service seam reject non-finite values
-  first), and a silent NaN-as-equal answer would not be a total order —
-  a non-finite timestamp reaching an ordering decision is a missed
-  validation seam and fails loudly (the D-059/D-064 convention).
+  `TypeError` naming both values (per key role in the compound form).
+  Timestamps are validated-finite data under D-021 (the clock and every
+  service seam reject non-finite values first), and a silent NaN-as-equal
+  answer would not be a total order — a non-finite timestamp reaching an
+  ordering decision is a missed validation seam and fails loudly (the
+  D-059/D-064 convention). The compound form validates both keys of both
+  items on every invocation, primary pair first, so rejection never
+  depends on where a sort happens to stop comparing.
+- **Tie-break domain (D-096):** any finite `number`, ascending, the same
+  sign ladder — an epoch at the services site (`end`), an integer counter
+  at the storage site (`seq`); the family claims neither identity.
 - **Consumers:** the chronological sorts of the history services
   (`history-gaps.ts`, `history-downsample.ts`, `history-timeline.ts`);
-  `test/unit/compare-epoch-ms.spec.ts` pins both contract halves
-  (extreme-value exactness and the non-finite throw table included).
+  the peak-occurrence union sort of `peak-hours-intervals.ts`; the
+  `(timestampMs, seq)` retention order of `storage/backups.ts` — where
+  both keys are finite by construction (the creation path validates `now`
+  as a non-negative integer, and the file system's 255-byte name cap
+  bounds a grammar digit run at 241 digits, ~1e241, while a non-finite
+  parse needs 309 — so no reachable name can hand the comparator a key
+  its fail-fast contract must refuse).
+  `test/unit/compare-epoch-ms.spec.ts` pins both contract halves of both
+  members (extreme-value exactness, tie-break ordering, the non-finite
+  throw table, and `Array#sort` use included).

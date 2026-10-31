@@ -53,6 +53,7 @@ import { CONFIG_DEFAULTS, WEEK_DAYS } from '../schemas/config';
 import type { PeakHoursConfig } from '../schemas/config';
 import { isValidTimeZone, resolveTimeZone, zonedDateTime } from '../util/clock';
 import type { EpochMs, TimeZone } from '../util/clock';
+import { compareByEpochMs } from '../util/compare-epoch-ms';
 import { DAY_MS } from '../util/rolling-ranges';
 import { resolveLocalInstantDst } from './peak-hours-dst';
 
@@ -102,7 +103,12 @@ export interface LocalScheduleTime {
  * be monotone in local reading order, because §9.3's own gap shift is not
  * (a nonexistent 02:30 resolves past a real 03:00). The walk below unions
  * overlapping peak occurrences, so same-day disjoint windows may resolve to
- * overlapping instants and the timeline still partitions the range.
+ * overlapping instants and the timeline still partitions the range. The
+ * finiteness half is loud wherever it decides anything: a NaN edge
+ * survives the range clip and throws at the walk's sort (the shared
+ * compound-key comparator, D-096); an edge at ±Infinity never reaches
+ * that decision — the clip absorbs it into the range bounds or the
+ * inversion guard drops it, as for any instant beyond the range.
  */
 export type LocalInstantResolver = (time: LocalScheduleTime, timeZone: TimeZone) => EpochMs;
 
@@ -300,8 +306,18 @@ export function calculatePeakHoursIntervals(
   // to the still-uncovered stretch emits exactly the union: chronological,
   // adjacent, single coverage, for any resolver. Local times are rendered
   // from the finally emitted boundaries, so a clipped interval reports the
-  // instants it actually spans.
-  peaks.sort((left, right) => left.start - right.start || left.end - right.end);
+  // instants it actually spans. The `(start, end)` ordering is the shared
+  // compound-key family (`src/util/compare-epoch-ms.ts`, D-096): exact at
+  // every finite magnitude, and loud on a NaN edge where the old
+  // subtraction form silently collapsed it onto the tie-break (an edge at
+  // ±Infinity never reaches this sort — the range clip absorbs it or the
+  // inversion guard drops it).
+  peaks.sort(
+    compareByEpochMs(
+      (peak: PeakOccurrence) => peak.start,
+      (peak: PeakOccurrence) => peak.end,
+    ),
+  );
   const intervals: PeakHoursInterval[] = [];
   let uncoveredStart = from;
   for (const peak of peaks) {

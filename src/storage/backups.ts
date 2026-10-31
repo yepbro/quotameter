@@ -37,7 +37,13 @@
  *   raw name sort would evict `…-1` before `…-9` at the same instant
  *   invertedly across widths, and a future date-style name width would
  *   break it outright. `seq` breaks same-instant ties in creation order
- *   (no suffix reads as 0, the first of its instant).
+ *   (no suffix reads as 0, the first of its instant). The comparison is
+ *   `util`'s compound-key ordering family (D-096), exact at any finite
+ *   magnitude — and both keys are finite by construction here: the
+ *   creation path validates `now` as a non-negative integer, and on the
+ *   listing side the file system's 255-byte name cap bounds a digit run
+ *   at 241 digits (~1e241; a run that parses non-finite needs 309), so
+ *   no name a supported file system can hold yields a non-finite key.
  * - **Only automatic backups are ever retained or evicted.** §11.4 says
  *   "retain the three most recent automatic backups": the naming grammar
  *   (`backup-<digits>[-<seq>].sqlite`) is therefore the retention scope —
@@ -72,6 +78,7 @@
 import { mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import * as path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { compareByEpochMs } from '../util/compare-epoch-ms';
 
 /**
  * The subdirectory of the data directory automatic backups live in (spec
@@ -145,6 +152,12 @@ export interface AutomaticBackupResult {
   /** Generations evicted to honor {@link AUTOMATIC_BACKUP_RETAINED_COUNT}. */
   readonly evicted: ReadonlyArray<AutomaticBackup>;
 }
+
+/** Oldest-first ordering: instant, then same-instant sequence (D-096). */
+const byInstant = compareByEpochMs(
+  (backup: AutomaticBackup) => backup.timestampMs,
+  (backup: AutomaticBackup) => backup.seq,
+);
 
 /**
  * The backup directory inside a data directory:
@@ -253,9 +266,4 @@ export function createAutomaticBackup(options: AutomaticBackupOptions): Automati
 /** The candidate backup file name for one instant and sequence number. */
 function backupName(timestampMs: number, seq: number): string {
   return seq === 0 ? `backup-${timestampMs}.sqlite` : `backup-${timestampMs}-${seq}.sqlite`;
-}
-
-/** Oldest-first ordering: timestamp, then same-instant sequence. */
-function byInstant(a: AutomaticBackup, b: AutomaticBackup): number {
-  return a.timestampMs - b.timestampMs || a.seq - b.seq;
 }
