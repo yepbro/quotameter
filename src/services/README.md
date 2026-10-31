@@ -280,3 +280,22 @@ structurally distinguishable — the task's done-condition, made
 executable by the suite. Pure: no storage, no clock (D-021);
 `Retry-After` deferrals and suspension probes are deliberately not
 subtracted from the silence (D-080, following D-075's precedent).
+
+Landed: [`history-downsample.ts`](./history-downsample.ts) — the §13
+history downsampling (task 121, decision D-081):
+`downsampleHistorySeries(points, maxPoints, boundaries?)` aggregates an
+overfull series (§13's 1500-point default budget, 100–5000 bounds) into
+buckets while preserving per-field min/max, the caller's own first/last
+point objects, and critical boundaries — reset events and collection
+gaps arrive as data through structural interfaces satisfied verbatim by
+the D-074/D-075 outputs, never recomputed. Boundaries are separations
+between consecutive points (a reset at a point groups it post-side; a
+gap separates its whole bracketing pair); separations cut the sorted
+series into segments apportioned `1 + ⌊n·E/N⌋` uniform time slices each,
+with exact cross-multiplied integer membership, and the
+boundary-preservation rule outranks the budget (more segments than
+`maxPoints` → one bucket per segment). At-or-under-budget series pass
+through identically with `resolutionMs: null`. Property suites prove the
+preservation rules — budget bounds, no-loss/no-reorder coverage, per-field
+extrema equality, boundary cleanliness — and §17.3 names downsampling for
+mutation testing when task 125 configures critical-module thresholds.
