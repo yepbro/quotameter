@@ -13,8 +13,12 @@ endpoints, authentication, and response shapes), the task 095 contract-confirmat
 fixtures under a re-invention policy per spec §15.4/§17.1), the task 096 adapter contract (the
 implementation-facing requests, envelope rules, §8.4 metric mapping, and assumption ledger
 consumed by tasks 098–100), the task 112 peak-schedule encoding (the example configuration
-and its provenance), and the task 097 fixture-matrix note (the synthetic fixtures completing
-the adapter contract's coverage and the rows deliberately left unfixtured). The 094 snapshot
+and its provenance), the task 097 fixture-matrix note (the synthetic fixtures completing
+the adapter contract's coverage and the rows deliberately left unfixtured), the task 100
+mapping-verification and task 101 derived-field-audit rounds (the test-proof rounds over
+the metric mapping), and the task 127 schedule-source verification (the 2026-10-31 re-check
+of the official peak-hours schedule and rate pages — URLs, access date, weekdays, time zone,
+and rate semantics). The 094 snapshot
 records **only** what
 official Z.ai documentation says, with exact URLs and access dates; nothing there is inferred,
 and undocumented endpoints, fields, or samples are deliberately absent there (spec §8.3 forbids
@@ -1306,3 +1310,127 @@ the four overflow guards, the window-scaling overflow, a lone allowance (no deri
 percentages), and a derived `remaining` beside a supplied percentage (no cross-validation).
 Reverting the D-057 guard fails four property tests and four example tests — the proof has
 killing power, not just coverage.
+
+## Schedule-source verification — 2026-10-31 (task 127)
+
+### What this section is
+
+Task 127's independent re-verification of the peak-hours schedule encoded in the
+example configuration (task 112): the official Z.ai pages were read again on
+**2026-10-31** and this section stores the complete evidence the provider
+documentation must carry for the schedule — official URLs, the date checked, the
+weekdays, the time zone, and the rate semantics (spec §9.1, §18). Per the
+dossier's append-only rule nothing below rewrites an earlier section; the
+cross-check verdict against the seeded configuration closes the section.
+
+### Sources checked
+
+Continuing the dossier's source numbering:
+
+| #   | URL                                               | What it is                                                         | Retrieved  | Result                                                             |
+| --- | ------------------------------------------------- | ------------------------------------------------------------------ | ---------- | ------------------------------------------------------------------ |
+| 15  | <https://docs.z.ai/devpack/overview>              | Current individual credits plans (Lite/Pro/Max) — spec §9.1's page | 2026-10-31 | Read; window, zone, and all rate statements verbatim               |
+| 16  | <https://docs.z.ai/devpack/teamplan>              | Current team credits plans (Standard/Premium Seat)                 | 2026-10-31 | Read; same statements verbatim, including the 0.5×/1× rate wording |
+| 17  | <https://docs.z.ai/devpack/notice/usage-revision> | "Plan Update Announcement" (published 2026-07-30)                  | 2026-10-31 | Read; credits transition, weekend rule, legacy-plan rates          |
+| 18  | <https://docs.z.ai/llms.txt>                      | Complete documentation index of `docs.z.ai`                        | 2026-10-31 | Read; no page beyond 15–17 states the schedule or the rates        |
+| 19  | <https://docs.z.ai/devpack/faq>                   | Devpack FAQ (subscriptions, promotions, quota mechanics)           | 2026-10-31 | Read; every promotion named is an unrelated mechanism (see below)  |
+| 20  | <https://docs.z.ai/release-notes/new-released>    | Model release notes                                                | 2026-10-31 | Read; model releases only — no schedule or rate change announced   |
+
+Sources 15–17 are the schedule-bearing pages of the 094 round (its sources 1, 14,
+and 9) re-read as of today. Source 18 was re-scanned to catch a schedule/rate page the
+094 round had no reason to list: the devpack group's other entries are tool-integration
+guides and feature notes (`coding-tool-helper`, `tool/others`, `latest-model`, the four
+MCP guides, `best-practice`, `memory-mechanism`) and campaign/policy pages (`transition`
+— the Legacy Plan Migration Notice, `credit-campaign-rules` — the referral campaign); no
+page beyond 15–17 is titled or described in the index as stating usage rates or the peak
+window. Sources 19 and 20 were read in full to rule out a superseding promotion or
+announcement. For future re-checks, source 15 is the canonical page: it is the one spec
+§9.1 cites and carries every verified statement.
+
+### Verbatim statements (as served 2026-10-31)
+
+Window, weekdays, and time zone — identical on sources 15 and 16, and restated
+for the legacy tables of source 17:
+
+> **Peak hours**: Monday to Friday, 14:00–18:00 Singapore Standard Time (UTC+8).
+
+Rates on the current credits plans — sources 15 and 16, both inside the shared
+"Credit Calculation" section that follows the Lite/Pro/Max and Standard/Premium
+seat allowance tables respectively (tier-unqualified: the same sentences apply to
+every tier of the credits plans):
+
+> **During off-peak hours, model usage is charged at 50% of the standard credit rate**.
+
+> Maximum token allowance: All usage occurs during off-peak hours and is charged
+> at 0.5× the standard credit rate.
+>
+> Minimum token allowance: All usage occurs during peak hours and is charged at
+> 1× the standard credit rate.
+
+The second quotation (the pages' "How the Range Is Calculated" block) is the
+direct official statement of **both** multiplier values — peak usage at 1× the
+standard credit rate, off-peak at 0.5×. The 094/112 rounds rested on the 50%
+sentence alone; it is the only current-plan rate statement they quote.
+
+Weekends, from source 17 ("Key points", about existing active subscriptions):
+
+> Existing active subscriptions are not affected. In addition, usage on weekends
+> will be deducted at off-peak rates all day.
+
+Legacy plan V2 rates, source 17, "Usage Reference for Legacy Plans" (quoted to
+keep the boundary below explicit):
+
+> **GLM-5.3**: As the flagship model, API calls consume quota at a rate of "1×
+> during off-peak hours and 3× during peak hours".
+>
+> **GLM-5.3-Flash**: API calls consume quota at a rate of 0.4× during off-peak
+> hours and 1.2× during peak hours.
+
+### Rate semantics
+
+- **What the configured multipliers mean** (spec §9.1 defines them as the
+  quota-credit rate relative to the standard rate): peak `multiplier: 1.0` is the
+  standard credit rate itself — "charged at 1× the standard credit rate" during
+  peak hours (sources 15, 16); `offPeakMultiplier: 0.5` is the off-peak rate —
+  "50% of the standard credit rate", "0.5×" (sources 15, 16). Both configured
+  numbers are stated verbatim on the current-plan pages; neither is inferred.
+- **Which plans they apply to**: the current credits plans — individual
+  Lite/Pro/Max (source 15) and team Standard/Premium Seat (source 16). Source 17
+  confirms the credits system is the current plan structure ("The new
+  credits-based plan is now available. Previous plans are no longer sold to new
+  users."). The base per-model and per-MCP credit multipliers are separate from
+  the temporal schedule (§9.1): the peak/off-peak multiplier scales computed
+  credit usage and does not change per-model pricing.
+- **Model usage vs MCP tool calls**: the discount sentence names **model**
+  usage; no official statement extends the 50% off-peak rate to MCP per-call
+  credit usage, and none excludes it. The gap is recorded here rather than
+  guessed.
+- **Promotion window: none stated.** Both current-plan pages present the 50%
+  off-peak rate as a standing property of the credits plans, with no end date or
+  "limited-time" qualifier. The time-limited offers the official docs do state
+  are different mechanisms and must not be read as the schedule: team-plan
+  overage billing at 10% off the model API list price ("Limited-time offer",
+  source 16), the 50% Migration Support subscription-price discount for legacy
+  migrants (source 17, "remains valid through its original validity period"),
+  and the campaign benefits of source 19 (referral credits under "Invite
+  Friends, Get Credits", and Quota Reset Cards). None of them touches the peak
+  window or the off-peak credit rate.
+- **Legacy plans stay excluded**: source 17's "1×/3×" (GLM-5.3) and
+  "0.4×/1.2×" (GLM-5.3-Flash) request multipliers — its legacy team table
+  repeats them — belong to legacy plan V2 metering, not the current credits
+  plans, exactly as task 112 recorded. Encoding them would be the guessed
+  multiplier this task exists to rule out.
+
+### Verdict against the seeded configuration
+
+Every value of [`docs/config.example.json`](../config.example.json)'s `peakHours`
+(task 112) matches the official sources as read on 2026-10-31: weekdays
+Monday–Friday; window `14:00`–`18:00`; time zone — "Singapore Standard Time
+(UTC+8)" → `Asia/Singapore`, the IANA zone for UTC+8 (Singapore observes no
+DST); peak `1.0` ("1× the standard credit rate"); off-peak `0.5` ("50%",
+"0.5×"). No discrepancy to flag and no configuration change proposed. The
+schedule has now been verified unchanged against the official source on three
+dated checks: 2026-10-28 (spec §9.1), 2026-10-30 (tasks 094 and 112), and
+2026-10-31 (this round). The falsifier that would reopen it: either
+current-plan page dropping or rewording the quoted statements, or the
+documentation index (source 18) growing a new schedule/rate notice.
