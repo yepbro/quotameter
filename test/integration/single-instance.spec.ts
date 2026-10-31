@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { chmodSync, existsSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,7 @@ import { QuotameterApp } from '../../src/server/app';
 import { runServer } from '../../src/server/main';
 import {
   createSingleInstanceLock,
+  guardFilePath,
   isProcessAlive,
   lockFilePath,
 } from '../../src/server/single-instance';
@@ -48,16 +50,34 @@ interface ExitResult {
   stderr: string;
 }
 
+/** Extra scenario inputs for {@link spawnRunner} (U-017 orchestration). */
+interface RunnerExtras {
+  /** Pid of the crafted stale starter lock that `break-pause` waits behind. */
+  readonly stalePid?: number;
+  /** Recovery-guard wait override for the child (D-086 seam). */
+  readonly guardTimeoutMs?: number;
+  /** Write the `guard-waiting` marker at the child's first guard-wait poll. */
+  readonly markGuardWait?: boolean;
+}
+
 /** Spawns the real lock module in a child process (see the runner header). */
 function spawnRunner(
-  mode: 'hold' | 'run',
+  mode: 'hold' | 'run' | 'break-pause',
   dataDir: string,
+  extras: RunnerExtras = {},
 ): { child: ChildProcess; exited: Promise<ExitResult> } {
   const child = spawn(process.execPath, ['--import', 'jiti/register', RUNNER], {
     env: {
       ...process.env,
       QUOTAMETER_TEST_RUNNER_DATA_DIR: dataDir,
       QUOTAMETER_TEST_RUNNER_MODE: mode,
+      ...(extras.stalePid === undefined
+        ? {}
+        : { QUOTAMETER_TEST_RUNNER_STALE_PID: String(extras.stalePid) }),
+      ...(extras.guardTimeoutMs === undefined
+        ? {}
+        : { QUOTAMETER_TEST_RUNNER_GUARD_TIMEOUT_MS: String(extras.guardTimeoutMs) }),
+      ...(extras.markGuardWait === true ? { QUOTAMETER_TEST_RUNNER_MARK_GUARD_WAIT: '1' } : {}),
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -83,6 +103,14 @@ async function waitForFile(file: string, timeoutMs = 10_000): Promise<void> {
       expect(existsSync(file), `expected ${file} to appear`).toBe(true);
     },
     { timeout: timeoutMs, interval: 25 },
+  );
+}
+
+/** Recovery residue in the data directory: guard files and capture asides. */
+function recoveryResidue(dataDir: string): string[] {
+  return readdirSync(dataDir).filter(
+    (name) =>
+      name.startsWith('.quotameter.lock.guard') || name.startsWith('.quotameter.lock.aside.'),
   );
 }
 
@@ -477,6 +505,362 @@ describe('createSingleInstanceLock', () => {
   });
 });
 
+describe('recovery guard protocol (D-086, U-017)', () => {
+  it('acquires the guard after its live holder releases it', async () => {
+    const dir = await createTempDir('quotameter-lock-guard-release-');
+    try {
+      const guardPath = guardFilePath(dir.path);
+      await fs.writeFile(
+        guardPath,
+        `${JSON.stringify({ pid: process.pid, id: 'guard' })}\n`,
+        'utf8',
+      );
+      let probes = 0;
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        guardPollMs: 2,
+        guardTimeoutMs: 5000,
+        isAlive: (pid) => {
+          if (pid === process.pid && probes++ === 0) {
+            // The live guard holder releases while we are waiting it out.
+            rmSync(guardPath);
+          }
+          return true;
+        },
+      });
+
+      await lock.start();
+
+      expect((await readLock(dir.path)).pid).toBe(process.pid);
+      expect(readdirSync(dir.path)).toEqual(['.quotameter.lock']);
+      await lock.stop();
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('refuses via the attempt limit when a live guard holder never releases', async () => {
+    const dir = await createTempDir('quotameter-lock-guard-wedged-');
+    try {
+      const guardPath = guardFilePath(dir.path);
+      await fs.writeFile(
+        guardPath,
+        `${JSON.stringify({ pid: process.pid, id: 'guard' })}\n`,
+        'utf8',
+      );
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        // The guard holder (ourselves) is live; the stale lock holder is not.
+        isAlive: (pid) => pid === process.pid,
+        guardTimeoutMs: 20,
+        guardPollMs: 2,
+        maxAttempts: 2,
+      });
+      await expect(lock.start()).rejects.toThrow(
+        /refusing to start: the attempt limit \(2\) for acquiring the single-instance lock/,
+      );
+      // A live guard is never broken, and the break itself never landed.
+      expect(await fs.readFile(guardPath, 'utf8')).toContain('"pid"');
+      expect((await readLock(dir.path)).pid).toBe(GHOST_PID);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('breaks an unparseable guard and proceeds', async () => {
+    const dir = await createTempDir('quotameter-lock-guard-damaged-');
+    try {
+      // Guard publication is atomic (scratch + hardlink), so content that
+      // does not parse cannot be a guard this protocol wrote — breaking it
+      // is the self-healing choice for the internal namespace.
+      await fs.writeFile(guardFilePath(dir.path), 'not json at all\n', 'utf8');
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+
+      const lock = createSingleInstanceLock({ dataDir: dir.path, isAlive: () => false });
+      await lock.start();
+
+      expect((await readLock(dir.path)).pid).toBe(process.pid);
+      expect(readdirSync(dir.path)).toEqual(['.quotameter.lock']);
+      await lock.stop();
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('treats a guard path that vanishes on read as contention and refuses via the attempt limit', async () => {
+    const dir = await createTempDir('quotameter-lock-guard-dangling-');
+    try {
+      // A dangling symlink squats the guard path: link(2) answers EEXIST,
+      // the read answers ENOENT — the guard is neither acquirable nor
+      // breakable, so acquisition degrades to the bounded contention
+      // refusal instead of hanging or deleting the foreign object.
+      await fs.symlink('nowhere', guardFilePath(dir.path));
+
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        guardTimeoutMs: 20,
+        maxAttempts: 2,
+      });
+      await expect(lock.start()).rejects.toThrow(
+        /refusing to start: the attempt limit \(2\) for acquiring the single-instance lock/,
+      );
+      expect(readdirSync(dir.path)).toEqual(['.quotameter.lock.guard']);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('restores an orphaned capture aside before publishing, then refuses against the restored live holder', async () => {
+    const dir = await createTempDir('quotameter-lock-aside-restore-');
+    try {
+      // The state a crashed recovery span leaves: a stale guard, a vacant
+      // lock path, and a capture aside holding a displaced live lock.
+      await fs.writeFile(
+        guardFilePath(dir.path),
+        `${JSON.stringify({ pid: GHOST_PID })}\n`,
+        'utf8',
+      );
+      const victimPayload = `${JSON.stringify({ pid: GHOST_PID + 1, id: 'victim-token' })}\n`;
+      await fs.writeFile(
+        join(dir.path, `.quotameter.lock.aside.${randomUUID()}`),
+        victimPayload,
+        'utf8',
+      );
+
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        // The guard holder is dead; the displaced victim is live.
+        isAlive: (pid) => pid === GHOST_PID + 1,
+      });
+      await expect(lock.start()).rejects.toThrow(
+        new RegExp(
+          `refusing to start: another quotameter instance \\(pid ${GHOST_PID + 1}\\) is using data ` +
+            `directory`,
+        ),
+      );
+
+      // The victim's lock was restored to the path; the aside and the stale
+      // guard were consumed; no publication happened into the vacancy.
+      expect(await fs.readFile(lockFilePath(dir.path), 'utf8')).toBe(victimPayload);
+      expect(recoveryResidue(dir.path)).toEqual([]);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('drops an orphaned capture aside whose content is already represented at the path', async () => {
+    const dir = await createTempDir('quotameter-lock-aside-represented-');
+    try {
+      await fs.writeFile(
+        guardFilePath(dir.path),
+        `${JSON.stringify({ pid: GHOST_PID })}\n`,
+        'utf8',
+      );
+      const livePayload = `${JSON.stringify({ pid: GHOST_PID + 1 })}\n`;
+      await craftLock(dir.path, livePayload);
+      await fs.writeFile(
+        join(dir.path, `.quotameter.lock.aside.${randomUUID()}`),
+        livePayload,
+        'utf8',
+      );
+
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        isAlive: (pid) => pid === GHOST_PID + 1,
+      });
+      await expect(lock.start()).rejects.toThrow(
+        new RegExp(
+          `refusing to start: another quotameter instance \\(pid ${GHOST_PID + 1}\\) is using data ` +
+            `directory`,
+        ),
+      );
+
+      // The redundant aside name was dropped; the path was never touched.
+      expect(await fs.readFile(lockFilePath(dir.path), 'utf8')).toBe(livePayload);
+      expect(recoveryResidue(dir.path)).toEqual([]);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('keeps an orphaned capture aside whose content differs from the occupied path', async () => {
+    const dir = await createTempDir('quotameter-lock-aside-divergent-');
+    try {
+      await fs.writeFile(
+        guardFilePath(dir.path),
+        `${JSON.stringify({ pid: GHOST_PID })}\n`,
+        'utf8',
+      );
+      const livePayload = `${JSON.stringify({ pid: GHOST_PID + 1 })}\n`;
+      const divergentPayload = `${JSON.stringify({ pid: GHOST_PID + 2 })}\n`;
+      await craftLock(dir.path, livePayload);
+      await fs.writeFile(
+        join(dir.path, `.quotameter.lock.aside.${randomUUID()}`),
+        divergentPayload,
+        'utf8',
+      );
+
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        isAlive: (pid) => pid === GHOST_PID + 1,
+      });
+      await expect(lock.start()).rejects.toThrow(
+        new RegExp(
+          `refusing to start: another quotameter instance \\(pid ${GHOST_PID + 1}\\) is using data ` +
+            `directory`,
+        ),
+      );
+
+      // Divergent content cannot be proven redundant (only D-086's accepted
+      // residual or a protocol violator can produce it): the captured file
+      // is kept aside — never destroyed — and the path was not touched.
+      expect(await fs.readFile(lockFilePath(dir.path), 'utf8')).toBe(livePayload);
+      const asides = readdirSync(dir.path).filter((name) =>
+        name.startsWith('.quotameter.lock.aside.'),
+      );
+      expect(asides).toHaveLength(1);
+      expect(await fs.readFile(join(dir.path, asides[0]!), 'utf8')).toBe(divergentPayload);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('leaves a captured file aside when the path is retaken mid-release', async () => {
+    const dir = await createTempDir('quotameter-lock-aside-midrelease-');
+    try {
+      const lockPath = lockFilePath(dir.path);
+      const capturedContent: string[] = [];
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        onCaptured: async (captured) => {
+          capturedContent.push(captured);
+          // A protocol violator occupies the vacant path while the captured
+          // foreign file is being decided; the restore must not overwrite it.
+          writeFileSync(lockPath, `${JSON.stringify({ pid: GHOST_PID + 2 })}\n`);
+        },
+      });
+      await lock.start();
+
+      // A recovery race replaced our lock with foreign content.
+      const foreign = `${JSON.stringify({ pid: GHOST_PID + 1 })}\n`;
+      rmSync(lockPath);
+      writeFileSync(lockPath, foreign);
+
+      await expect(lock.stop()).resolves.toBeUndefined();
+
+      // The violator's file was not stomped...
+      expect((await readLock(dir.path)).pid).toBe(GHOST_PID + 2);
+      // ...and the captured foreign file was never destroyed — it waits
+      // aside for a later guard holder to recover it.
+      expect(capturedContent).toEqual([foreign]);
+      const asides = readdirSync(dir.path).filter((name) =>
+        name.startsWith('.quotameter.lock.aside.'),
+      );
+      expect(asides).toHaveLength(1);
+      expect(await fs.readFile(join(dir.path, asides[0]!), 'utf8')).toBe(foreign);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('never removes a live guard captured mid-break and degrades to contention', async () => {
+    const dir = await createTempDir('quotameter-lock-guard-livecapture-');
+    try {
+      const guardPath = guardFilePath(dir.path);
+      const stalePayload = `${JSON.stringify({ pid: GHOST_PID })}\n`;
+      const livePayload = `${JSON.stringify({ pid: GHOST_PID + 1 })}\n`;
+      await fs.writeFile(guardPath, stalePayload, 'utf8');
+      let probes = 0;
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        guardTimeoutMs: 20,
+        guardPollMs: 2,
+        maxAttempts: 1,
+        isAlive: () => {
+          if (probes++ === 0) return false;
+          // Between the guard inspection (stale) and the capture decision,
+          // the guard path is retaken by a live holder's guard — the
+          // one-level-down race D-086 documents as its accepted residual.
+          rmSync(guardPath, { force: true });
+          writeFileSync(guardPath, livePayload);
+          return true;
+        },
+      });
+      await expect(lock.start()).rejects.toThrow(
+        /refusing to start: the attempt limit \(1\) for acquiring the single-instance lock/,
+      );
+      // The live replacement guard was restored to the path and kept; the
+      // captured stale guard waits aside as crash residue, never deleted.
+      expect(await fs.readFile(guardPath, 'utf8')).toBe(livePayload);
+      const asides = readdirSync(dir.path).filter((name) =>
+        name.startsWith('.quotameter.lock.guard.aside.'),
+      );
+      expect(asides).toHaveLength(1);
+      expect(await fs.readFile(join(dir.path, asides[0]!), 'utf8')).toBe(stalePayload);
+      expect(existsSync(lockFilePath(dir.path))).toBe(false);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('abandons the release when the guard is wedged by a live holder', async () => {
+    const dir = await createTempDir('quotameter-lock-release-abandon-');
+    try {
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        guardTimeoutMs: 20,
+        guardPollMs: 2,
+        isAlive: (pid) => pid === process.pid,
+      });
+      await lock.start();
+
+      // A wedged live guard appears between acquisition and release.
+      await fs.writeFile(
+        guardFilePath(dir.path),
+        `${JSON.stringify({ pid: process.pid, id: 'guard' })}\n`,
+        'utf8',
+      );
+
+      // Infallible by the component contract: the release is abandoned.
+      await expect(lock.stop()).resolves.toBeUndefined();
+      // The lock file stays for the next starter's stale-break (this pid
+      // will be dead by then) — self-healing, never a hang.
+      expect((await readLock(dir.path)).pid).toBe(process.pid);
+      expect(existsSync(guardFilePath(dir.path))).toBe(true);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('propagates a capture failure after releasing the guard', async () => {
+    const dir = await createTempDir('quotameter-lock-capture-error-');
+    try {
+      const lockPath = lockFilePath(dir.path);
+      await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+      const lock = createSingleInstanceLock({
+        dataDir: dir.path,
+        // The lock becomes unreadable after inspection, so the capture's
+        // read of the renamed-aside file fails with EACCES (non-root).
+        isAlive: () => {
+          chmodSync(lockPath, 0o000);
+          return false;
+        },
+      });
+      await expect(lock.start()).rejects.toThrow(/\(EACCES\)/);
+      // The guard was released even though the critical section failed; the
+      // unreadable capture aside needs no mode restore — unlink ignores the
+      // file mode, so the recursive cleanup removes it.
+      expect(
+        readdirSync(dir.path).filter((name) => name.startsWith('.quotameter.lock.guard')),
+      ).toEqual([]);
+    } finally {
+      await dir.remove();
+    }
+  });
+});
+
 describe('isProcessAlive', () => {
   it('reports the current process and pid 1 as alive', () => {
     expect(isProcessAlive(process.pid)).toBe(true);
@@ -668,6 +1052,129 @@ describe('real processes (child, via singleInstanceRunner)', () => {
     },
     CHILD_TIMEOUT,
   );
+
+  it('keeps mutual exclusion when a stale break races a live holder and a third starter (U-017 regression)', async () => {
+    const dir = await createTempDir('quotameter-lock-u017-review-');
+    // The reviewer's stale starter lock: a dead pid no process ever has.
+    await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+    // The lagging breaker: inspects the stale lock, stalls until a live
+    // holder has replaced it, and then parks mid-recovery — after the
+    // rename, with the path vacant and the capture aside.
+    const breaker = spawnRunner('break-pause', dir.path, {
+      stalePid: GHOST_PID,
+      guardTimeoutMs: 20_000,
+    });
+    let holder: { child: ChildProcess; exited: Promise<ExitResult> } | undefined;
+    let third: { child: ChildProcess; exited: Promise<ExitResult> } | undefined;
+    try {
+      await waitForFile(join(dir.path, 'saw-stale'));
+
+      // The legitimate live holder: breaks the stale lock, publishes, runs.
+      holder = spawnRunner('hold', dir.path);
+      await waitForFile(join(dir.path, 'held'));
+
+      // The breaker wakes and renames the LIVE holder's lock aside.
+      await waitForFile(join(dir.path, 'captured'));
+      expect(existsSync(lockFilePath(dir.path))).toBe(false);
+
+      // A third process must not be able to publish into that vacancy:
+      // the recovery guard (D-086) makes it wait, never win. The
+      // `guard-waiting` marker is causal — it is written at the third's
+      // first guard-wait poll, which can only happen while the breaker
+      // still parks on the guard — so the assertions below are provably
+      // non-vacuous, with no timing assumptions.
+      third = spawnRunner('run', dir.path, { guardTimeoutMs: 20_000, markGuardWait: true });
+      await waitForFile(join(dir.path, 'guard-waiting'));
+      expect(third.child.exitCode).toBeNull();
+      expect(existsSync(lockFilePath(dir.path))).toBe(false);
+
+      // Release the breaker: the capture is not the stale lock it
+      // inspected, so it restores the holder's lock into the still-vacant
+      // path and then refuses against the live holder.
+      writeFileSync(join(dir.path, 'resume'), 'resume\n');
+      const breakerResult = await breaker.exited;
+      expect(breakerResult.code).toBe(1);
+      expect(breakerResult.stderr).toMatch(
+        /refusing to start: another quotameter instance \(pid \d+\) is using data/,
+      );
+      expect(breakerResult.stderr).toContain(String(holder.child.pid));
+
+      // The third process proceeds once the guard frees — straight into
+      // the restored live lock: it must refuse too, never coexist with the
+      // holder. (Under the pre-D-086 protocol it would have acquired the
+      // vacant path and kept running — the stranding this test pins shut.)
+      const thirdResult = await third.exited;
+      expect(thirdResult.code).toBe(1);
+      expect(thirdResult.stderr).toMatch(
+        /refusing to start: another quotameter instance \(pid \d+\) is using data/,
+      );
+
+      // Exactly one holder survived: the original one, still running.
+      expect(holder.child.exitCode).toBeNull();
+      expect((await readLock(dir.path)).pid).toBe(holder.child.pid);
+      expect(recoveryResidue(dir.path)).toEqual([]);
+    } finally {
+      killIfAlive(breaker.child);
+      await breaker.exited;
+      if (holder !== undefined) {
+        killIfAlive(holder.child);
+        await holder.exited;
+      }
+      if (third !== undefined) {
+        killIfAlive(third.child);
+        await third.exited;
+      }
+      await dir.remove();
+    }
+  }, 60_000);
+
+  it("restores a live holder's lock from a capture aside after the breaker dies mid-recovery (U-017)", async () => {
+    const dir = await createTempDir('quotameter-lock-u017-crash-');
+    await craftLock(dir.path, `${JSON.stringify({ pid: GHOST_PID })}\n`);
+    const breaker = spawnRunner('break-pause', dir.path, {
+      stalePid: GHOST_PID,
+      guardTimeoutMs: 20_000,
+    });
+    let holder: { child: ChildProcess; exited: Promise<ExitResult> } | undefined;
+    try {
+      await waitForFile(join(dir.path, 'saw-stale'));
+      holder = spawnRunner('hold', dir.path);
+      await waitForFile(join(dir.path, 'held'));
+      await waitForFile(join(dir.path, 'captured'));
+      expect(existsSync(lockFilePath(dir.path))).toBe(false);
+
+      // Kill the breaker mid-span: a stale guard, a vacant lock path, and
+      // an orphaned capture aside holding the live holder's only artefact.
+      breaker.child.kill('SIGKILL');
+      await breaker.exited;
+      expect(isProcessAlive(breaker.child.pid!)).toBe(false);
+
+      // The next starter breaks the stale guard, restores the holder's
+      // lock from the aside under the guard, and then refuses against the
+      // live pid — the displaced holder never even notices.
+      const third = spawnRunner('run', dir.path, { guardTimeoutMs: 20_000 });
+      const thirdResult = await third.exited;
+      expect(thirdResult.code).toBe(1);
+      expect(thirdResult.stderr).toMatch(
+        new RegExp(
+          `refusing to start: another quotameter instance \\(pid ${holder.child.pid}\\) is using data`,
+        ),
+      );
+
+      expect(holder.child.exitCode).toBeNull();
+      expect((await readLock(dir.path)).pid).toBe(holder.child.pid);
+      // The stale guard and the orphaned aside were both consumed.
+      expect(recoveryResidue(dir.path)).toEqual([]);
+    } finally {
+      killIfAlive(breaker.child);
+      await breaker.exited;
+      if (holder !== undefined) {
+        killIfAlive(holder.child);
+        await holder.exited;
+      }
+      await dir.remove();
+    }
+  }, 60_000);
 });
 
 /** Escapes a literal string for embedding into a RegExp. */

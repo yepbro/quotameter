@@ -4,7 +4,7 @@
  * Prevents a second process from using the same data directory at the same
  * time: the lock file lives inside the data directory, so two instances with
  * different data directories never contend, while two processes on one data
- * directory do (spec §5.6, decision D-017).
+ * directory do (spec §5.6, decision D-017, recovery protocol D-086).
  *
  * Node's `fs` has no `flock`, and native modules are out of the question
  * (spec §3, decision D-002), so the lock is an atomically published lockfile:
@@ -18,6 +18,24 @@
  * removed is the file that was inspected stale; every acquisition carries a
  * random token, so release removes exactly its own file and never a
  * replacement installed by a recovery race.
+ *
+ * D-017's rename-aside had a stranding window (D-086): between the rename and
+ * the restore, the lock path is vacant, and a third process could publish its
+ * own lock into the vacancy — the restore then hit `EEXIST`, the displaced
+ * (possibly live) holder stayed stranded in the aside file, and two processes
+ * shared the data directory. The recovery protocol now serializes every
+ * path-vacating span (break, release) against every path-occupying operation
+ * (publication) with a recovery guard — `.quotameter.lock.guard`, acquired by
+ * the same atomic hardlink trick: a breaker holds the guard across the whole
+ * rename→verify→restore/remove span, and a publisher holds it across its
+ * `link(2)` attempt. There is no check-then-act window on either side, so no
+ * publisher can interleave into a breaker's vacancy and the restoring link
+ * always finds the path vacant. A guard holder that crashed mid-span is
+ * detected by its recorded pid: the stale guard is broken (same
+ * capture-then-decide primitive, one level down), and once under the guard
+ * any capture aside left behind by the crashed span is recovered — restored
+ * to the vacant path it was displaced from, so a live holder's lock survives
+ * even a crash of the process that was recovering it.
  *
  * The module exposes the primitive as a `LifecycleComponent` (task 060):
  * `start` acquires — a refusal or failure throws and aborts startup through
@@ -36,12 +54,32 @@ import type { LifecycleComponent } from './app';
 /** Lock file name inside the data directory; scratch files share its prefix. */
 const LOCK_FILE_NAME = '.quotameter.lock';
 
+/**
+ * Recovery guard file name inside the data directory (D-086): serializes
+ * path-vacating recovery spans against publications of a new lock.
+ */
+const GUARD_FILE_NAME = '.quotameter.lock.guard';
+
+/** Capture-aside file prefix: `<lock>.aside.<uuid>` files left mid-recovery. */
+const ASIDE_PREFIX = `${LOCK_FILE_NAME}.aside.`;
+
 /** Attempts to outlast contention (concurrent stale-breaking) before giving up. */
 const DEFAULT_MAX_ATTEMPTS = 5;
+
+/** Total time one guard acquisition waits out a live guard holder. */
+const DEFAULT_GUARD_TIMEOUT_MS = 1000;
+
+/** Delay between guard acquisition attempts while the holder is live. */
+const DEFAULT_GUARD_POLL_MS = 5;
 
 /** Absolute path of the lock file guarding `dataDir`. */
 export function lockFilePath(dataDir: string): string {
   return path.join(dataDir, LOCK_FILE_NAME);
+}
+
+/** Absolute path of the recovery guard file of `dataDir` (D-086). */
+export function guardFilePath(dataDir: string): string {
+  return path.join(dataDir, GUARD_FILE_NAME);
 }
 
 /**
@@ -77,11 +115,26 @@ export interface SingleInstanceOptions {
   /** Acquisition attempt limit; defaults to {@link DEFAULT_MAX_ATTEMPTS}. */
   readonly maxAttempts?: number;
   /**
+   * Total time one recovery-guard acquisition waits out a live guard holder
+   * before giving up (the attempt then counts as contention); defaults to
+   * {@link DEFAULT_GUARD_TIMEOUT_MS}.
+   */
+  readonly guardTimeoutMs?: number;
+  /** Delay between guard acquisition attempts; defaults to {@link DEFAULT_GUARD_POLL_MS}. */
+  readonly guardPollMs?: number;
+  /**
    * Notified whenever an existing lock blocks acquisition, before it is
    * inspected. Diagnostic seam for the future structured logger (task 072)
    * and for tests that simulate concurrent holders.
    */
   readonly onContended?: () => void;
+  /**
+   * Notified with the captured content while a break or release holds the
+   * recovery guard, before the captured file is removed or restored.
+   * Diagnostic seam for the future structured logger (task 072) and for
+   * tests that pause the recovery at the captured-file decision point.
+   */
+  readonly onCaptured?: (capturedContent: string) => void | Promise<void>;
 }
 
 /** The acquired lock: its path and the unique token that identifies our file. */
@@ -99,7 +152,10 @@ interface LockDeps {
   readonly pid: number;
   readonly isAlive: (pid: number) => boolean;
   readonly maxAttempts: number;
+  readonly guardTimeoutMs: number;
+  readonly guardPollMs: number;
   readonly onContended?: () => void;
+  readonly onCaptured?: (capturedContent: string) => void | Promise<void>;
 }
 
 /**
@@ -116,7 +172,10 @@ export function createSingleInstanceLock(options: SingleInstanceOptions): Lifecy
     pid: options.pid ?? process.pid,
     isAlive: options.isAlive ?? isProcessAlive,
     maxAttempts: options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+    guardTimeoutMs: options.guardTimeoutMs ?? DEFAULT_GUARD_TIMEOUT_MS,
+    guardPollMs: options.guardPollMs ?? DEFAULT_GUARD_POLL_MS,
     onContended: options.onContended,
+    onCaptured: options.onCaptured,
   };
   let held: HeldLock | undefined;
   return {
@@ -134,7 +193,7 @@ export function createSingleInstanceLock(options: SingleInstanceOptions): Lifecy
       if (held === undefined) return;
       const current = held;
       held = undefined;
-      await releaseLock(current);
+      await releaseLock(deps, current);
     },
   };
 }
@@ -182,7 +241,7 @@ async function acquireLock(deps: LockDeps): Promise<HeldLock> {
       }
       // Stale — break it, but only if the captured file is byte-for-byte the
       // one inspected (a replacement installed meanwhile is not ours to take).
-      await removeIfIdentifiedBy(lockPath, (captured) => captured === inspected.content);
+      await removeIfIdentifiedBy(lockPath, (captured) => captured === inspected.content, deps);
     }
   } catch (error) {
     if (error instanceof LockRefusedError) throw error;
@@ -211,8 +270,11 @@ async function ensureDataDir(dataDir: string): Promise<void> {
  * is already there — creation and exclusion are one decision, with no window
  * in which a half-written lock is visible. The payload carries a random token
  * that later identifies this acquisition by content, not by inode (an inode
- * can be reused by a same-path delete-and-recreate). Returns `null` when
- * contended.
+ * can be reused by a same-path delete-and-recreate). The link runs under the
+ * recovery guard (D-086), so it can never land in the vacancy a concurrent
+ * breaker is holding a captured file aside for. Returns `null` when
+ * contended — including when the guard never freed up in time, which the
+ * bounded attempt loop turns into the contention refusal.
  */
 async function publishLock(
   lockPath: string,
@@ -232,21 +294,25 @@ async function publishLock(
       // Stryker disable next-line StringLiteral
       flag: 'wx',
     });
-    try {
-      await fs.link(scratch, lockPath);
-    } catch (error) {
-      // Untestable-here mutant (U-006 triage): the 'true' variant needs a
-      // non-EEXIST link failure, which is not producible deterministically —
-      // the scratch write in the same directory fails first for every
-      // permission/ROFS cause, and a directory at the lock path yields EEXIST
-      // (overlayfs) or EPERM (ext4) before any test can pin the difference.
-      // The co-excluded 'false' variant (EEXIST rethrown, contention breaks)
-      // is killable and stays pinned by the contender tests.
-      // Stryker disable next-line ConditionalExpression
-      if (errnoIs(error, 'EEXIST')) return null;
-      throw error;
-    }
-    return { lockPath, token };
+    const linked = await withGuard(deps, async () => {
+      await recoverOrphanAsides(lockPath);
+      try {
+        await fs.link(scratch, lockPath);
+      } catch (error) {
+        // Untestable-here mutant (U-006 triage): the 'true' variant needs a
+        // non-EEXIST link failure, which is not producible deterministically —
+        // the scratch write in the same directory fails first for every
+        // permission/ROFS cause, and a directory at the lock path yields EEXIST
+        // (overlayfs) or EPERM (ext4) before any test can pin the difference.
+        // The co-excluded 'false' variant (EEXIST rethrown, contention breaks)
+        // is killable and stays pinned by the contender tests.
+        // Stryker disable next-line ConditionalExpression
+        if (errnoIs(error, 'EEXIST')) return false;
+        throw error;
+      }
+      return true;
+    });
+    return linked === true ? { lockPath, token } : null;
   } finally {
     await fs.rm(scratch, { force: true });
   }
@@ -258,10 +324,10 @@ interface InspectedLock {
 }
 
 /**
- * Reads the current lock, or `null` if it vanished (the holder released it
- * between our failed publish and this read). The content comes from one open
- * file, so it always describes a single state even if the path is replaced
- * concurrently.
+ * Reads the current lock or guard file, or `null` if it vanished (the holder
+ * released it between our failed publish and this read). The content comes
+ * from one open file, so it always describes a single state even if the path
+ * is replaced concurrently.
  */
 async function inspectLock(lockPath: string): Promise<InspectedLock | null> {
   let handle: fs.FileHandle;
@@ -312,63 +378,216 @@ function parseHolderPid(content: string): number | null {
 }
 // Stryker restore BlockStatement
 
+/** Resolves after `ms` milliseconds — the guard wait's poll delay. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Publishes the guard payload atomically (the same scratch+`link(2)` trick as
+ * the lock): `EEXIST` means a live-or-stale guard is in the way. Returns
+ * `false` when contended.
+ */
+async function publishGuard(guardPath: string, deps: LockDeps): Promise<boolean> {
+  const scratch = `${guardPath}.tmp.${deps.pid}.${randomUUID()}`;
+  try {
+    await fs.writeFile(scratch, `${JSON.stringify({ pid: deps.pid, id: randomUUID() })}\n`, {
+      // Stryker disable next-line StringLiteral
+      encoding: 'utf8',
+      mode: 0o600,
+      // Stryker disable next-line StringLiteral
+      flag: 'wx',
+    });
+    try {
+      await fs.link(scratch, guardPath);
+    } catch (error) {
+      // Same shape as the publish contention branch: only EEXIST means
+      // "someone holds the guard"; every other failure is a filesystem
+      // failure and propagates to be wrapped with the data-directory context.
+      // Stryker disable next-line ConditionalExpression
+      if (errnoIs(error, 'EEXIST')) return false;
+      throw error;
+    }
+    return true;
+  } finally {
+    await fs.rm(scratch, { force: true });
+  }
+}
+
+/**
+ * Acquires the recovery guard (D-086): one atomic hardlink, retried while a
+ * live holder keeps it. A guard whose recorded pid is no longer alive belongs
+ * to a process that crashed inside its recovery span — it is broken with the
+ * same capture-then-decide primitive applied to the guard path (no guard one
+ * level down; the recursion ends here). Payload that does not parse is
+ * breakable too: guard publication is atomic, so damaged content can never be
+ * a guard this protocol wrote. Returns `null` when the bounded wait ran out.
+ */
+async function acquireGuard(deps: LockDeps): Promise<true | null> {
+  const guardPath = guardFilePath(deps.dataDir);
+  const deadline = Date.now() + deps.guardTimeoutMs;
+  for (;;) {
+    if (await publishGuard(guardPath, deps)) return true;
+    if (Date.now() >= deadline) return null;
+    const inspected = await inspectLock(guardPath);
+    if (inspected === null) {
+      // The holder released between our failed publish and this read — race
+      // for the now-vacant guard path, without hot-spinning on it.
+      await sleep(deps.guardPollMs);
+      continue;
+    }
+    const holderPid = parseHolderPid(inspected.content);
+    if (holderPid !== null && deps.isAlive(holderPid)) {
+      await sleep(deps.guardPollMs);
+      continue;
+    }
+    // The onCaptured seam stays lock-only (its contract says "while a break
+    // or release holds the recovery guard"): a guard-path capture happens
+    // before this process holds anything.
+    await captureAndDecide(guardPath, (captured) => {
+      const pid = parseHolderPid(captured);
+      return pid === null || !deps.isAlive(pid);
+    });
+  }
+}
+
+/**
+ * Runs `critical` while holding the recovery guard (D-086): the only
+ * operations that may vacate the lock path (break, release) and the only
+ * operation that may occupy it (publication) all run inside this guard, so a
+ * captured file can always be restored into the provably vacant path it was
+ * displaced from. Returns `null` when the guard could not be acquired in
+ * time — callers treat that as contention or abandon the (best-effort)
+ * operation; errors of `critical` propagate unchanged.
+ */
+async function withGuard<T>(deps: LockDeps, critical: () => Promise<T>): Promise<T | null> {
+  if ((await acquireGuard(deps)) === null) return null;
+  try {
+    return await critical();
+  } finally {
+    await fs.rm(guardFilePath(deps.dataDir), { force: true });
+  }
+}
+
+/**
+ * Recovers capture-aside files orphaned by a crashed recovery span. Only
+ * called with the guard held: no live recovery span can coexist, so any
+ * `<lock>.aside.<uuid>` file present was left behind by a process that died
+ * between its rename and its decision. Each orphan is restored to the lock
+ * path it was displaced from — it may be a live holder's only artefact —
+ * unless the path is occupied. An occupied path drops the aside name only
+ * when it carries byte-identical content (a restore that crashed between
+ * its link and the aside removal — provably the only case while guard
+ * mutual exclusion holds); divergent content is possible only through
+ * D-086's accepted residual or a protocol violator, and the captured file
+ * is then kept aside for a later recovery — never destroyed.
+ */
+async function recoverOrphanAsides(lockPath: string): Promise<void> {
+  const dataDir = path.dirname(lockPath);
+  for (const name of await fs.readdir(dataDir)) {
+    if (!name.startsWith(ASIDE_PREFIX)) continue;
+    const aside = path.join(dataDir, name);
+    const asideContent = await fs.readFile(aside, 'utf8');
+    let restored = false;
+    try {
+      await fs.link(aside, lockPath);
+      restored = true;
+    } catch (error) {
+      if (!errnoIs(error, 'EEXIST')) throw error;
+    }
+    if (restored) {
+      await fs.rm(aside, { force: true });
+      continue;
+    }
+    const at = await inspectLock(lockPath);
+    // An unreadable path (out-of-protocol writer) keeps the aside too.
+    if (at !== null && at.content === asideContent) {
+      await fs.rm(aside, { force: true });
+    }
+  }
+}
+
 /**
  * Removes the lock file iff `identifiesOurs` accepts the captured content,
  * atomically deciding the winner among concurrent contenders: every process
  * renames the path aside under a name only it knows (one rename succeeds, the
  * rest see `ENOENT` and give up), reads the captured file, and only the
  * process that recognizes the file as the one it may remove deletes it. A
- * file that is not ours is put back into a vacant path only — never over a
- * newer lock that may have taken the path meanwhile. One primitive serves
- * both stale-breaking (same content as inspected) and release (our token).
+ * file that is not ours is put back into the path — under the recovery guard
+ * (D-086) the path is guaranteed vacant at that moment, because no publisher
+ * can acquire it mid-span; if it is taken anyway (a protocol violator), the
+ * captured file stays aside — deleting it could destroy a live holder's only
+ * artefact. One primitive serves both stale-breaking (same content as
+ * inspected) and release (our token).
  */
 async function removeIfIdentifiedBy(
   lockPath: string,
   identifiesOurs: (capturedContent: string) => boolean,
+  deps: LockDeps,
 ): Promise<boolean> {
-  const aside = `${lockPath}.aside.${randomUUID()}`;
+  const outcome = await withGuard(deps, async () => {
+    await recoverOrphanAsides(lockPath);
+    return captureAndDecide(lockPath, identifiesOurs, deps.onCaptured);
+  });
+  return outcome === true;
+}
+
+/**
+ * The raw capture-then-decide step shared by the lock protocol (under the
+ * recovery guard) and the guard's own stale-break (unguarded — the recursion
+ * ends here, see {@link acquireGuard}): rename `targetPath` aside, read the
+ * captured file, notify `onCaptured`, then remove the file iff
+ * `identifiesRemovable` accepts the captured content, or restore it.
+ */
+async function captureAndDecide(
+  targetPath: string,
+  identifiesRemovable: (capturedContent: string) => boolean,
+  onCaptured?: (capturedContent: string) => void | Promise<void>,
+): Promise<boolean> {
+  const aside = `${targetPath}.aside.${randomUUID()}`;
   try {
-    await fs.rename(lockPath, aside);
+    await fs.rename(targetPath, aside);
   } catch {
     // Nothing to take (or the path is unreachable) — the caller retries or
-    // reports; never throw past a component hook. Equivalent mutant (U-006
-    // triage): no caller reads this boolean, so its exact value is dead.
-    // Stryker disable next-line BooleanLiteral
+    // reports; never throw past a component hook.
     return false;
   }
-  const isOurs = identifiesOurs(await fs.readFile(aside, 'utf8'));
-  if (isOurs) {
-    // Equivalent mutants (U-006 triage): `aside` was just read successfully,
-    // so it exists and force is moot; the return value is read by no caller.
-    // Stryker disable next-line ObjectLiteral, BooleanLiteral
+  const captured = await fs.readFile(aside, 'utf8');
+  if (onCaptured !== undefined) await onCaptured(captured);
+  if (identifiesRemovable(captured)) {
     await fs.rm(aside, { force: true });
-    // Stryker disable next-line BooleanLiteral
     return true;
   }
   try {
-    // Restore the captured file unless a newer lock has taken the path; if
-    // the path is taken, the file stays aside — deleting it could destroy a
-    // live holder's only artefact.
-    await fs.link(aside, lockPath);
-    // Equivalent mutants (U-006 triage): as above — the file exists, and no
-    // caller reads the outcome.
-    // Stryker disable next-line ObjectLiteral, BooleanLiteral
+    // Restore the captured file; under the recovery guard the path is
+    // provably vacant (D-086). If it is taken anyway, the file stays aside —
+    // never destroyed: a later guard holder recovers it, or (one level down,
+    // on the guard path) it is accepted crash residue, like D-016's temp
+    // files.
+    await fs.link(aside, targetPath);
     await fs.rm(aside, { force: true });
   } catch {
-    // Best effort: the path is owned by a newer lock.
+    // Best effort: the path is owned by a newer file.
   }
-  // Stryker disable next-line BooleanLiteral
   return false;
 }
 
 /**
  * Releases the held lock: the path is removed only while it still carries
  * this acquisition's unique token, so a replacement installed by a recovery
- * race is left to whoever installed it. Infallible by the component contract.
+ * race is left to whoever installed it. Infallible by the component contract
+ * — when the guard cannot be acquired (a wedged live recovery), the release
+ * is abandoned and the lock file stays for the next starter's stale-break.
  */
-async function releaseLock(held: HeldLock): Promise<void> {
+async function releaseLock(deps: LockDeps, held: HeldLock): Promise<void> {
   try {
-    await removeIfIdentifiedBy(held.lockPath, (captured) => lockTokenOf(captured) === held.token);
+    await removeIfIdentifiedBy(
+      held.lockPath,
+      (captured) => lockTokenOf(captured) === held.token,
+      deps,
+    );
   } catch {
     // A release problem must never block the remaining shutdown sequence.
   }
