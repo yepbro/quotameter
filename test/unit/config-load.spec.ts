@@ -96,6 +96,24 @@ describe('parseJson', () => {
     expect(result.ok === false && result.problems).toHaveLength(1);
   });
 
+  it('turns a non-Error throw of the string coercion into a problem, never rethrowing (U-016)', () => {
+    // JSON.parse on a typed string only ever throws SyntaxError; the
+    // String() arm guards the "only failure mode becomes one readable
+    // problem" promise for a text whose string conversion itself throws.
+    // A non-Error class instance is the coercion throw nothing in the
+    // runtime produces on its own — the arm is otherwise unreachable.
+    class NotAnError {}
+    const hostile = {
+      toString: () => {
+        throw new NotAnError();
+      },
+    };
+    expect(parseJson(hostile as unknown as string)).toEqual({
+      ok: false,
+      problems: ['invalid JSON: [object Object]'],
+    });
+  });
+
   it('reports trailing garbage instead of silently accepting it', () => {
     const result = parseJson('{"app":{"timezone":"UTC"}} extra');
     expect(result.ok).toBe(false);

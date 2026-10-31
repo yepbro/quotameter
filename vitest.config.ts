@@ -8,14 +8,25 @@ import { defineConfig } from 'vitest/config';
 // clock and rolling ranges (§10); peak-hours — the `peak-hours*` family
 // (§9.3), so service files still landing join as they appear; sanitization
 // — the response sanitizer (§7.4); secret-handling (§15.4) — the redacting
-// logger, config permission enforcement, and atomic config writes. No
-// threshold exceptions: every listed module measures 100% on all four axes.
-// `src/config/env.ts`, `load.ts`, and `reload.ts` are deliberately outside
-// the secret-handling set — configuration-loading mechanics (§6), not
-// secret protection (their measured branch coverage is below 100 today);
-// so is `src/providers/transport.ts` (§8.1 transport whose error paths
-// scrub secrets — a protection aspect, not its whole job; 95.45%
-// functions today). See D-085 for the boundary and the widening path.
+// logger, config permission enforcement, and atomic config writes; since
+// U-016 (decision D-089) also the configuration-loading mechanics —
+// `src/config/env.ts`, `load.ts`, `reload.ts` — and the shared transport
+// `src/providers/transport.ts`, each lifted to its measured maximum first.
+// Three single-branch arms inside those files are unreachable by
+// construction and are the only sanctioned exceptions (D-089): their keys
+// pin the achievable maximum instead of 100, so any NEW uncovered arm
+// (dropping the file 0.86–2.78 pp below its pinned maximum) still fails
+// the gate —
+// • `env.ts` branches 97.67 — the unknown-name sort comparator's equal-key
+//   arm: object keys are unique (the Proxy ownKeys invariant enforces it
+//   too) and string `<`/`>` is a total order, so "neither less nor
+//   greater" is impossible;
+// • `load.ts` branches 99.13 — the schema-growth fallback "must be one of
+//   the allowed values": every ConfigSchema union is literal-only today,
+//   so Ajv always emits const line-mates for a failed anyOf;
+// • `reload.ts` branches 97.22 — the `?? CONFIG_DEFAULTS.logging.level`
+//   fallback: the canonical parser always materializes `logging.level`
+//   and no injection seam bypasses it.
 const criticalModuleThreshold = {
   statements: 100,
   branches: 100,
@@ -46,7 +57,8 @@ export default defineConfig({
       reportsDirectory: process.env.COVERAGE_DIR ?? 'coverage',
       reporter: ['text', 'json-summary', 'html'],
       // Spec §17.3: the overall project target is 90%; the critical-module
-      // list is held at 100% — see `criticalModuleThreshold` above.
+      // list is held at 100% (or the documented per-axis maximum — see the
+      // U-016 exception notes above and decision D-089).
       thresholds: {
         lines: 90,
         branches: 90,
@@ -59,6 +71,11 @@ export default defineConfig({
         'src/util/logger.ts': criticalModuleThreshold,
         'src/config/permissions.ts': criticalModuleThreshold,
         'src/config/write.ts': criticalModuleThreshold,
+        'src/providers/transport.ts': criticalModuleThreshold,
+        // Branch maxima below 100: one unreachable arm each (D-089).
+        'src/config/env.ts': { ...criticalModuleThreshold, branches: 97.67 },
+        'src/config/load.ts': { ...criticalModuleThreshold, branches: 99.13 },
+        'src/config/reload.ts': { ...criticalModuleThreshold, branches: 97.22 },
       },
     },
     projects: [

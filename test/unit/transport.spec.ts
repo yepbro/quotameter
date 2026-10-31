@@ -480,6 +480,33 @@ describe('providerFetch response handling (injectable fetch)', () => {
     expect(errorSurface(error)).not.toContain(MARKER);
   });
 
+  it('ignores a failing body release on the non-2xx path (U-016)', async () => {
+    // cancel() only releases a discarded body's socket; a runtime whose
+    // release itself rejects must not mask the status observation with
+    // that failure. A real ReadableStream's cancel always resolves, so
+    // the double is the only deterministic route to the no-op catch.
+    const unreleasable = {
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: new Headers(),
+      body: { cancel: () => Promise.reject(new Error('release failed')) },
+    };
+    const fetchImpl = (async () => unreleasable as unknown as Response) as typeof globalThis.fetch;
+    const error = await providerFetch(markerRequest(), {
+      timeoutMs: 5000,
+      fetchImpl,
+    }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(TransportStatusError);
+    const status = error as TransportStatusError;
+    expect(status.kind).toBe('http-status');
+    expect(status.status).toBe(503);
+    expect(status.statusText).toBe('Service Unavailable');
+    expect(status.retryAfter).toBeUndefined();
+    expect(errorSurface(error)).not.toContain('release failed');
+    expect(errorSurface(error)).not.toContain(MARKER);
+  });
+
   it('enforces the response cap mid-read, allowing exactly the cap', async () => {
     const fetchImpl = (async () =>
       new Response('123456789', {
