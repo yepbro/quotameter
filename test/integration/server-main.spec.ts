@@ -168,6 +168,41 @@ describe('runServer (in-process)', () => {
     return call?.[1] as (signal: NodeJS.Signals) => void;
   }
 
+  /**
+   * A component that owns a release marker: its `stop` rejects on the first
+   * `failStops` calls and releases the marker on the next one — the leak
+   * shape of the startup-failure branch (a rollback stop that rejects leaves
+   * the marker held; D-088's `stop()` retry is the release route, and
+   * `runServer`'s best-effort stop is what triggers it, D-095). The
+   * rejection message carries the call number, so the retry round's
+   * AggregateError can be told apart from the rollback's rejection.
+   */
+  function leakyComponent(name: string, failStops: number) {
+    let stopCalls = 0;
+    let released = false;
+    const component: LifecycleComponent = {
+      name,
+      async start() {},
+      async stop() {
+        stopCalls += 1;
+        if (stopCalls <= failStops) throw new Error(`stop failed: ${name} (call ${stopCalls})`);
+        released = true;
+      },
+    };
+    return { component, stopCalls: () => stopCalls, released: () => released };
+  }
+
+  /** A component whose `start` rejects, so the startup sequence fails. */
+  function brokenStart(name: string): LifecycleComponent {
+    return {
+      name,
+      async start() {
+        throw new Error(`start failed: ${name}`);
+      },
+      async stop() {},
+    };
+  }
+
   it('returns 0 after a signal-triggered clean shutdown', async () => {
     const onSpy = vi.spyOn(process, 'on');
     const removeSpy = vi.spyOn(process, 'removeListener');
@@ -349,6 +384,55 @@ describe('runServer (in-process)', () => {
       stderr.restore();
     }
     expect(hooks).toEqual(['start:first', 'stop:first']);
+  });
+
+  it('releases a leaked component through a best-effort stop when startup fails', async () => {
+    // The rollback stop (call 1) rejects; runServer's awaited stop() —
+    // D-088's retry from 'failed' — is call 2 and releases the marker before
+    // the failure code is returned. The release route exists from main.
+    const leaky = leakyComponent('leaky', 1);
+    const stderr = captureStderr();
+    try {
+      const code = await runServer({
+        components: [leaky.component, brokenStart('broken')],
+        runtime: { nodeVersion: '22.13.0', uid: 1000 },
+      });
+      expect(code).toBe(1);
+      expect(leaky.released()).toBe(true);
+      expect(leaky.stopCalls()).toBe(2);
+      // The startup error is the diagnosis; the successful retry is silent.
+      expect(stderr.lines()).toMatch(/quotameter: start failed: broken/);
+      expect(stderr.lines()).not.toMatch(/failed to stop/);
+    } finally {
+      stderr.restore();
+    }
+  });
+
+  it('logs and swallows a failed cleanup retry without masking the startup error', async () => {
+    // Both the rollback stop (call 1) and runServer's retry (call 2) reject:
+    // the retry failure is reported and swallowed — the startup error stays
+    // what the process reports, and the exit code stays 1.
+    const leaky = leakyComponent('leaky', 2);
+    const stderr = captureStderr();
+    try {
+      const code = await runServer({
+        components: [leaky.component, brokenStart('broken')],
+        runtime: { nodeVersion: '22.13.0', uid: 1000 },
+      });
+      expect(code).toBe(1);
+      // Exactly one retry attempt from the entry point; the component stays
+      // held and addressable (D-088's repeatability remains the app's route).
+      expect(leaky.stopCalls()).toBe(2);
+      expect(leaky.released()).toBe(false);
+      const lines = stderr.lines();
+      expect(lines).toMatch(/quotameter: start failed: broken/);
+      // This round's AggregateError, in the shutdown vocabulary.
+      expect(lines).toMatch(/one or more components failed to stop: stop failed: leaky \(call 2\)/);
+      // The startup error came first — the stop-failure report never masks it.
+      expect(lines.indexOf('start failed: broken')).toBeLessThan(lines.indexOf('failed to stop'));
+    } finally {
+      stderr.restore();
+    }
   });
 
   it('describes non-Error rejections without crashing', async () => {

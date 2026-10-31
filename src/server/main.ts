@@ -129,6 +129,13 @@ export interface RunServerOptions {
  * (task 072) a service that refuses to start must still say why, and no
  * secrets can be involved this early (configuration is loaded later, §6).
  *
+ * A failed startup is followed by a best-effort `app.stop()` before the
+ * failure code is returned (§5.6, decision D-095): `start()`'s rollback
+ * records the components it could not release, and that stop is their retry
+ * route (D-088) — only this entry point knows the startup failed. The retry
+ * is awaited, and a rejecting retry is reported and swallowed: the startup
+ * error stays the process's diagnosis and the exit code stays `1`.
+ *
  * Shutdown handlers are installed only after a successful start, so signals
  * arriving during startup keep the OS-default disposition. The graceful
  * shutdown coordinator (task 075) owns this seam: it must move installation
@@ -142,12 +149,15 @@ export async function runServer(options: RunServerOptions = {}): Promise<number>
     return 1;
   }
 
-  let app: QuotameterApp;
+  let app: QuotameterApp | undefined;
   try {
     app = new QuotameterApp({ components: options.components ?? buildComponents() });
     await app.start();
   } catch (error) {
+    // The startup error is reported first — it stays the process's diagnosis
+    // even when the cleanup retry below hangs or fails.
     reportFatal(describeError(error));
+    await stopAfterFailedStart(app);
     return 1;
   }
 
@@ -190,6 +200,29 @@ function describeError(error: unknown): string {
     return `${error.message}: ${error.errors.map((inner) => describeError(inner)).join('; ')}`;
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Best-effort `app.stop()` from the startup-failure branch (§5.6, decision
+ * D-095, on D-088's retryable-cleanup semantics): the rollback inside
+ * `start()` records the components it could not release, and `stop()` from
+ * `'failed'` retries exactly those — but only the entry point knows the
+ * startup failed, so only it can trigger the retry before the process
+ * reports its failure code. The stop is awaited so the release attempt
+ * settles first; a rejecting retry is reported through the fatal-diagnostics
+ * seam and swallowed — the startup error printed above stays the diagnosis,
+ * and the exit code is unchanged. `app` is `undefined` only when assembly
+ * threw before the constructor completed, leaving nothing to stop (no route
+ * there today: `buildComponents()` assembles nothing yet — the §5.6
+ * construction tasks add the throwing constructions).
+ */
+async function stopAfterFailedStart(app: QuotameterApp | undefined): Promise<void> {
+  if (!app) return;
+  try {
+    await app.stop();
+  } catch (error) {
+    reportFatal(describeError(error));
+  }
 }
 
 /** Pre-logger fatal diagnostics; replaced by the structured logger (task 072). */
