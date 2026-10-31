@@ -556,3 +556,98 @@ describe('midnight-gap zones keep every local day (the count-bounded walk)', () 
     ]);
   });
 });
+
+describe('gap-shifted windows overlap in instant space; the timeline unions them (D-079)', () => {
+  // §9.3's gap shift is not monotone in wall order: on New York's
+  // 2026-03-08 gap day, nonexistent 02:10 resolves past the real 03:10, so
+  // wall-disjoint §9.2-valid windows can cover overlapping — even
+  // identical — instants. The partition contract survives by union
+  // clipping: chronological, adjacent, single coverage.
+  const gapDay = (windows: PeakWindow[]): PeakHoursConfig => ({
+    timezone: 'America/New_York',
+    offPeakMultiplier: 0.5,
+    windows,
+  });
+  const range = { from: iso('2026-03-08T00:00:00Z'), to: iso('2026-03-09T00:00:00Z') };
+
+  it('emits one peak where two windows resolve to identical instants', () => {
+    // 02:10–02:50 (entirely inside the gap) and 03:10–03:50 both resolve
+    // to [07:10Z, 07:50Z) — wall 02:10 shifted by the 60-minute gap *is*
+    // wall 03:10. The union is one peak; the earlier-listed window is the
+    // one reported (stable sort at equal start and end).
+    const timeline = calculatePeakHoursIntervals(
+      gapDay([
+        window({ id: 'w-gap', name: 'Gap window', days: ['sun'], start: '02:10', end: '02:50' }),
+        window({ id: 'w-after', name: 'After gap', days: ['sun'], start: '03:10', end: '03:50' }),
+      ]),
+      range,
+    );
+    expect(
+      timeline.intervals.map((interval) => [interval.kind, interval.start, interval.end]),
+    ).toEqual([
+      ['off-peak', iso('2026-03-08T00:00:00Z'), iso('2026-03-08T07:10:00Z')],
+      ['peak', iso('2026-03-08T07:10:00Z'), iso('2026-03-08T07:50:00Z')],
+      ['off-peak', iso('2026-03-08T07:50:00Z'), iso('2026-03-09T00:00:00Z')],
+    ]);
+    expect(timeline.intervals[1]).toMatchObject({ windowId: 'w-gap' });
+  });
+
+  it('clips a partially overlapping occurrence and reports the clipped local time', () => {
+    // 02:15–02:45 → [07:15Z, 07:45Z) and 03:15–03:20 → [07:15Z, 07:20Z):
+    // the shorter occurrence sorts first, the longer is clipped to start at
+    // its own uncovered stretch, and the clipped start renders truthfully.
+    const timeline = calculatePeakHoursIntervals(
+      gapDay([
+        window({ id: 'w-gap', name: 'Gap window', days: ['sun'], start: '02:15', end: '02:45' }),
+        window({ id: 'w-after', name: 'After gap', days: ['sun'], start: '03:15', end: '03:20' }),
+      ]),
+      range,
+    );
+    expect(
+      timeline.intervals.map((interval) => [
+        interval.kind,
+        interval.start,
+        interval.end,
+        interval.multiplier,
+      ]),
+    ).toEqual([
+      ['off-peak', iso('2026-03-08T00:00:00Z'), iso('2026-03-08T07:15:00Z'), 0.5],
+      ['peak', iso('2026-03-08T07:15:00Z'), iso('2026-03-08T07:20:00Z'), 1],
+      ['peak', iso('2026-03-08T07:20:00Z'), iso('2026-03-08T07:45:00Z'), 1],
+      ['off-peak', iso('2026-03-08T07:45:00Z'), iso('2026-03-09T00:00:00Z'), 0.5],
+    ]);
+    expect(timeline.intervals[1]).toMatchObject({
+      windowId: 'w-after',
+      localStart: '2026-03-08T03:15',
+      localEnd: '2026-03-08T03:20',
+    });
+    // The clipped peak reports the instants it actually spans: 07:20Z
+    // reads 03:20 EDT.
+    expect(timeline.intervals[2]).toMatchObject({
+      windowId: 'w-gap',
+      localStart: '2026-03-08T03:20',
+      localEnd: '2026-03-08T03:45',
+    });
+  });
+
+  it('drops an occurrence fully covered by an earlier one', () => {
+    // 02:30–03:45 → [07:30Z, 07:45Z) sits inside 02:00–04:00 →
+    // [07:00Z, 08:00Z): after the longer peak, the inner one clips to
+    // nothing and disappears.
+    const timeline = calculatePeakHoursIntervals(
+      gapDay([
+        window({ id: 'w-big', name: 'Big', days: ['sun'], start: '02:00', end: '04:00' }),
+        window({ id: 'w-inner', name: 'Inner', days: ['sun'], start: '02:30', end: '03:45' }),
+      ]),
+      range,
+    );
+    expect(
+      timeline.intervals.map((interval) => [interval.kind, interval.start, interval.end]),
+    ).toEqual([
+      ['off-peak', iso('2026-03-08T00:00:00Z'), iso('2026-03-08T07:00:00Z')],
+      ['peak', iso('2026-03-08T07:00:00Z'), iso('2026-03-08T08:00:00Z')],
+      ['off-peak', iso('2026-03-08T08:00:00Z'), iso('2026-03-09T00:00:00Z')],
+    ]);
+    expect(timeline.intervals[1]).toMatchObject({ windowId: 'w-big' });
+  });
+});

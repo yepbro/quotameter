@@ -178,16 +178,38 @@ range — peak intervals with exact UTC epoch-ms boundaries, `windowId`,
 `name`, `multiplier`, and both boundaries as `yyyy-MM-ddTHH:mm` local
 times in the schedule zone, plus the off-peak complement carrying
 `offPeakMultiplier`. The walk runs on the zone's local calendar days
-(anchored and count-bounded, one guard day early for `24:00` windows), and
-every wall-clock→instant conversion goes through the injectable
-`LocalInstantResolver` seam — the single §9.3 DST-policy siting point
-task 115 pins — whose default delegates to Luxon. D-021 discipline
+(anchored and count-bounded, one guard day early for `24:00` windows),
+sorts peaks by `(start, end)` and union-clips each start to the
+uncovered stretch (D-079: the §9.3 gap shift is not monotone in wall
+order, so wall-disjoint windows can overlap in instant space), and every
+wall-clock→instant conversion goes through the injectable
+`LocalInstantResolver` seam — the single §9.3 DST-policy siting point —
+whose default since task 115 is `resolveLocalInstantDst`
+([`peak-hours-dst.ts`](./peak-hours-dst.ts)). D-021 discipline
 throughout: the `resolveTimeZone` gate, the `zonedDateTime` bridge, no
 machine zone or clock. Fail-fast on non-finite or inverted ranges, spans
 beyond 3660 local days, and non-IANA zones; `from === to` yields an empty
 timeline. Scoped coverage is 100% (the §17.3 peak-hours target), and the
 suite is green under `TZ` = UTC, America/New_York, Pacific/Kiritimati,
 and Asia/Kathmandu.
+
+Landed: [`peak-hours-dst.ts`](./peak-hours-dst.ts) — the authoritative
+§9.3 DST resolution (task 115, decision D-079): `resolveLocalInstantDst`
+computes the policy explicitly by offset differencing through the D-021
+`zonedParts` bridge — candidate offsets probed ±1 day around the
+reading, occurrences verified by exact wall-clock round-trip, the
+**first occurrence** for ambiguous times being the earliest verified
+instant, and nonexistent local times shifting forward by the exact gap
+delta (the pre-transition offset's instant). A dedicated implementation
+rather than a pinned Luxon default because Luxon's algorithm is a
+convergence from a now-seeded offset guess, not policy; Luxon stays as a
+compat path with whole-matrix parity plus one pinned carve-out (`24:00`
+of a gapped-midnight day double-shifts under Luxon — `Pacific/Apia`
+2011-12-30 among the pinned cases). The matrix walks §17.1's seven named
+zones plus `America/Havana` (midnight gap), `Asia/Singapore` (§9.1
+production), `Asia/Sydney`, and `Pacific/Apia`, with an exhaustive
+every-minute transition-day check against an independent brute-force
+oracle; scoped coverage of both peak-hours modules is 100% (§17.3).
 
 Landed: [`history-gaps.ts`](./history-gaps.ts) — the §12.2 collection-gap
 detection (task 119, decision D-075): a pure seam mapping successful

@@ -26,16 +26,23 @@
  *   range's first local day included, so a window ending at `24:00` is
  *   considered even when only its final midnight lies inside the range.
  * - Converting a local wall-clock reading to an instant is exactly where
- *   §9.3's DST policy lives, and that policy is single-sited in task 115
- *   (decision D-021). This module routes every conversion through the
- *   injectable {@link LocalInstantResolver} seam; its default
- *   {@link resolveLocalInstantLuxon} delegates to Luxon, whose documented
- *   resolution matches §9.3 (nonexistent local times shift forward by the
- *   gap, ambiguous local times select the first occurrence — verified for
- *   Luxon 3.7.2). Task 115 pins or replaces the default without touching
- *   this algorithm; a window that collapses to nothing under the resolver
- *   (entirely inside a DST gap) is dropped and its wall-clock span becomes
- *   off-peak — the only policy-neutral reading.
+ *   §9.3's DST policy lives, and that policy is single-sited in
+ *   `peak-hours-dst.ts` (task 115, decisions D-021 and D-079). This module
+ *   routes every conversion through the injectable {@link
+ *   LocalInstantResolver} seam; its default {@link resolveLocalInstantDst}
+ *   computes §9.3's rules explicitly — nonexistent local times shift
+ *   forward by the exact gap, ambiguous local times select the first
+ *   occurrence. A window whose two edges resolve to the same instant or
+ *   invert (a start inside a spring-forward gap whose shift passes the end)
+ *   is dropped and its wall-clock span becomes off-peak.
+ * - §9.3's gap shift is **not monotone** in wall order — a nonexistent
+ *   02:30 resolves to the instant of 03:30, later than the real 03:00 — so
+ *   two wall-disjoint windows of one day can cover overlapping instants.
+ *   The walk therefore unions the peak occurrences: candidates are sorted
+ *   by `(start, end)` and each start is clipped to the still-uncovered
+ *   stretch (decision D-079, superseding D-073's monotonicity assumption),
+ *   which keeps the partition contract — chronological, adjacent, single
+ *   coverage — true for any resolver, monotone or not.
  * - No clock is read (D-021): the range endpoints are arguments, like the
  *   rolling-range bounds (D-068), and no function here consults the machine
  *   zone or `TZ`.
@@ -47,6 +54,7 @@ import type { PeakHoursConfig } from '../schemas/config';
 import { isValidTimeZone, resolveTimeZone, zonedDateTime } from '../util/clock';
 import type { EpochMs, TimeZone } from '../util/clock';
 import { DAY_MS } from '../util/rolling-ranges';
+import { resolveLocalInstantDst } from './peak-hours-dst';
 
 /* ── Vocabulary ────────────────────────────────────────────────────────── */
 
@@ -83,18 +91,18 @@ export interface LocalScheduleTime {
 
 /**
  * The local-time → instant seam — the single place §9.3's DST policy is
- * applied (decision D-021 defers it to task 115). Receives the branded zone
- * this module already validated; returns the UTC epoch the reading resolves
- * to. The default is {@link resolveLocalInstantLuxon}.
+ * applied (decision D-021; made explicit by task 115, decision D-079).
+ * Receives the branded zone this module already validated; returns the UTC
+ * epoch the reading resolves to. The default — the authoritative §9.3
+ * policy — is {@link resolveLocalInstantDst}; {@link
+ * resolveLocalInstantLuxon} remains exported as a compat alternative.
  *
- * Contract the timeline's partition relies on: implementations are weakly
- * monotone in local reading order — `(day D, m)` lexicographically before
- * `(day D', m')` never resolves to a later instant. The same-day disjoint
- * windows the §9.2 validation guarantees then stay disjoint as instants
- * (touching windows stay adjacent, and `1440` of day D coincides with `0`
- * of day D+1 or earlier), so peaks never overlap and the off-peak
- * complement stays exact. Any §9.3-faithful policy satisfies this; a
- * non-monotone resolver can produce overlapping peak intervals.
+ * Contract the timeline's partition relies on (D-079): implementations
+ * resolve deterministically and return finite instants — they need **not**
+ * be monotone in local reading order, because §9.3's own gap shift is not
+ * (a nonexistent 02:30 resolves past a real 03:00). The walk below unions
+ * overlapping peak occurrences, so same-day disjoint windows may resolve to
+ * overlapping instants and the timeline still partitions the range.
  */
 export type LocalInstantResolver = (time: LocalScheduleTime, timeZone: TimeZone) => EpochMs;
 
@@ -145,16 +153,20 @@ export interface PeakHoursTimeline {
   readonly intervals: readonly PeakHoursInterval[];
 }
 
-/* ── The default resolver (task 115 owns pinning its DST policy) ───────── */
+/* ── The compat resolver (Luxon; policy default lives in peak-hours-dst) ── */
 
 /**
- * The default {@link LocalInstantResolver}: Luxon's local wall-clock
- * resolution, applied to the calendar date's midnight. Verified for Luxon
- * 3.7.2 to match §9.3 exactly — a nonexistent local time (inside a
- * spring-forward gap) resolves shifted forward by the gap, an ambiguous one
- * (inside a fall-back overlap) to its first occurrence; `24:00` resolves to
- * the following day's local midnight through calendar-aware day arithmetic.
- * The §17.1 transition matrix that pins this policy belongs to task 115.
+ * The Luxon-backed {@link LocalInstantResolver} — task 114's original
+ * default, kept as the compat alternative. Its output follows Luxon's
+ * documented resolution: a nonexistent local time (inside a spring-forward
+ * gap) resolves shifted forward by the gap, an ambiguous one (inside a
+ * fall-back overlap) to its first occurrence; `24:00` resolves to the
+ * following day's local midnight through calendar-aware day arithmetic.
+ * Empirically equal to the authoritative {@link resolveLocalInstantDst}
+ * across the §17.1 transition matrix on the pinned runtime (Luxon 3.7.2;
+ * the parity sweep lives in `test/unit/peak-hours-dst.property.spec.ts`) —
+ * but the equality is verified, not guaranteed: Luxon converges on these
+ * answers from an offset guess seeded by the current instant (D-079).
  *
  * Fails loudly, never `NaN`: an unvalidatable zone, a non-integer or
  * out-of-range minute value, or an impossible calendar date (February 30)
@@ -205,7 +217,7 @@ export function resolveLocalInstantLuxon(time: LocalScheduleTime, timeZone: Time
 export function calculatePeakHoursIntervals(
   schedule: PeakHoursConfig,
   range: PeakHoursQueryRange,
-  resolveLocalInstant: LocalInstantResolver = resolveLocalInstantLuxon,
+  resolveLocalInstant: LocalInstantResolver = resolveLocalInstantDst,
 ): PeakHoursTimeline {
   const timeZone = resolveTimeZone(schedule.timezone);
   const { from, to } = range;
@@ -244,7 +256,7 @@ export function calculatePeakHoursIntervals(
     );
   }
 
-  const peaks: PeakInterval[] = [];
+  const peaks: PeakOccurrence[] = [];
   for (let offset = -1; offset <= spanDays; offset++) {
     const day = firstLocalDay.plus({ days: offset });
     const dayOfWeek = WEEK_DAYS[day.weekday - 1]!;
@@ -261,8 +273,9 @@ export function calculatePeakHoursIntervals(
       const windowStart = resolveLocalInstant(at(minutesOfWindowEdge(window.start)), timeZone);
       const windowEnd = resolveLocalInstant(at(minutesOfWindowEdge(window.end)), timeZone);
       if (windowEnd <= windowStart) {
-        // The window collapsed under the resolver (§9.3 DST policy, task
-        // 115); its wall-clock span simply stays off-peak.
+        // The window's edges resolve to one instant or invert — a start
+        // inside a spring-forward gap whose §9.3 shift reaches past the end
+        // (D-079); its wall-clock span simply stays off-peak.
         continue;
       }
       const start = Math.max(windowStart, from);
@@ -271,26 +284,45 @@ export function calculatePeakHoursIntervals(
         continue;
       }
       peaks.push({
-        kind: 'peak',
         start,
         end,
         multiplier: window.multiplier ?? CONFIG_DEFAULTS.peakHours.windowMultiplier,
         windowId: window.id,
         name: window.name,
-        localStart: formatLocalWallTime(start, timeZone),
-        localEnd: formatLocalWallTime(end, timeZone),
       });
     }
   }
 
-  peaks.sort((left, right) => left.start - right.start);
+  // Union of the occurrences as the timeline's peak set (D-079): §9.3's
+  // gap shift is not monotone in wall order — a nonexistent 02:30 resolves
+  // past a real 03:00 — so two wall-disjoint windows of a day can cover
+  // overlapping instants. Sorting by `(start, end)` and clipping each start
+  // to the still-uncovered stretch emits exactly the union: chronological,
+  // adjacent, single coverage, for any resolver. Local times are rendered
+  // from the finally emitted boundaries, so a clipped interval reports the
+  // instants it actually spans.
+  peaks.sort((left, right) => left.start - right.start || left.end - right.end);
   const intervals: PeakHoursInterval[] = [];
   let uncoveredStart = from;
   for (const peak of peaks) {
-    if (peak.start > uncoveredStart) {
-      intervals.push(offPeakInterval(uncoveredStart, peak.start, offPeakMultiplier, timeZone));
+    const start = Math.max(peak.start, uncoveredStart);
+    if (start >= peak.end) {
+      // Fully covered by earlier occurrences of the union.
+      continue;
     }
-    intervals.push(peak);
+    if (start > uncoveredStart) {
+      intervals.push(offPeakInterval(uncoveredStart, start, offPeakMultiplier, timeZone));
+    }
+    intervals.push({
+      kind: 'peak',
+      start,
+      end: peak.end,
+      multiplier: peak.multiplier,
+      windowId: peak.windowId,
+      name: peak.name,
+      localStart: formatLocalWallTime(start, timeZone),
+      localEnd: formatLocalWallTime(peak.end, timeZone),
+    });
     uncoveredStart = peak.end;
   }
   if (uncoveredStart < to) {
@@ -304,6 +336,18 @@ export function calculatePeakHoursIntervals(
 }
 
 /* ── Internals ─────────────────────────────────────────────────────────── */
+
+/**
+ * One window occurrence clipped to the query range — before the union
+ * clipping of the final walk and before its local times are rendered.
+ */
+interface PeakOccurrence {
+  readonly start: EpochMs;
+  readonly end: EpochMs;
+  readonly multiplier: number;
+  readonly windowId: string;
+  readonly name: string;
+}
 
 /**
  * Minutes since local midnight for an `HH:mm` or `24:00` window edge; only
