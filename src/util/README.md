@@ -2,8 +2,9 @@
 
 Cross-cutting utilities shared across layers: the clock/time-zone API
 (`clock.ts`, task 071), rolling-range boundary calculations
-(`rolling-ranges.ts`, task 116), the structured redacting logger (`logger.ts`,
-task 072), and version-string helpers (`version.ts`).
+(`rolling-ranges.ts`, task 116), the shared epoch-millisecond comparator
+(`compare-epoch-ms.ts`, task U-013), the structured redacting logger
+(`logger.ts`, task 072), and version-string helpers (`version.ts`).
 
 **Rule:** this layer is a leaf — it imports nothing from other `src/` modules.
 External packages are allowed (`clock.ts` uses Luxon, `logger.ts` uses Pino —
@@ -126,3 +127,27 @@ spec §16; journald collects them). Never `console` — ESLint forbids it in
   error payloads, sensitive keys) at every level of the ladder and asserts
   the marker is absent from the raw JSON line — the task 072
   done-condition.
+
+## `compare-epoch-ms.ts` — the shared epoch-ms ordering (spec §10, decision D-090)
+
+One comparator for every chronological sort over `EpochMs` data:
+`compareEpochMs(a, b)` returns −1/0/1 and slots directly into
+`Array#sort`. It replaced the three byte-identical private copies the
+history services carried (tasks 119–121 — task 121's review P3 asked for
+exactly this single-siting, and the parallel wave deferred it here).
+
+- **Total order over finite epoch-ms:** exact sign comparison — no
+  subtraction, so no precision corners anywhere in the finite domain;
+  exact at the ±8.64e15 ECMAScript time-value bounds (the domain task
+  124's rolling-range properties generate over), where a difference-based
+  comparator starts relying on IEEE-754 rounding for magnitudes ≥ 2⁵³.
+- **Non-finite input fails fast:** `NaN` and `±Infinity` throw a
+  `TypeError` naming both values. Timestamps are validated-finite data
+  under D-021 (the clock and every service seam reject non-finite values
+  first), and a silent NaN-as-equal answer would not be a total order —
+  a non-finite timestamp reaching an ordering decision is a missed
+  validation seam and fails loudly (the D-059/D-064 convention).
+- **Consumers:** the chronological sorts of the history services
+  (`history-gaps.ts`, `history-downsample.ts`, `history-timeline.ts`);
+  `test/unit/compare-epoch-ms.spec.ts` pins both contract halves
+  (extreme-value exactness and the non-finite throw table included).

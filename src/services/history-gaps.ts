@@ -42,6 +42,7 @@
  * the last (silence with no records is §12.2's stopped-service class).
  */
 
+import { compareEpochMs } from '../util/compare-epoch-ms';
 import {
   MAX_POLLING_INTERVAL_MS,
   MIN_POLLING_INTERVAL_MS,
@@ -186,13 +187,6 @@ function requireIntervalSeconds(intervalSeconds: number, caller: string): void {
       `${caller}: intervalSeconds must be an integer in [${MIN_INTERVAL_SECONDS}, ${MAX_INTERVAL_SECONDS}] (spec §7.1)`,
     );
   }
-}
-
-/** Non-subtraction ordering of epoch timestamps (no float-overflow corners). */
-function compareEpochMs(a: number, b: number): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
 }
 
 /**

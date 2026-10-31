@@ -57,6 +57,7 @@
  */
 
 import type { EpochMs } from '../util/clock';
+import { compareEpochMs } from '../util/compare-epoch-ms';
 import { gapThresholdMs } from './history-gaps';
 import {
   COLLECTION_OUTCOMES,
@@ -214,13 +215,6 @@ function requireIntervalSeconds(intervalSeconds: number, caller: string): void {
       `${caller}: intervalSeconds must be an integer in [${MIN_INTERVAL_SECONDS}, ${MAX_INTERVAL_SECONDS}] (spec §7.1)`,
     );
   }
-}
-
-/** Non-subtraction ordering of epoch timestamps (no float-overflow corners). */
-function compareEpochMs(a: number, b: number): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
 }
 
 /**

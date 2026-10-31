@@ -72,6 +72,7 @@
  */
 
 import type { EpochMs } from '../util/clock';
+import { compareEpochMs } from '../util/compare-epoch-ms';
 
 /* ── The §13 max-points contract ───────────────────────────────────────── */
 
@@ -307,13 +308,6 @@ function requireBoundaries(boundaries: DownsampleBoundaries, caller: string): vo
 }
 
 /* ── Segmentation ──────────────────────────────────────────────────────── */
-
-/** Non-subtraction ordering of epoch timestamps (no float-overflow corners). */
-function compareEpochMs(a: number, b: number): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
 
 /**
  * The segmentation question — "does a critical boundary fall between these
