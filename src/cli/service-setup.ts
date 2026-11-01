@@ -43,10 +43,16 @@
  * (review-round P1): one stderr problem, no commands rendered, no side
  * effects.
  *
- * The linger note is the minimum §5.3 requires here: user services stop at
- * owner logout, and the exact `sudo loginctl enable-linger <user>` command
- * is printed unconditionally because **detecting** the linger status is task
- * 138's feature; 138 replaces the unconditional note with detected guidance.
+ * The linger guidance is **detected, not unconditional** (task 138,
+ * `service-linger.ts`, decision D-107): on the paths where a user unit
+ * exists to keep alive — the installed outcome and the manual completion
+ * steps — the step probes the owner's linger state once through the
+ * injectable seam and renders per state: the exact `sudo loginctl
+ * enable-linger <user>` command with the logout/reboot consequence when
+ * linger is disabled (or undeterminable — unknown never silently counts
+ * as enabled), a plain confirmation with no command when it is already
+ * enabled. The outputs where no user service can linger (systemd absent,
+ * the foreground fallback, the system-unit route) carry no linger note.
  *
  * Everything with side effects is an injectable seam with a production
  * default: the capability probes read two well-known paths (no systemd
@@ -61,6 +67,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { CliOutput } from './output';
 import type { EnvSnapshot, ServiceOwnerContext } from './service-owner';
+import { probeUserLinger, renderLingerGuidance, type LingerState } from './service-linger';
+import type { UserLingerProbe } from './service-linger';
 import { SYSTEM_UNIT_INSTALL_PATH } from './systemd-unit';
 import { buildUserUnit, userUnitInstallPath, USER_UNIT_NAME } from './systemd-user-unit';
 
@@ -225,6 +233,11 @@ export interface ServiceSetupSeams {
   readonly runCommand?: ServiceCommandRunner;
   readonly writeUnitFile?: ServiceUnitWriter;
   readonly execPaths?: () => ServiceExecPaths;
+  /**
+   * The §5.3 step 7 linger-state probe (task 138, D-107); production
+   * `probeUserLinger` — the flag-file stat under `/var/lib/systemd/linger`.
+   */
+  readonly probeLinger?: UserLingerProbe;
   /** The stderr-line prefix for this step's failures; init passes its own. */
   readonly errorPrefix?: string;
 }
@@ -295,14 +308,6 @@ export async function writeUnitFileToDisk(installPath: string, content: string):
   await writeFile(installPath, content, { mode: 0o644 });
 }
 
-/** The exact linger command §5.3 step 7 prescribes (minimal note, task 138 owns detection). */
-function lingerLines(ownerName: string): string {
-  return [
-    'User services stop when their owner logs out. To keep the service running after logout or reboot, run:',
-    `  sudo loginctl enable-linger ${ownerName}`,
-  ].join('\n');
-}
-
 /**
  * Renders the `system-unit` plan: what the privileged flow does and which
  * §5.2 command performs it. The operations are deliberately not executed by
@@ -324,35 +329,43 @@ export function renderSystemUnitPlan(ownerName: string): string {
 
 /**
  * Renders the successful no-sudo outcome: the installed unit's location, the
- * command that enabled and started it, and the linger note.
+ * command that enabled and started it, and the detected linger guidance
+ * (task 138: the exact enable-linger command with the logout/reboot
+ * consequence unless linger is already on).
  */
-export function renderUserUnitInstalled(ownerName: string, installPath: string): string {
+export function renderUserUnitInstalled(
+  ownerName: string,
+  installPath: string,
+  linger: LingerState,
+): string {
   return [
     `Service setup: installed the user service for ${ownerName} — no sudo needed.`,
     `Unit file: ${installPath}`,
     `Enabled and started with: systemctl --user enable --now ${USER_UNIT_NAME}`,
-    lingerLines(ownerName),
+    renderLingerGuidance(ownerName, linger),
   ].join('\n');
 }
 
 /**
  * Renders the manual completion steps when the unit file exists on disk but
  * could not be enabled now (manager unreachable without sudo, or an enable
- * command failed): the exact commands for a logged-in session, the linger
- * note, and the foreground alternative. `lead` states why — the two callers
- * (unreachable manager, failed command) explain themselves differently.
+ * command failed): the exact commands for a logged-in session, the
+ * detected linger guidance (task 138), and the foreground alternative.
+ * `lead` states why — the two callers (unreachable manager, failed
+ * command) explain themselves differently.
  */
 export function renderUserUnitCompletionSteps(
   ownerName: string,
   installPath: string,
   lead: string,
+  linger: LingerState,
 ): string {
   return [
     `Service setup: ${lead}`,
     `The unit file is written to ${installPath}. Once you have a login session, run:`,
     '  systemctl --user daemon-reload',
     `  systemctl --user enable --now ${USER_UNIT_NAME}`,
-    lingerLines(ownerName),
+    renderLingerGuidance(ownerName, linger),
     'To run the service in the foreground in the meantime:',
     '  quotameter run',
   ].join('\n');
@@ -418,7 +431,8 @@ function thrownMessage(error: unknown): string {
  * Owner-context problems never reach this function: `init` resolves the
  * owner first and reports problems itself (D-105's contract). An owner
  * name outside the POSIX account grammar is refused here — it would be
- * interpolated into copy-paste command text.
+ * interpolated into copy-paste command text (and into the linger probe's
+ * flag-file path).
  */
 export async function runServiceSetupStep(
   output: CliOutput,
@@ -479,6 +493,14 @@ export async function runServiceSetupStep(
     output.out(renderManualRunSteps('the user unit could not be installed on this machine'));
     return;
   }
+  // §5.3 step 7's linger clause (task 138, D-107): every branch that
+  // remains renders the state-driven linger guidance — the unit file is on
+  // disk and will run under the user manager, whose survival past the
+  // owner's logout is exactly the linger question — so the state is probed
+  // once here. The write-failure fallback above renders no linger note:
+  // with no unit installed there is nothing for linger to keep alive, and
+  // the probe never runs there.
+  const linger = (seams.probeLinger ?? probeUserLinger)(context.user.name);
   if (route.path === 'manual') {
     // The manager is unreachable, but writing the unit file needs no
     // manager — the owner gets the exact enable commands for their next
@@ -488,6 +510,7 @@ export async function runServiceSetupStep(
         context.user.name,
         installPath,
         'the systemd user manager is not reachable in this session, so the user service could not be enabled automatically',
+        linger,
       ),
     );
     return;
@@ -510,10 +533,11 @@ export async function runServiceSetupStep(
           context.user.name,
           installPath,
           'the user service could not be enabled automatically',
+          linger,
         ),
       );
       return;
     }
   }
-  output.out(renderUserUnitInstalled(context.user.name, installPath));
+  output.out(renderUserUnitInstalled(context.user.name, installPath, linger));
 }

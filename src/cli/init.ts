@@ -42,7 +42,11 @@
  * run's write, step 7 routes by privilege and machine capabilities — the
  * user unit installs without sudo, unavailable installation prints the
  * exact manual steps, and a privileged run renders the system-unit plan
- * (the privileged operations themselves are task 139's machinery).
+ * (the privileged operations themselves are task 139's machinery). The
+ * user-unit outcomes carry detected linger guidance (task 138,
+ * `service-linger.ts`, D-107): the exact `sudo loginctl enable-linger
+ * <owner>` command with the logout/reboot consequence unless linger is
+ * already on — unknown never silently counts as enabled.
  *
  * Cancellation (interactive mode only): input closing before the questions
  * or the failure offer complete (EOF, Ctrl-C, a closed pipe) throws out of
@@ -90,6 +94,7 @@ import {
   type ServiceExecPaths,
   type ServiceUnitWriter,
 } from './service-setup';
+import type { UserLingerProbe } from './service-linger';
 
 /** Injectable collaborators; every one has a production default. */
 export interface InitDeps {
@@ -126,6 +131,12 @@ export interface InitDeps {
   readonly writeServiceUnitFile?: ServiceUnitWriter;
   /** The absolute paths pinned into the generated unit; production `serviceExecPaths`. */
   readonly serviceExecPaths?: () => ServiceExecPaths;
+  /**
+   * The §5.3 step 7 user-linger state probe behind the detected guidance
+   * (task 138, D-107); production `probeUserLinger` (the flag-file stat
+   * under `/var/lib/systemd/linger`).
+   */
+  readonly probeUserLinger?: UserLingerProbe;
 }
 
 /**
@@ -358,10 +369,12 @@ async function finishInit(
     // steps when installation is unavailable, or the system-unit plan.
     // Fresh runs only: re-runs keep their update trailers, and
     // re-installation belongs to `quotameter service install` (task 139).
+    // The user-unit outcomes carry task 138's detected linger guidance.
     await runServiceSetupStep(ctx.output, owner, capabilities, {
       runCommand: deps.runServiceCommand,
       writeUnitFile: deps.writeServiceUnitFile,
       execPaths: deps.serviceExecPaths,
+      probeLinger: deps.probeUserLinger,
     });
   } else {
     ctx.output.out(renderUpdateSummary(assembled.config));

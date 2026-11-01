@@ -11,24 +11,25 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 
 ## Dispatch skeleton (task 128, decision D-044)
 
-| File                   | Owns                                                                                                                                    |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                                   |
-| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                                   |
-| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                               |
-| `help.ts`              | pure help renderers (general, command, group)                                                                                           |
-| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                                |
-| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                     |
-| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                           |
-| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                       |
-| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                          |
-| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                     |
-| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                                   |
-| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                                |
-| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                                                   |
-| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                                                   |
-| `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136)      |
-| `service-setup.ts`     | the §5.3 step-7 branch layer: capability probes, the route matrix, the no-sudo user-unit install, the manual-steps fallbacks (task 137) |
+| File                   | Owns                                                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                                          |
+| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                                          |
+| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                                      |
+| `help.ts`              | pure help renderers (general, command, group)                                                                                                  |
+| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                                       |
+| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                            |
+| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                                  |
+| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                              |
+| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                                 |
+| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                            |
+| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                                          |
+| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                                       |
+| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                                                          |
+| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                                                          |
+| `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136)             |
+| `service-setup.ts`     | the §5.3 step-7 branch layer: capability probes, the route matrix, the no-sudo user-unit install, the manual-steps fallbacks (task 137)        |
+| `service-linger.ts`    | the §5.3 linger detection + guidance layer: flag-file tri-state probe, the enable-linger command with the logout/reboot consequence (task 138) |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -534,11 +535,24 @@ capabilities, and owns the two fallback paths:
   digit/hyphen-leading) with one stderr problem and no rendered commands —
   a whitespace- or metacharacter-carrying `/etc/passwd` row cannot inject
   into the printed steps.
-- **Linger, minimally** — the user-unit outputs carry §5.3's exact
-  `sudo loginctl enable-linger <owner>` command with the logout/reboot
-  explanation, printed unconditionally: **detecting** the linger status is
-  task 138's feature, which replaces the unconditional note with detected
-  guidance.
+- **Linger, detected** — the user-unit outputs (the installed outcome
+  and both manual completion-steps fallbacks) carry §5.3's linger
+  guidance driven by the probed state (`service-linger.ts`, task 138,
+  decision D-107): the probe stats the persistent linger flag file
+  `/var/lib/systemd/linger/<owner>` — the on-disk state
+  `loginctl enable-linger` writes and logind's `Linger` property reads —
+  classifying the flag file present as enabled, `ENOENT` (missing file
+  or missing flag directory: no user has a flag) as disabled, and any
+  other stat error as unknown. Disabled keeps task 137's sentence
+  verbatim — the exact `sudo loginctl enable-linger <owner>` command on
+  its own line with the logout/reboot explanation; unknown prints the
+  same command led by a could-not-determine sentence (**never silently
+  treated as enabled**: advising the idempotent command is harmless,
+  withholding it would stop the service at the owner's logout); enabled
+  prints a plain confirmation with no command. The outputs where no user
+  service can linger (systemd absent, the write-failure foreground
+  fallback, the system-unit plan) carry no linger note, and the probe
+  never runs there.
 - **The system-unit route** — routed and planned, not executed: the
   privileged operations (install `/etc/systemd/system/quotameter.service`
   with `User=<owner>`, daemon-reload, enable --now, verify `is-active` and

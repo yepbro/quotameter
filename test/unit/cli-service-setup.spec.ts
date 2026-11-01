@@ -36,7 +36,8 @@ import type { QuotaProvider } from '../../src/providers/registry';
 /**
  * The `init` service-setup branch layer (task 137, spec §5.3 step 7, decision
  * D-106): the §5.3 step 7 route matrix, the no-sudo user-unit installation,
- * and the manual-steps fallbacks.
+ * and the manual-steps fallbacks — plus, since task 138 (decision D-107),
+ * the detected linger guidance rendered on the user-unit outcomes.
  *
  * Every branch is driven through the injected seams — the container and CI
  * images ship no systemd and no sudo, so the `user-unit` and `system-unit`
@@ -46,6 +47,10 @@ import type { QuotaProvider } from '../../src/providers/registry';
  * `test/integration/cli-init-service.spec.ts`). The done-condition "each
  * branch tested and actionable" is delivered here as: every route's rendered
  * output names the exact commands, each on its own line, copy-pasteable.
+ * The linger matrix (on/off/unknown × user-unit outcome) is the task-138
+ * done-condition: the exact enable-linger command with the logout/reboot
+ * consequence unless linger is detected enabled; the probe itself is pinned
+ * separately in `test/unit/cli-service-linger.spec.ts`.
  */
 
 /** Representative owner; a regular account, never root (D-105 guarantees it). */
@@ -153,6 +158,7 @@ describe('renderers — every branch names exact, own-line commands', () => {
     const text = renderUserUnitInstalled(
       'alice',
       '/home/alice/.config/systemd/user/quotameter.service',
+      'disabled',
     );
     expect(text).toContain('no sudo needed');
     expect(text).toContain('Unit file: /home/alice/.config/systemd/user/quotameter.service');
@@ -162,11 +168,40 @@ describe('renderers — every branch names exact, own-line commands', () => {
     expect(text).toContain('logout or reboot');
   });
 
+  it('the linger guidance follows the detected state on both user-unit renderers (task 138)', () => {
+    // Installed outcome: enabled confirms with no command; unknown still
+    // prints the exact command, honestly led — never silently treated as on.
+    const installedEnabled = renderUserUnitInstalled('alice', '/unit/path', 'enabled');
+    expect(installedEnabled).toContain('Linger is already enabled for alice');
+    expect(installedEnabled).not.toContain('loginctl');
+    const installedUnknown = renderUserUnitInstalled('alice', '/unit/path', 'unknown');
+    expect(installedUnknown).toContain('could not be determined');
+    expect(installedUnknown).toContain('\n  sudo loginctl enable-linger alice');
+    // The completion steps carry the same state-driven guidance.
+    const completionEnabled = renderUserUnitCompletionSteps(
+      'alice',
+      '/unit/path',
+      'the lead',
+      'enabled',
+    );
+    expect(completionEnabled).toContain('Linger is already enabled for alice');
+    expect(completionEnabled).not.toContain('loginctl');
+    const completionUnknown = renderUserUnitCompletionSteps(
+      'alice',
+      '/unit/path',
+      'the lead',
+      'unknown',
+    );
+    expect(completionUnknown).toContain('could not be determined');
+    expect(completionUnknown).toContain('\n  sudo loginctl enable-linger alice\n');
+  });
+
   it('the completion steps give the exact session commands and the foreground alternative', () => {
     const text = renderUserUnitCompletionSteps(
       'alice',
       '/home/alice/.config/systemd/user/quotameter.service',
       'the systemd user manager is not reachable',
+      'disabled',
     );
     expect(text).toContain('\n  systemctl --user daemon-reload\n');
     expect(text).toContain('\n  systemctl --user enable --now quotameter.service\n');
@@ -456,6 +491,106 @@ describe('runServiceSetupStep — the no-sudo user-unit installation', () => {
   });
 });
 
+describe('runServiceSetupStep — the detected linger guidance (task 138, D-107)', () => {
+  it('the installed outcome renders per the probed state: enabled confirms, unknown commands', async () => {
+    const enabled = recorder();
+    await runServiceSetupStep(enabled.output, REGULAR, caps(true, true), {
+      ...EXEC_PATHS,
+      runCommand: enabled.runCommand,
+      writeUnitFile: enabled.writeUnitFile,
+      probeLinger: () => 'enabled',
+    });
+    expect(enabled.out()).toContain('Linger is already enabled for alice');
+    expect(enabled.out()).toContain('keeps running after logout and reboot');
+    expect(enabled.out()).not.toContain('sudo loginctl enable-linger');
+    // The install itself is untouched by the linger state.
+    expect(enabled.commands()).toEqual([
+      ['systemctl', '--user', 'daemon-reload'],
+      ['systemctl', '--user', 'enable', '--now', 'quotameter.service'],
+    ]);
+    expect(enabled.err()).toBe('');
+
+    // Unknown is never silently treated as enabled: the exact command
+    // prints, led by the could-not-determine sentence.
+    const unknown = recorder();
+    await runServiceSetupStep(unknown.output, REGULAR, caps(true, true), {
+      ...EXEC_PATHS,
+      runCommand: unknown.runCommand,
+      writeUnitFile: unknown.writeUnitFile,
+      probeLinger: () => 'unknown',
+    });
+    expect(unknown.out()).toContain('could not be determined');
+    expect(unknown.out()).toContain('User services stop when their owner logs out');
+    expect(unknown.out()).toContain('\n  sudo loginctl enable-linger alice');
+  });
+
+  it('the default probe renders disabled on the systemd-less container', async () => {
+    const rec = recorder();
+    await runServiceSetupStep(rec.output, REGULAR, caps(true, true), {
+      ...EXEC_PATHS,
+      runCommand: rec.runCommand,
+      writeUnitFile: rec.writeUnitFile,
+    });
+    // No seam injected: the production probe stats the flag file, gets
+    // ENOENT (no /var/lib/systemd/linger exists here), and the guidance
+    // prints the exact command with the logout/reboot consequence.
+    expect(rec.out()).toContain('User services stop when their owner logs out');
+    expect(rec.out()).toContain('\n  sudo loginctl enable-linger alice');
+  });
+
+  it('the completion-steps fallbacks render per the probed state too', async () => {
+    const unreachable = recorder();
+    await runServiceSetupStep(unreachable.output, REGULAR, caps(true, false), {
+      ...EXEC_PATHS,
+      runCommand: unreachable.runCommand,
+      writeUnitFile: unreachable.writeUnitFile,
+      probeLinger: () => 'enabled',
+    });
+    expect(unreachable.out()).toContain('Linger is already enabled for alice');
+    expect(unreachable.out()).not.toContain('sudo loginctl enable-linger');
+
+    const failedEnable = recorder(ENABLE_COMMAND);
+    await runServiceSetupStep(failedEnable.output, REGULAR, caps(true, true), {
+      ...EXEC_PATHS,
+      runCommand: failedEnable.runCommand,
+      writeUnitFile: failedEnable.writeUnitFile,
+      probeLinger: () => 'unknown',
+    });
+    expect(failedEnable.out()).toContain('could not be determined');
+    expect(failedEnable.out()).toContain('\n  sudo loginctl enable-linger alice\n');
+  });
+
+  it('no linger guidance where no user service exists — and the probe never runs there', async () => {
+    // A throwing probe makes a would-be call fail the test loudly.
+    const absent = recorder();
+    await runServiceSetupStep(absent.output, REGULAR, caps(false, false), {
+      ...EXEC_PATHS,
+      runCommand: absent.runCommand,
+      writeUnitFile: absent.writeUnitFile,
+      probeLinger: () => {
+        throw new Error('the linger probe must not run on the systemd-absent route');
+      },
+    });
+    expect(absent.out()).toContain('\n  quotameter run\n');
+    expect(absent.out()).not.toContain('loginctl');
+
+    const failedWrite = recorder();
+    const seams: ServiceSetupSeams = {
+      ...EXEC_PATHS,
+      runCommand: failedWrite.runCommand,
+      writeUnitFile: async () => {
+        throw new Error('EACCES: permission denied');
+      },
+      probeLinger: () => {
+        throw new Error('the linger probe must not run when the unit was not written');
+      },
+    };
+    await runServiceSetupStep(failedWrite.output, REGULAR, caps(true, true), seams);
+    expect(failedWrite.out()).toContain('\n  quotameter run\n');
+    expect(failedWrite.out()).not.toContain('loginctl');
+  });
+});
+
 describe('runServiceSetupStep — the manual and system-unit branches', () => {
   it('no systemd, no sudo: manual-run steps only, zero side effects', async () => {
     const rec = recorder();
@@ -494,12 +629,17 @@ describe('runServiceSetupStep — the manual and system-unit branches', () => {
       ...EXEC_PATHS,
       runCommand: rec.runCommand,
       writeUnitFile: rec.writeUnitFile,
+      probeLinger: () => {
+        throw new Error('the linger probe must not run on the system-unit route');
+      },
     });
     expect(rec.writes()).toEqual([]);
     expect(rec.commands()).toEqual([]);
     expect(rec.out()).toContain('/etc/systemd/system/quotameter.service');
     expect(rec.out()).toContain('User=alice');
     expect(rec.out()).toContain('sudo quotameter service install');
+    // System units do not linger — no enable-linger guidance on this route.
+    expect(rec.out()).not.toContain('loginctl');
     expect(rec.err()).toBe('');
   });
 });
@@ -725,5 +865,28 @@ describe('runInitCommand wiring — §5.3 step 1 fail-fast, step 7 output', () =
     expect(out.indexOf('Configuration written to')).toBeLessThan(
       out.indexOf('installed the user service'),
     );
+  });
+
+  it('a fresh run renders the detected linger guidance through the init seam', async () => {
+    const h = context();
+    const rec = recorder();
+    const code = await runInitCommand({
+      createPrompter: () => prompterWith(['UTC', '', '', '', '', '']),
+      readExisting: async () => ({ state: 'none' }),
+      persistConfig: async () => {},
+      provider,
+      env: {},
+      resolveOwner: () => ({ state: 'ok', context: REGULAR }),
+      probeCapabilities: () => caps(true, true),
+      runServiceCommand: rec.runCommand,
+      writeServiceUnitFile: rec.writeUnitFile,
+      serviceExecPaths: EXEC_PATHS.execPaths,
+      probeUserLinger: () => 'enabled',
+    })(h.ctx);
+    expect(code).toBe(0);
+    expect(rec.writes()).toHaveLength(1);
+    // The injected state reaches the rendered step: confirmation, no command.
+    expect(h.out()).toContain('Linger is already enabled for alice');
+    expect(h.out()).not.toContain('sudo loginctl enable-linger');
   });
 });
