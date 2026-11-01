@@ -114,7 +114,13 @@ describe('GET /api/health — routing edges (§13)', () => {
   it('keeps the route GET-only: other methods get the §13 error envelope', async () => {
     const { server } = buildServer();
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'] as const) {
-      const response = await server.inject({ method, url: '/api/health' });
+      // The bodiless mutation carries task 150's dedicated header so the
+      // §15.3 guards pass it and the routing verdict is what answers.
+      const response = await server.inject({
+        method,
+        url: '/api/health',
+        headers: { 'x-quotameter-request': 'quotameter-ui' },
+      });
       expect(response.statusCode, method).toBe(404);
       // Task 148's §13 envelope (D-113), byte-pinned in api-errors.spec.ts.
       expect(response.json(), method).toEqual({

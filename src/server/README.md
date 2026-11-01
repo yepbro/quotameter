@@ -52,17 +52,25 @@ not-found handler's 404 arm, because an unmatched route is not an error
 in fastify, and with the api scope's own catch-all route: the
 mode-independent unmatched arm for `/api` paths (it outranks the static
 wildcard), re-deriving the URI_TOO_LONG class for segments past the
-router's parameter bound. `security.ts` (task 149) is the §15.3
+router's parameter bound. `security.ts` (tasks 149/150) is the §15.3
 request-security seam: the Origin/Fetch-Metadata guard — a pure,
 fail-closed `classifyOriginRequest` plus the `originGuard` `onRequest`
 hook the scope registers (async by runtime necessity: fastify's hook
 runner advances on the returned promise) — rejects cross-origin
 mutations through the envelope's `FORBIDDEN` class with a closed
 `details.reason` vocabulary, mode-independently by construction (D-115);
-task 150's custom-header/JSON checks register beside it and task 151's
-Host allowlist reuses its `normalizeAuthority` yardstick.
+the custom-header/JSON-content-type guard beside it (the pure
+`classifyCustomHeaderRequest` and the `customHeaderGuard` hook, D-117)
+requires the dedicated nonstandard `X-Quotameter-Request` header
+(exported `API_MUTATION_HEADER_NAME` — the UI client and every §13
+mutation consumer set it) on each of §13's four state-changing methods
+and `Content-Type: application/json` on the ones that carry a body (a
+bodiless mutation has no payload to type), rejecting as FORBIDDEN
+(reason detail) and the registry-default 415 respectively, strictly
+after the Origin verdict; task 151's Host allowlist reuses the module's
+`normalizeAuthority` yardstick.
 Later: the remaining HTTP API routes and auth/session endpoints
-(150–163), and the security middleware (150–152, 156–158). It is the only
+(151–163), and the security middleware (151–152, 156–158). It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3

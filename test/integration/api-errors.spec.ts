@@ -121,6 +121,15 @@ async function makeDistFixture(withoutIndex = false): Promise<TempDir> {
 /** The repository root — for a static root that provably does not exist. */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
+/**
+ * Task 150's §15.3 mutation headers (D-117), scenery for this suite's
+ * arms: the dedicated `X-Quotameter-Request` header on every mutation,
+ * plus the JSON content type wherever the arm carries a body (a bodiless
+ * request has no payload to type).
+ */
+const MUTATION_HEADER = { 'x-quotameter-request': 'quotameter-ui' };
+const BODIED_MUTATION_HEADERS = { ...MUTATION_HEADER, 'content-type': 'application/json' };
+
 describe('not-found — the envelope at the API boundary (§13)', () => {
   it('answers an unknown API path with the byte-pinned 404 envelope', async () => {
     const { server } = buildServer();
@@ -135,7 +144,11 @@ describe('not-found — the envelope at the API boundary (§13)', () => {
 
   it('answers method mismatches, query forms, and the bare /api path', async () => {
     const { server } = buildServer();
-    const post = await server.inject({ method: 'POST', url: '/api/health' });
+    const post = await server.inject({
+      method: 'POST',
+      url: '/api/health',
+      headers: MUTATION_HEADER,
+    });
     expect(post.statusCode).toBe(404);
     expect(post.body).toBe(
       '{"error":{"code":"NOT_FOUND","message":"Not found","details":{"method":"POST","path":"/api/health"}}}',
@@ -258,7 +271,7 @@ describe('transport classes — native fastify errors normalized (§15.5)', () =
       method: 'POST',
       url: '/api/test/echo',
       payload: overLimit,
-      headers: { 'content-type': 'application/json' },
+      headers: BODIED_MUTATION_HEADERS,
     });
     expect(response.statusCode).toBe(413);
     expect(response.body).toBe(
@@ -272,7 +285,7 @@ describe('transport classes — native fastify errors normalized (§15.5)', () =
       method: 'POST',
       url: '/api/test/echo',
       payload: '{"broken',
-      headers: { 'content-type': 'application/json' },
+      headers: BODIED_MUTATION_HEADERS,
     });
     expect(malformed.statusCode).toBe(400);
     expect(malformed.json()).toEqual({
@@ -283,7 +296,7 @@ describe('transport classes — native fastify errors normalized (§15.5)', () =
       method: 'POST',
       url: '/api/test/echo',
       payload: '',
-      headers: { 'content-type': 'application/json' },
+      headers: BODIED_MUTATION_HEADERS,
     });
     expect(empty.statusCode).toBe(400);
     expect(empty.json()).toMatchObject({ error: { code: 'VALIDATION' } });
@@ -292,7 +305,7 @@ describe('transport classes — native fastify errors normalized (§15.5)', () =
       method: 'POST',
       url: '/api/test/echo',
       payload: 'ab',
-      headers: { 'content-type': 'application/json', 'content-length': '5' },
+      headers: { ...BODIED_MUTATION_HEADERS, 'content-length': '5' },
     });
     expect(mismatched.statusCode).toBe(400);
     expect(mismatched.json()).toMatchObject({ error: { code: 'VALIDATION' } });
@@ -300,11 +313,17 @@ describe('transport classes — native fastify errors normalized (§15.5)', () =
 
   it('answers an unregistered content type with the 415 envelope', async () => {
     const { server } = buildServer();
+    // Since task 150 the §15.3 guard rejects non-JSON content types for
+    // body-carrying mutations before the parser runs, so this bodied arm
+    // is the guard's verdict; fastify's native mapping stays live behind
+    // it for the bodiless stray-type shapes (that arm, and the shared
+    // byte-identity, is pinned in api-custom-header.spec.ts) — same
+    // class, same registry body (D-117).
     const response = await server.inject({
       method: 'POST',
       url: '/api/test/echo',
       payload: '<a/>',
-      headers: { 'content-type': 'application/xml' },
+      headers: { 'x-quotameter-request': '1', 'content-type': 'application/xml' },
     });
     expect(response.statusCode).toBe(415);
     expect(response.body).toBe(
@@ -352,7 +371,11 @@ describe('router-level failures — the frameworkErrors path (§13, D-113 review
     // The bound governs every method — the catch-all is method-wide, so a
     // non-GET over-long param cannot fall out to a mode-split 404.
     for (const method of ['POST', 'DELETE'] as const) {
-      const other = await server.inject({ method, url: `/api/test/p/${'x'.repeat(150)}` });
+      const other = await server.inject({
+        method,
+        url: `/api/test/p/${'x'.repeat(150)}`,
+        headers: MUTATION_HEADER,
+      });
       expect(other.statusCode, method).toBe(414);
       expect(other.json(), method).toMatchObject({ error: { code: 'URI_TOO_LONG' } });
     }
@@ -480,6 +503,7 @@ describe('static serving — client rejections contained onto the envelope (D-11
         const response = await server.inject({
           method,
           url: `/api/test/p/${'x'.repeat(150)}`,
+          headers: method === 'GET' ? undefined : MUTATION_HEADER,
         });
         expect(response.statusCode, method).toBe(414);
         expect(response.json(), method).toEqual({
@@ -602,13 +626,13 @@ describe('internal — generic on the wire, real cause in the log (§15.4, §16)
       method: 'POST',
       url: '/api/test/echo',
       payload: 'x'.repeat(HTTP_BODY_LIMIT_BYTES),
-      headers: { 'content-type': 'application/json' },
+      headers: BODIED_MUTATION_HEADERS,
     });
     await server.inject({
       method: 'POST',
       url: '/api/test/echo',
       payload: '<a/>',
-      headers: { 'content-type': 'application/xml' },
+      headers: { 'x-quotameter-request': '1', 'content-type': 'application/xml' },
     });
     await server.inject({ method: 'GET', url: '/api/%zz' });
     expect(sink.records().length).toBe(baseline);

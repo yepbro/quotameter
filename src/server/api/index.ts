@@ -9,10 +9,12 @@
  * route — the `/api` unmatched arm as a ROUTE, not just the not-found
  * handler, so no other catch-all (static serving's SPA wildcard) can ever
  * outrank the envelope for `/api` paths; task 149 the Origin/Fetch-Metadata
- * guard (`./security`, spec §15.3) as this scope's `onRequest` hook — it
- * runs for every route here including the catch-all, so state-changing
- * requests are screened mode-independently before any handler or body
- * parser; tasks 150–152 add the remaining request-security checks, tasks
+ * guard and task 150 the custom-header/JSON-content-type guard
+ * (`./security`, spec §15.3) as this scope's `onRequest` hooks — they run
+ * for every route here including the catch-all, in registration order
+ * (the Origin verdict first), so state-changing requests are screened
+ * mode-independently before any handler or body parser; tasks 151–152 add
+ * the remaining request-security checks, tasks
  * 153–155 the auth/session endpoints, and tasks 159–162 the remaining API
  * endpoints; each registers inside this scope, so the server construction
  * itself never changes shape again.
@@ -21,7 +23,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { sendApiError, unmatchedApiClassification } from './error';
 import { healthRoutes } from './health';
-import { originGuard } from './security';
+import { customHeaderGuard, originGuard } from './security';
 
 /**
  * The `/api` route scope. Each endpoint plugin registers here in its own
@@ -36,8 +38,13 @@ export const apiRoutes: FastifyPluginAsync = async (fastify) => {
   // and the catch-all below alike) passes through it identically in every
   // auth mode and both static-serving modes; the bare `/api` (no trailing
   // segment) has no route here at all and stays with the root not-found
-  // arm. Task 150's custom-header guard registers beside it.
+  // arm. Task 150 (D-117): the custom-header/JSON-content-type guard
+  // registers beside it, strictly after — a cross-origin mutation is the
+  // origin guard's verdict (nothing downstream is consulted), and only a
+  // request that passed the Origin check answers the header/content-type
+  // classes.
   fastify.addHook('onRequest', originGuard);
+  fastify.addHook('onRequest', customHeaderGuard);
   // Task 147: the public health response (§13) — the one endpoint that
   // stays unauthenticated in every auth mode (§15.1).
   await fastify.register(healthRoutes);

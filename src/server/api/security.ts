@@ -1,31 +1,32 @@
 /**
- * The §15.3 request-security checks (task 149; decision D-115).
+ * The §15.3 request-security checks (tasks 149/150; decisions D-115/D-117).
  *
- * The Origin/Fetch-Metadata guard: every state-changing request (§13's
- * `POST`/`PUT`/`PATCH`/`DELETE`) under `/api` must look same-origin before
- * any handler or body parser runs. The check is deliberately total over
- * three request signals — `Origin`, `Sec-Fetch-Site`, and the request's own
- * `Host` authority — and never over server state: not the auth mode (152
- * selects credentials; the guard runs identically in `off`/`auto`/
- * `required`), not static serving, not configuration. That mode-blindness
- * is structural (D-113's hardening lesson: router-level and static-mode
- * classes must stay mode-independent — a security verdict must not depend
- * on whether the UI build happens to be deployed).
+ * The Origin/Fetch-Metadata guard (149): every state-changing request
+ * (§13's `POST`/`PUT`/`PATCH`/`DELETE`) under `/api` must look same-origin
+ * before any handler or body parser runs. The check is deliberately total
+ * over three request signals — `Origin`, `Sec-Fetch-Site`, and the
+ * request's own `Host` authority — and never over server state: not the
+ * auth mode (152 selects credentials; the guard runs identically in
+ * `off`/`auto`/`required`), not static serving, not configuration. That
+ * mode-blindness is structural (D-113's hardening lesson: router-level
+ * and static-mode classes must stay mode-independent — a security verdict
+ * must not depend on whether the UI build happens to be deployed).
  *
- * Two pieces, the D-113 throw-side pattern: {@link classifyOriginRequest}
- * is the pure decision (total over the signal, fail-closed on anything it
- * cannot validate), and {@link originGuard} is the Fastify `onRequest`
- * hook the `/api` scope registers (`./index.ts`) — on denial it throws
- * `ApiError('FORBIDDEN')`, so the existing root-scope error handler
- * answers the §13 envelope with no new wiring (verified on the pinned
- * runtime: a throw from a scoped `onRequest` hook reaches the root error
- * handler).
+ * Two pieces each, the D-113 throw-side pattern: a pure classifier
+ * ({@link classifyOriginRequest}, {@link classifyCustomHeaderRequest} —
+ * total over the signal, fail-closed on anything it cannot validate) and
+ * a Fastify `onRequest` hook the `/api` scope registers (`./index.ts`,
+ * the origin guard first) — on denial each throws an `ApiError` that is
+ * already the envelope's classification, so the existing root-scope
+ * error handler answers the §13 envelope with no new wiring (verified on
+ * the pinned runtime: a throw from a scoped `onRequest` hook reaches the
+ * root error handler).
  *
- * The resolved pass/reject matrix (spec §15.3 says "validate" — D-115 is
- * the resolved table): safe methods pass untouched; `Origin: null`,
- * unparseable values, and non-http(s) schemes (a serialized Origin is
- * always an http/https tuple with a host) are rejected (fail closed); a
- * present `Origin` must carry the request's own authority (`host:port`
+ * The resolved Origin pass/reject matrix (spec §15.3 says "validate" —
+ * D-115 is the resolved table): safe methods pass untouched; `Origin:
+ * null`, unparseable values, and non-http(s) schemes (a serialized Origin
+ * is always an http/https tuple with a host) are rejected (fail closed);
+ * a present `Origin` must carry the request's own authority (`host:port`
  * — scheme is deliberately not compared: behind §15.6's documented
  * TLS-terminating proxy the browser's Origin is `https://…` while the
  * internal hop is plain HTTP); `Sec-Fetch-Site` must be `same-origin` or `none` —
@@ -34,12 +35,34 @@
  * mutation, exactly what the done-condition binds); both headers absent
  * passes, because only non-browser clients omit them both (a curl/CLI
  * call is not a CSRF vector), and the residual old-browser gap is closed
- * by task 150's mandatory custom header — a header no HTML form can set
- * while CORS stays disabled (§13).
+ * by the custom header below — a header no HTML form can set while CORS
+ * stays disabled (§13).
  *
- * This module is the seam for the remaining §15.3 checks: task 150's
- * custom-header/JSON-content-type guard joins here as a sibling hook over
- * the shared {@link STATE_CHANGING_METHODS}, and task 151's Host
+ * The custom-header/JSON-content-type guard (150, D-117) is §15.3's
+ * second leg over the same {@link STATE_CHANGING_METHODS}: every
+ * state-changing request under `/api` must carry the dedicated nonstandard
+ * header {@link API_MUTATION_HEADER_NAME} (present and non-empty — the
+ * value is deliberately uninterpreted: the CSRF proof is that a
+ * cross-origin browser cannot set *any* custom header without a CORS
+ * preflight, and CORS stays disabled), and a request that carries a body
+ * must type it `Content-Type: application/json` (base media type exact;
+ * parameters allowed — fastify's JSON parser ignores the charset). The
+ * content-type leg binds body-carrying requests only — a bodiless
+ * mutation has no payload to type, and claiming a JSON body without
+ * sending one is the transport's own empty-body 400 (verified on the
+ * pinned runtime), so requiring the header unconditionally would make a
+ * legal bodiless mutation (`DELETE /api/accounts/:id`, logout)
+ * inexpressible. The layering that makes this safe: the dedicated header
+ * is the unforgeable CSRF leg (applies always), the content type is the
+ * JSON-contract leg (§13 speaks JSON) — and the HTML form enctype values are
+ * rejected wherever a form must carry them, on a body. The header
+ * rejection answers FORBIDDEN with the reason detail; the media-type
+ * rejection keeps the registry's default 415 shape (details `null`) —
+ * byte-identical to fastify's native `FST_ERR_CTP_INVALID_MEDIA_TYPE`
+ * class, so the 415 class has exactly one wire body regardless of which
+ * layer rejected (D-113's one-vocabulary rule).
+ *
+ * This module is the seam for the remaining §15.3 check: task 151's Host
  * allowlist reuses {@link normalizeAuthority} as its comparison yardstick.
  */
 
@@ -48,9 +71,9 @@ import { ApiError } from './error';
 
 /**
  * Spec §13's definition of state-changing, single-sited for the §15.3
- * checks (`POST`, `PUT`, `PATCH`, `DELETE`) — task 150's header guard
+ * checks (`POST`, `PUT`, `PATCH`, `DELETE`) — the custom-header guard
  * decides over the same set. Uppercase: the HTTP parser delivers methods
- * uppercased, and {@link classifyOriginRequest} normalizes before asking.
+ * uppercased, and both classifiers normalize before asking.
  */
 export const STATE_CHANGING_METHODS: ReadonlySet<string> = Object.freeze(
   new Set(['POST', 'PUT', 'PATCH', 'DELETE']),
@@ -218,4 +241,172 @@ export async function originGuard(request: FastifyRequest): Promise<void> {
       details: { reason: decision.reason },
     });
   }
+}
+
+/**
+ * The dedicated nonstandard header §15.3 requires on state-changing
+ * requests (task 150, decision D-117): `X-Quotameter-Request` —
+ * project-namespaced, purpose-specific, and outside the CORS-safelisted
+ * set, so no browser sends it implicitly and no HTML form can send it at
+ * all while CORS stays disabled (§13). Exported as the single name
+ * source: the UI client, any CLI API use, and tasks 159+/164 set and
+ * document the same header through this constant. Only presence (a
+ * non-empty value) is required — the value itself is not interpreted
+ * ({@link classifyCustomHeaderRequest} explains why that is the whole
+ * CSRF property).
+ */
+export const API_MUTATION_HEADER_NAME = 'X-Quotameter-Request';
+
+/**
+ * §15.3's "Accept only `application/json`" — the exact base media type a
+ * state-changing request's `Content-Type` must carry (compared on the
+ * segment before the first `;`, trimmed and lowercased).
+ */
+const JSON_REQUEST_CONTENT_TYPE = 'application/json';
+
+/**
+ * Why a state-changing request was rejected — the classifier's stable
+ * vocabulary. `missing-custom-header` serializes onto the wire as the
+ * FORBIDDEN `details.reason`; `non-json-content-type` deliberately does
+ * not (the 415 class keeps the registry's default, byte-identical to
+ * fastify's native media-type rejection — one wire body per class,
+ * D-113), it exists so the hook maps the verdict onto the right
+ * `ApiError` and the unit table pins both arms.
+ */
+export type HeaderGuardReason = 'missing-custom-header' | 'non-json-content-type';
+
+/** The pure verdict of {@link classifyCustomHeaderRequest}. */
+export type HeaderDecision =
+  { readonly allowed: true } | { readonly allowed: false; readonly reason: HeaderGuardReason };
+
+/** The request signals the custom-header/content-type check decides over. */
+export interface HeaderRequestSignal {
+  /** HTTP method as delivered (uppercased by the parser). */
+  readonly method: string;
+  /** Raw {@link API_MUTATION_HEADER_NAME} value; `undefined` when absent. */
+  readonly customHeader?: string;
+  /** Raw `Content-Type` value; `undefined` when absent. */
+  readonly contentType?: string;
+  /** Raw `Content-Length` value; `undefined` when absent. */
+  readonly contentLength?: string;
+  /** Raw `Transfer-Encoding` value; `undefined` when absent. */
+  readonly transferEncoding?: string;
+}
+
+/**
+ * Whether the request actually carries a body, decided exactly where the
+ * guard runs (ahead of the parser): any `Transfer-Encoding` (chunked)
+ * counts as carrying one — checked first, because RFC 9112 §6.1 makes
+ * the framing header win over Content-Length, and the contradictory
+ * smuggle shape (a Content-Length beside a Transfer-Encoding) must fail
+ * closed into the content-type check, not slip through the zero length;
+ * otherwise only the exact `0` is the bodiless request — a non-zero
+ * length and any value that is not the canonical zero (leading zeros
+ * like `00`, unparsable text, Node's duplicate-header join) count as
+ * carrying one, fail closed and transport-aligned: verified on the
+ * pinned runtime, fastify treats `Content-Length: 00` as a body present
+ * (it then demands a content type), so the guard must not read it as
+ * bodiless either.
+ */
+function requestCarriesBody(contentLength?: string, transferEncoding?: string): boolean {
+  if (transferEncoding !== undefined) {
+    return true;
+  }
+  if (contentLength !== undefined) {
+    return contentLength.trim() !== '0';
+  }
+  return false;
+}
+
+/**
+ * The base media type of a Content-Type value — the segment before the
+ * first `;`, trimmed and lowercased, which is the RFC 9110 media-range
+ * comparison form (`application/json; charset=utf-8` and
+ * `APPLICATION/JSON` are the same type). Everything after the `;` is
+ * parameters (fastify's JSON parser ignores the charset; the guard does
+ * too). Node joins duplicate headers with `, `, and the joined value
+ * (`application/json, application/json`) never equals the single type —
+ * a split header cannot smuggle a verdict through, same as the Origin
+ * guard's joined-split reads.
+ */
+function baseMediaType(value: string): string {
+  return value.split(';', 1)[0]!.trim().toLowerCase();
+}
+
+/**
+ * The §15.3 decision for one request signal — pure, total, and fail
+ * closed, in a fixed check order so the rejection class is deterministic
+ * (the dedicated header first, then the content type). Safe methods pass
+ * untouched (the request carries no mutation to forge); a state-changing
+ * request must carry the dedicated header with a non-empty value —
+ * presence alone is the CSRF property, because a cross-origin browser
+ * cannot set any non-safelisted header without a successful CORS
+ * preflight and CORS stays disabled, while the value is uninterpreted (a
+ * fixed literal would add no security: a client that can set the header
+ * at all is not a form or a cross-origin page) — and, when the request
+ * carries a body, a `Content-Type` whose base media type is exactly
+ * `application/json`: the three HTML form enctype values (`urlencoded`,
+ * `multipart`, `text/plain`) and a header-less body are form-built
+ * shapes, and §13 speaks JSON. A bodiless mutation has no payload to
+ * type, so the content-type leg does not apply to it (see the module
+ * docblock for the empty-body transport class that makes the
+ * unconditional reading inexpressible); a bodiless request that still
+ * carries a stray Content-Type is likewise the transport's business, not
+ * the guard's — verified on the pinned runtime, fastify answers the
+ * stray type from its own parser registry (an empty `application/json`
+ * body → its empty-body 400; an unregistered type → its native 415
+ * through D-113's handler; its default `text/plain` parser accepts the
+ * empty body), and the guard deliberately does not adjudicate types
+ * there.
+ */
+export function classifyCustomHeaderRequest(signal: HeaderRequestSignal): HeaderDecision {
+  if (!STATE_CHANGING_METHODS.has(signal.method.toUpperCase())) {
+    // §13's state-changing definition: GET/HEAD (and any other method)
+    // carries no mutation, so the form-forgery question does not arise.
+    return { allowed: true };
+  }
+  if (signal.customHeader === undefined || signal.customHeader.trim() === '') {
+    return { allowed: false, reason: 'missing-custom-header' };
+  }
+  if (
+    requestCarriesBody(signal.contentLength, signal.transferEncoding) &&
+    (signal.contentType === undefined ||
+      baseMediaType(signal.contentType) !== JSON_REQUEST_CONTENT_TYPE)
+  ) {
+    return { allowed: false, reason: 'non-json-content-type' };
+  }
+  return { allowed: true };
+}
+
+/**
+ * The second §15.3 `onRequest` hook the `/api` scope registers
+ * (`./index.ts`, task 150) — after the origin guard, so a cross-origin
+ * mutation is answered by the Origin verdict first (the layering D-115
+ * pins: nothing downstream is consulted for a request an earlier layer
+ * already rejected). Same throw-side pattern: the header arm throws
+ * `ApiError('FORBIDDEN')` naming the required header (§15.1's
+ * "with instructions" shape — the name is public client-bundle
+ * knowledge, never a secret); the media-type arm throws the registry's
+ * default 415, byte-identical to fastify's native class. Async for the
+ * same runtime reason as {@link originGuard}, and also ahead of body
+ * parsing — a rejected mutation is never read.
+ */
+export async function customHeaderGuard(request: FastifyRequest): Promise<void> {
+  const decision = classifyCustomHeaderRequest({
+    method: request.method,
+    customHeader: readHeader(request.headers[API_MUTATION_HEADER_NAME.toLowerCase()]),
+    contentType: readHeader(request.headers['content-type']),
+    contentLength: readHeader(request.headers['content-length']),
+    transferEncoding: readHeader(request.headers['transfer-encoding']),
+  });
+  if (decision.allowed) {
+    return;
+  }
+  if (decision.reason === 'missing-custom-header') {
+    throw new ApiError('FORBIDDEN', {
+      message: `The ${API_MUTATION_HEADER_NAME} header is required`,
+      details: { reason: decision.reason },
+    });
+  }
+  throw new ApiError('UNSUPPORTED_MEDIA_TYPE');
 }

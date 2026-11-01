@@ -151,14 +151,22 @@ describe('buildHttpServer — construction pins (§3, §15.5)', () => {
       method: 'POST',
       url: '/api/unknown',
       payload: atLimit,
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        // Task 150's §15.3 mutation headers — scenery for the body-limit
+        // arms, keeping the requests past both request-security guards.
+        'x-quotameter-request': 'quotameter-ui',
+        'content-type': 'application/json',
+      },
     });
     expect(atLimitResponse.statusCode).toBe(404); // passed the limit; no route
     const overLimitResponse = await server.inject({
       method: 'POST',
       url: '/api/unknown',
       payload: overLimit,
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'x-quotameter-request': 'quotameter-ui',
+        'content-type': 'application/json',
+      },
     });
     expect(overLimitResponse.statusCode).toBe(413);
   });

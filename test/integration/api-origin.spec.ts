@@ -59,6 +59,15 @@ afterEach(async () => {
 /** The loopback authority the injections below pose as. */
 const HOST = { host: '127.0.0.1:8787' };
 
+/**
+ * The dedicated mutation header every pass-through mutation carries
+ * since task 150 (`./api-custom-header.spec.ts` pins that guard's own
+ * matrix) — here it is scenery, keeping the origin guard's pass-through
+ * arms reaching the router. The arms are bodiless, so the JSON
+ * content-type leg does not apply to them (D-117) and none is sent.
+ */
+const MUTATION_HEADERS = { 'x-quotameter-request': 'quotameter-ui' };
+
 describe('cross-origin mutations — rejected through the §13 envelope (§15.3)', () => {
   it('rejects a cross-origin Origin on all four state-changing methods', async () => {
     const { server } = buildServer();
@@ -205,7 +214,12 @@ describe('cross-origin mutations — rejected through the §13 envelope (§15.3)
       method: 'POST',
       url: '/api/accounts',
       payload: '{"broken',
-      headers: { origin: 'http://127.0.0.1:8787', 'content-type': 'application/json', ...HOST },
+      headers: {
+        origin: 'http://127.0.0.1:8787',
+        ...MUTATION_HEADERS,
+        'content-type': 'application/json', // bodied: task 150's other leg
+        ...HOST,
+      },
     });
     expect(sameOriginControl.statusCode).toBe(400);
     expect(sameOriginControl.json()).toMatchObject({ error: { code: 'VALIDATION' } });
@@ -234,7 +248,7 @@ describe('legitimate mutations and safe requests — pass-through (§15.3)', () 
     const response = await server.inject({
       method: 'POST',
       url: '/api/accounts',
-      headers: { origin: 'http://127.0.0.1:8787', ...HOST },
+      headers: { origin: 'http://127.0.0.1:8787', ...MUTATION_HEADERS, ...HOST },
     });
     // The scope catch-all's 404 — a class the guard can never produce —
     // is the proof the request passed the guard and was routed.
@@ -244,13 +258,16 @@ describe('legitimate mutations and safe requests — pass-through (§15.3)', () 
     );
   });
 
-  it('passes browser fetch-metadata tokens and the header-less non-browser mutation', async () => {
+  it('passes browser fetch-metadata tokens and the origin-header-less non-browser mutation', async () => {
     const { server } = buildServer();
+    // The custom header/content type are carried by every pass-through
+    // mutation since task 150 (MUTATION_HEADERS); "header-less" here is
+    // the ORIGIN family — only browsers emit those on mutations.
     for (const headers of [
-      { 'sec-fetch-site': 'same-origin', ...HOST },
-      { 'sec-fetch-site': 'none', ...HOST },
-      { ...HOST },
-      {},
+      { 'sec-fetch-site': 'same-origin', ...MUTATION_HEADERS, ...HOST },
+      { 'sec-fetch-site': 'none', ...MUTATION_HEADERS, ...HOST },
+      { ...MUTATION_HEADERS, ...HOST },
+      { ...MUTATION_HEADERS },
     ]) {
       const response = await server.inject({ method: 'POST', url: '/api/settings', headers });
       expect(response.statusCode, JSON.stringify(headers)).toBe(404);
@@ -267,13 +284,17 @@ describe('legitimate mutations and safe requests — pass-through (§15.3)', () 
     const localhost = await server.inject({
       method: 'POST',
       url: '/api/settings',
-      headers: { origin: 'http://localhost', host: 'localhost:80' },
+      headers: { origin: 'http://localhost', host: 'localhost:80', ...MUTATION_HEADERS },
     });
     expect(localhost.statusCode).toBe(404);
     const proxied = await server.inject({
       method: 'POST',
       url: '/api/settings',
-      headers: { origin: 'https://quotameter.example', host: 'QUOTAMETER.EXAMPLE:443' },
+      headers: {
+        origin: 'https://quotameter.example',
+        host: 'QUOTAMETER.EXAMPLE:443',
+        ...MUTATION_HEADERS,
+      },
     });
     expect(proxied.statusCode).toBe(404);
     expect(proxied.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
@@ -319,7 +340,7 @@ describe('mode independence — the guard with static serving active (D-113 less
       const allowedMutation = await server.inject({
         method: 'POST',
         url: '/api/accounts',
-        headers: { origin: 'http://127.0.0.1:8787', ...HOST },
+        headers: { origin: 'http://127.0.0.1:8787', ...MUTATION_HEADERS, ...HOST },
       });
       expect(allowedMutation.statusCode).toBe(404);
     } finally {
@@ -362,9 +383,13 @@ describe('§16 — guard rejections log nothing', () => {
     await server.inject({
       method: 'DELETE',
       url: '/api/accounts/1',
-      headers: { 'sec-fetch-site': 'same-site', ...HOST },
+      headers: { 'sec-fetch-site': 'same-site', ...MUTATION_HEADERS, ...HOST },
     });
-    await server.inject({ method: 'POST', url: '/api/accounts', headers: { ...HOST } });
+    await server.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: { ...MUTATION_HEADERS, ...HOST },
+    });
     // A client-side rejection is a 4xx class: §16's level discipline logs
     // nothing at warn — there is nothing to diagnose server-side.
     expect(sink.records().length).toBe(baseline);
