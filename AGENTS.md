@@ -39,7 +39,7 @@ All commands go through `make` and run inside the worktree's container (no host 
 ## Area guides
 
 - **Parallel development cycle** (independent non-overlapping tasks, subagents, worktrees, statuses, one-commit finalization) → [docs/agents/cycle.md](docs/agents/cycle.md)
-- **Code review** (single round, `opencode run` + glm-5.3#max, P0–P3) → [docs/agents/review.md](docs/agents/review.md)
+- **Code review** (single round, `opencode run` + `opencode-go/deepseek-v4.1-flash` primary, kimi then glm-5.3#max fallbacks, P0–P3) → [docs/agents/review.md](docs/agents/review.md)
 - **Docker, docktree, worktrees, generated-output rules** → [docs/agents/environment.md](docs/agents/environment.md)
 - **Git protocol, CI structure, Dependabot, releases** → [docs/agents/workflow.md](docs/agents/workflow.md)
 - **Testing conventions** → [docs/agents/testing.md](docs/agents/testing.md)

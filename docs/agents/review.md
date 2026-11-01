@@ -2,7 +2,16 @@
 
 ## Launching
 
-- **Primary reviewer: kimi** (Kimi Code CLI; see `~/.config/opencode/agent-kimi.md` for auth/diagnostics). The review runs as a headless CLI call with the model `kimi-code/k3.1-pro`, from the working tree under review:
+- **Primary reviewer: `opencode run`** with `opencode-go/deepseek-v4.1-flash`, run from the working tree under review:
+
+  ```bash
+  timeout 1200 opencode run --auto \
+    -m "opencode-go/deepseek-v4.1-flash" \
+    --title "review-<slug>" "$(cat /tmp/opencode/review/prompt-<slug>.md)" \
+    > /tmp/opencode/review/<slug>-deepseek.md 2>&1; echo "exit=$?"
+  ```
+
+- **First fallback: kimi** (Kimi Code CLI; see `~/.config/opencode/agent-kimi.md` for auth/diagnostics). The review runs as a headless CLI call with the model `kimi-code/k3.1-pro`:
 
   ```bash
   timeout 1200 kimi -m kimi-code/k3.1-pro \
@@ -12,19 +21,19 @@
 
   Never combine `-p` with `-y`/`--auto`; `</dev/null` keeps it headless. The text output may prepend the reviewer's working transcript — locate the report body (severity-tagged findings) before treating the run as failed.
 
-- **Fallback reviewer: `opencode run`** with `zai-coding-plan/glm-5.3#max` — used **only** when the primary produced no review (non-zero exit, auth/provider/quota error in the output file, or no findings text):
+- **Second fallback: `opencode run`** with `zai-coding-plan/glm-5.3#max` — the same command shape as the primary, different model:
 
   ```bash
   timeout 1200 opencode run --auto \
     -m "zai-coding-plan/glm-5.3#max" \
     --title "review-<slug>" "$(cat /tmp/opencode/review/prompt-<slug>.md)" \
-    > /tmp/opencode/review/<slug>-stdout.md 2>&1; echo "exit=$?"
+    > /tmp/opencode/review/<slug>-glm.md 2>&1; echo "exit=$?"
   ```
 
-  The review prompt must state the read-only constraint and the P0–P3 report format explicitly for kimi (the fallback receives the same prompt file).
-
-- Either reviewer runs **synchronously inside the subagent's session**: the subagent waits for the CLI call to finish, processes the findings, and only then returns its final report. Do not run it in the background or "after the report" — the session would close before the result arrives and the findings would stay unprocessed.
-- The review runs **once** per task; there are no repeat rounds. A failed primary + fallback round is still one round; if both fail, the review does not run.
+- A fallback runs **only** when the previous reviewer in the chain produced no review (non-zero exit, auth/provider/quota error in the output file, or no findings text); the chain stops at the first reviewer that produced findings text.
+- The review prompt must state the read-only constraint and the P0–P3 report format explicitly — every reviewer receives the same prompt file.
+- The winning reviewer runs **synchronously inside the subagent's session**: the subagent waits for the CLI call to finish, processes the findings, and only then returns its final report. Do not run it in the background or "after the report" — the session would close before the result arrives and the findings would stay unprocessed.
+- The review runs **once** per task; there are no repeat rounds. A failed primary recovered through a fallback is still one round; if every reviewer in the chain fails, the review does not run.
 
 ## Reviewer rules
 
@@ -36,5 +45,5 @@
 
 - Agree with a finding → fix + `git commit --amend` + re-run `make check`.
 - Disagree → reasoned justification in the report and the commit body.
-- Primary (kimi) unavailable → run the fallback (`opencode run`); record which reviewer produced the round in the report and the commit body.
-- Both reviewers unavailable (non-zero exit, provider error/limits in the output files) → the review does not run; the fact is recorded in the report and the commit body.
+- Primary unavailable → run the first fallback (kimi), then the second (glm) if it also produced nothing; record which reviewer produced the round in the report and the commit body.
+- Every reviewer in the chain unavailable (non-zero exit, provider error/limits in the output files) → the review does not run; the fact is recorded in the report and the commit body.
