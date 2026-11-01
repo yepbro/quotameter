@@ -17,7 +17,10 @@ checks; pure TypeScript, because it is the _output_ of trust boundary 2, not a
 validation schema), and `config.ts` (the spec §6.2 configuration contract —
 TypeBox schemas for `server`/`app`/`auth`/`logging`/`providers`/`accounts`
 with derived types, spec defaults, and the cross-field invariants of
-`findConfigProblems`; trust boundary 3, consumed by `src/config/` tasks 064+).
-The contract is published as a JSON Schema document (`CONFIG_SCHEMA_DOCUMENT`
+`findConfigProblems`; trust boundary 3, consumed by `src/config/` tasks 064+),
+and `api/` (the spec §13 HTTP API request/response contracts every route
+serializes through and task 163 generates OpenAPI from — `health.ts` is the
+first: the closed `{ "status": "ok" }` literal of the public health
+response, task 147). The contract is published as a JSON Schema document (`CONFIG_SCHEMA_DOCUMENT`
 → the committed, generated [`schema/config.schema.json`](../../schema/config.schema.json);
 task 062, D-015 — see [docs/config-schema.md](../../docs/config-schema.md)).

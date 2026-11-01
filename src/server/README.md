@@ -33,8 +33,13 @@ redacting logger's Pino instance, and the `/api` route seam; the same
 factory wraps it as the `http-listener` lifecycle component the application
 shell starts and stops, and tests drive through `fastify.inject` without
 sockets. The routes live in `src/server/api/` (147–163): `index.ts` is the
-registered `/api` scope every Stage-12 endpoint joins. Later: the HTTP API
-routes (147–163) and security middleware (149–152, 156–158). It is the only
+registered `/api` scope every Stage-12 endpoint joins, and `health.ts`
+(task 147) is the first endpoint — the public `GET /api/health` returning
+exactly `{"status":"ok"}` (§13), unauthenticated in every auth mode, its
+shape enforced by the closed TypeBox response contract in
+`src/schemas/api/health.ts`. Later: the remaining HTTP API routes and
+auth/session endpoints (153–163), the error envelope (148), and the
+security middleware (149–152, 156–158). It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3

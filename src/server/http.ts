@@ -7,9 +7,9 @@
  * construction owns, the 64 KiB request-body limit, the connection/request
  * timeouts, static file serving with the SPA fallback, and the `/api` route
  * seam (`./api`) — and a second factory wraps it as a `LifecycleComponent`
- * the application shell (task 060) can start and stop. The routes
- * themselves, the error envelope, and the request-security checks are later
- * Stage-12 tasks; nothing here implements an endpoint.
+ * the application shell (task 060) can start and stop. The remaining
+ * routes (148+), the error envelope, and the request-security checks are
+ * later Stage-12 tasks; nothing in this module implements an endpoint.
  *
  * Split of §3's plugin list (decision D-109): `@fastify/static` and
  * `@fastify/cookie` are construction — serving the built UI and parsing
@@ -206,7 +206,7 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
     });
   });
 
-  // The §13 route scope (task 147 fills it).
+  // The §13 route scope (task 147 landed the health route; 148+ join here).
   server.register(apiRoutes, { prefix: '/api' });
 
   return server;
