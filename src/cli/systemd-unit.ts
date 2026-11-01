@@ -31,9 +31,12 @@
  *   half is that {@link SystemUnitInput} has no secret-carrying field at
  *   all.
  *
- * Task 135 (user unit) reuses the shared pieces — {@link renderUnitFile},
- * {@link assertUnitPathInput}, {@link assertUnitUserInput} — composing them
- * with a user-compatible minimal hardening set instead of the system one.
+ * Task 135's user unit (`src/cli/systemd-user-unit.ts`) composes the shared
+ * pieces — {@link renderUnitFile}, {@link assertUnitPathInput},
+ * {@link assertUnitRestartSecSeconds}, {@link checkUnitShape} with the
+ * exported check builders, and the pinned Description/Documentation
+ * constants — with a user-compatible minimal hardening set instead of the
+ * system one.
  *
  * Nothing here touches the filesystem or systemd itself: installing,
  * enabling, and starting the unit is task 139's `service install` command.
@@ -47,11 +50,11 @@ export const SYSTEM_UNIT_NAME = 'quotameter.service';
 /** Where task 139 installs the generated system unit (spec §5.3 step 7). */
 export const SYSTEM_UNIT_INSTALL_PATH = '/etc/systemd/system/quotameter.service';
 
-/** Cosmetic but pinned so the generated unit is stable. */
-const UNIT_DESCRIPTION = 'Quotameter - usage quota monitoring for AI subscriptions';
+/** Cosmetic but pinned so the generated unit is stable (shared with the user unit). */
+export const UNIT_DESCRIPTION = 'Quotameter - usage quota monitoring for AI subscriptions';
 
-/** The public repository, stable public information. */
-const UNIT_DOCUMENTATION = 'https://github.com/yepbro/quotameter';
+/** The public repository, stable public information (shared with the user unit). */
+export const UNIT_DOCUMENTATION = 'https://github.com/yepbro/quotameter';
 
 /**
  * Inputs of the generated system unit (spec §5.4). Every path is absolute
@@ -200,6 +203,22 @@ export function assertUnitUserInput(field: string, value: string): void {
 }
 
 /**
+ * Validates the shared `RestartSec` input (system and user units alike):
+ * a whole number of seconds >= 1. `Number.isSafeInteger`, not
+ * `Number.isInteger`: 1e21 is an integer whose string form is exponential
+ * ("1e+21"), which would render a RestartSec the module's own validator
+ * rejects (review round P2).
+ */
+export function assertUnitRestartSecSeconds(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      `systemd unit input: restartSecSeconds must be a whole number of seconds >= 1 ` +
+        `(got ${String(value)})`,
+    );
+  }
+}
+
+/**
  * Renders complete unit-file content from ordered sections.
  *
  * Deterministic: sections and directives render in the given order, sections
@@ -265,15 +284,7 @@ export function buildSystemUnit(input: SystemUnitInput): string {
   if (input.group !== undefined) {
     assertUnitUserInput('group', input.group);
   }
-  // Number.isSafeInteger, not Number.isInteger: 1e21 is an integer whose
-  // string form is exponential ("1e+21"), which would render a RestartSec
-  // the module's own validator rejects (review round P2).
-  if (!Number.isSafeInteger(input.restartSecSeconds) || input.restartSecSeconds < 1) {
-    throw new Error(
-      `systemd unit input: restartSecSeconds must be a whole number of seconds >= 1 ` +
-        `(got ${String(input.restartSecSeconds)})`,
-    );
-  }
+  assertUnitRestartSecSeconds(input.restartSecSeconds);
 
   const serviceDirectives: string[] = ['Type=exec', `User=${input.user}`];
   if (input.group !== undefined) {
@@ -428,6 +439,174 @@ function occurrences(
   return directives.filter((d) => d.section === section && d.key === key);
 }
 
+/** A directive check: the problem string when the value fails, else null. */
+export type UnitDirectiveCheck = (directive: UnitDirective) => string | null;
+
+/**
+ * One contract row of a unit shape: how every occurrence of a directive is
+ * checked, and whether the directive's absence is itself a problem.
+ * Required rows report absence; optional rows (like the system unit's
+ * `Group=`) only check the occurrences that exist.
+ */
+export interface UnitContractRow {
+  section: string;
+  key: string;
+  required: boolean;
+  check: UnitDirectiveCheck;
+}
+
+/**
+ * The strict shape of a generated unit, shared by the system and user
+ * validators: the directive keys allowed per section (a section outside the
+ * map is unexpected, and so is a listed section's directive outside its key
+ * list) plus the contract rows that pin the required values.
+ * {@link checkUnitShape} runs both over parsed content.
+ */
+export interface UnitShape {
+  allowedKeys: Readonly<Record<string, readonly string[]>>;
+  contract: readonly UnitContractRow[];
+}
+
+/** Expects the exact value; the message renders the directive's own key. */
+export function expectUnitValue(expected: string): UnitDirectiveCheck {
+  return (d) =>
+    d.value === expected
+      ? null
+      : `${d.key}= is ${JSON.stringify(d.value)}, expected ${JSON.stringify(expected)}`;
+}
+
+/** Expects one of systemd's truthy boolean spellings (systemd.syntax(7)). */
+export const expectUnitTruthyBoolean: UnitDirectiveCheck = (d) =>
+  isTruthyUnitBoolean(d.value)
+    ? null
+    : `${d.key}= is ${JSON.stringify(d.value)}, expected a true value`;
+
+/**
+ * Expects a systemd.time(7) time span; a stand-alone number is seconds, and
+ * "m" alone is not a unit ("min" is).
+ */
+export const expectUnitTimeSpan: UnitDirectiveCheck = (d) =>
+  /^\d+(?:us|ms|s|min|h|d|w)?$/.test(d.value)
+    ? null
+    : `${d.key}= is ${JSON.stringify(d.value)}, expected a systemd time span`;
+
+/** Expects exactly `<absolute node> <absolute CLI> run` (§5.4's pinned command). */
+export const expectUnitExecStartRun: UnitDirectiveCheck = (d) => {
+  const tokens = d.value.trim().split(/\s+/);
+  if (tokens.length !== 3) {
+    return `ExecStart= is ${JSON.stringify(d.value)}, expected exactly "<node> <cli> run"`;
+  }
+  // The length guard makes the tuple total; the cast states it (the
+  // src/util/version.ts tuple precedent — no defensive undefined arms).
+  const [nodePath, cliPath, argument] = tokens as [string, string, string];
+  if (!path.isAbsolute(nodePath)) {
+    return `ExecStart= first token is not an absolute path: ${JSON.stringify(d.value)}`;
+  }
+  if (!path.isAbsolute(cliPath)) {
+    return `ExecStart= second token is not an absolute path: ${JSON.stringify(d.value)}`;
+  }
+  if (argument !== 'run') {
+    return `ExecStart= third token is ${JSON.stringify(argument)}, expected "run"`;
+  }
+  return null;
+};
+
+/**
+ * Expects the one sanctioned `Environment=` line. The divergent value is
+ * deliberately NOT reproduced in the problem: a unit that carries a secret
+ * in Environment= must not have that secret echoed into diagnostics
+ * (spec §15.4; review round P0).
+ */
+export const expectUnitProductionEnvironment: UnitDirectiveCheck = (d) =>
+  d.value === 'NODE_ENV=production'
+    ? null
+    : 'Environment= differs from the required "NODE_ENV=production" ' +
+      '(the value is intentionally not quoted here — spec §5.4 forbids secrets or extra variables in unit files)';
+
+/**
+ * System-unit only: `User=`/`Group=` must never be `root` (§5.1), empty, or
+ * a numeric id — systemd accepts numeric ids, and id 0 is root by another
+ * spelling; the generated unit always carries a regular account name, so
+ * any numeric id is outside the generated shape (review round P1).
+ */
+const expectUnitNotRoot: UnitDirectiveCheck = (d) => {
+  if (d.value === 'root')
+    return `${d.key}= is "root" (spec §5.1: the service must never run as root)`;
+  if (d.value === '') return `${d.key}= is empty`;
+  if (/^\d+$/.test(d.value)) {
+    return `${d.key}= is a numeric id ("${d.value}"), not the regular account name the generated unit carries (id 0 is root; spec §5.1)`;
+  }
+  return null;
+};
+
+/**
+ * Runs a unit shape over unit content: the shared structural-validation
+ * engine behind {@link validateSystemUnit} and the user unit's
+ * `validateUserUnit` (task 135). Returns problem strings (empty array =
+ * valid): parse problems first, then the unexpected-section walk (a section
+ * outside the shape — empty ones included, caught through the parsed
+ * headers), the unexpected-directive walk (strict shape of the generated
+ * unit; directives inside an already-flagged section need no second message
+ * of their own), duplicate keys inside a section (systemd silently applies
+ * last-wins — a duplicate hides corruption), and finally the contract rows.
+ */
+export function checkUnitShape(content: string, shape: UnitShape): string[] {
+  const { sections, directives, problems } = parseUnitFile(content);
+  const issues: string[] = [...problems];
+
+  // Own-property lookups only (Object.hasOwn, the init-yes.ts process.env
+  // precedent): `in` and a bare bracket read both see inherited
+  // Object.prototype properties, so a hand-edited section named `toString`,
+  // `constructor`, or `__proto__` used to pass the known-section check and
+  // crash the directive walk on the inherited function (review round P1) —
+  // a unit the application does not control must produce a problem string,
+  // never a throw.
+  for (const header of sections) {
+    if (!Object.hasOwn(shape.allowedKeys, header.name)) {
+      issues.push(`line ${header.line}: unexpected section [${header.name}]`);
+    }
+  }
+  for (const directive of directives) {
+    if (!Object.hasOwn(shape.allowedKeys, directive.section)) {
+      continue; // the section header was flagged above
+    }
+    // The hasOwn guard makes the own property's presence — and thus its
+    // `readonly string[]` type — an invariant; the cast states it.
+    const allowed = shape.allowedKeys[directive.section] as readonly string[];
+    if (!allowed.includes(directive.key)) {
+      issues.push(
+        `line ${directive.line}: unexpected directive ${directive.key}= in [${directive.section}]`,
+      );
+    }
+  }
+
+  const seen = new Set<string>();
+  for (const directive of directives) {
+    const id = `${directive.section}::${directive.key}`;
+    if (seen.has(id)) {
+      issues.push(
+        `line ${directive.line}: duplicate directive ${directive.key}= in [${directive.section}]`,
+      );
+    } else {
+      seen.add(id);
+    }
+  }
+
+  for (const { section, key, required, check } of shape.contract) {
+    const found = occurrences(directives, section, key);
+    if (found.length === 0) {
+      if (required) issues.push(`[${section}] is missing the required directive ${key}=`);
+      continue;
+    }
+    for (const directive of found) {
+      const problem = check(directive);
+      if (problem !== null) issues.push(`line ${directive.line}: ${problem}`);
+    }
+  }
+
+  return issues;
+}
+
 /**
  * Structurally validates unit content against the §5.4 system-unit contract.
  *
@@ -459,148 +638,38 @@ export function validateSystemUnit(
   content: string,
   expected?: { configDir: string; dataDir: string },
 ): string[] {
-  const { sections, directives, problems } = parseUnitFile(content);
-  const issues: string[] = [...problems];
-
-  // Unexpected sections and directives: strict shape of the generated unit.
-  // The header walk catches empty unknown sections too (a `[Socket]` with no
-  // directives is still not part of the generated shape); directives inside
-  // an unknown section need no second message of their own.
-  const allowedKeys: Record<string, readonly string[]> = {
-    Unit: ['Description', 'Documentation', 'After', 'Wants'],
-    Service: [
-      'Type',
-      'User',
-      'Group',
-      'ExecStart',
-      'Environment',
-      'Restart',
-      'RestartSec',
-      'NoNewPrivileges',
-      'PrivateTmp',
-      'ProtectSystem',
-      'ProtectHome',
-      'ReadWritePaths',
-      'StandardOutput',
-      'StandardError',
-    ],
-    Install: ['WantedBy'],
-  };
-  for (const header of sections) {
-    if (!(header.name in allowedKeys)) {
-      issues.push(`line ${header.line}: unexpected section [${header.name}]`);
-    }
-  }
-  for (const directive of directives) {
-    const allowed = allowedKeys[directive.section];
-    if (allowed === undefined) continue; // the section header was flagged above
-    if (!allowed.includes(directive.key)) {
-      issues.push(
-        `line ${directive.line}: unexpected directive ${directive.key}= in [${directive.section}]`,
-      );
-    }
-  }
-
-  // Duplicate keys inside a section: systemd applies last-wins, so a
-  // duplicate is corruption, never intent.
-  const seen = new Set<string>();
-  for (const directive of directives) {
-    const id = `${directive.section}::${directive.key}`;
-    if (seen.has(id)) {
-      issues.push(
-        `line ${directive.line}: duplicate directive ${directive.key}= in [${directive.section}]`,
-      );
-    } else {
-      seen.add(id);
-    }
-  }
-
-  type Check = (directive: UnitDirective) => string | null;
-  const exact =
-    (expected: string): Check =>
-    (d) =>
-      d.value === expected
-        ? null
-        : `${d.key}= is ${JSON.stringify(d.value)}, expected ${JSON.stringify(expected)}`;
-  const truthyBoolean = (d: UnitDirective): string | null =>
-    isTruthyUnitBoolean(d.value)
-      ? null
-      : `${d.key}= is ${JSON.stringify(d.value)}, expected a true value`;
-  const neverRoot = (d: UnitDirective): string | null => {
-    if (d.value === 'root')
-      return `${d.key}= is "root" (spec §5.1: the service must never run as root)`;
-    if (d.value === '') return `${d.key}= is empty`;
-    // systemd accepts numeric user/group ids, and id 0 is root by another
-    // spelling; the generated unit always carries a regular account name, so
-    // any numeric id is outside the generated shape (review round P1).
-    if (/^\d+$/.test(d.value)) {
-      return `${d.key}= is a numeric id ("${d.value}"), not the regular account name the generated unit carries (id 0 is root; spec §5.1)`;
-    }
-    return null;
-  };
-
   // One row per checked directive: required rows report absence, optional
   // rows (Group) only check the occurrences that exist. Pairing the check
   // with the row keeps the two lists from drifting apart.
-  const contract: readonly { section: string; key: string; required: boolean; check: Check }[] = [
-    { section: 'Unit', key: 'After', required: true, check: exact('network-online.target') },
-    { section: 'Unit', key: 'Wants', required: true, check: exact('network-online.target') },
-    { section: 'Service', key: 'Type', required: true, check: exact('exec') },
-    { section: 'Service', key: 'User', required: true, check: neverRoot },
-    { section: 'Service', key: 'Group', required: false, check: neverRoot },
+  const contract: readonly UnitContractRow[] = [
     {
-      section: 'Service',
-      key: 'ExecStart',
+      section: 'Unit',
+      key: 'After',
       required: true,
-      check: (d) => {
-        const tokens = d.value.trim().split(/\s+/);
-        if (tokens.length !== 3) {
-          return `ExecStart= is ${JSON.stringify(d.value)}, expected exactly "<node> <cli> run"`;
-        }
-        // The length guard makes the tuple total; the cast states it (the
-        // src/util/version.ts tuple precedent — no defensive undefined arms).
-        const [nodePath, cliPath, argument] = tokens as [string, string, string];
-        if (!path.isAbsolute(nodePath)) {
-          return `ExecStart= first token is not an absolute path: ${JSON.stringify(d.value)}`;
-        }
-        if (!path.isAbsolute(cliPath)) {
-          return `ExecStart= second token is not an absolute path: ${JSON.stringify(d.value)}`;
-        }
-        if (argument !== 'run') {
-          return `ExecStart= third token is ${JSON.stringify(argument)}, expected "run"`;
-        }
-        return null;
-      },
+      check: expectUnitValue('network-online.target'),
     },
+    {
+      section: 'Unit',
+      key: 'Wants',
+      required: true,
+      check: expectUnitValue('network-online.target'),
+    },
+    { section: 'Service', key: 'Type', required: true, check: expectUnitValue('exec') },
+    { section: 'Service', key: 'User', required: true, check: expectUnitNotRoot },
+    { section: 'Service', key: 'Group', required: false, check: expectUnitNotRoot },
+    { section: 'Service', key: 'ExecStart', required: true, check: expectUnitExecStartRun },
     {
       section: 'Service',
       key: 'Environment',
       required: true,
-      // The divergent value is deliberately NOT reproduced in the problem:
-      // a unit that carries a secret in Environment= must not have that
-      // secret echoed into diagnostics (spec §15.4; review round P0).
-      check: (d) =>
-        d.value === 'NODE_ENV=production'
-          ? null
-          : 'Environment= differs from the required "NODE_ENV=production" ' +
-            '(the value is intentionally not quoted here — spec §5.4 forbids secrets or extra variables in unit files)',
+      check: expectUnitProductionEnvironment,
     },
-    { section: 'Service', key: 'Restart', required: true, check: exact('on-failure') },
-    {
-      section: 'Service',
-      key: 'RestartSec',
-      required: true,
-      // systemd.time(7) units; a stand-alone number is seconds. "m" alone is
-      // not a unit ("min" is).
-      check: (d) =>
-        /^\d+(?:us|ms|s|min|h|d|w)?$/.test(d.value)
-          ? null
-          : `RestartSec= is ${JSON.stringify(d.value)}, expected a systemd time span`,
-    },
-    { section: 'Service', key: 'NoNewPrivileges', required: true, check: truthyBoolean },
-    { section: 'Service', key: 'PrivateTmp', required: true, check: truthyBoolean },
-    { section: 'Service', key: 'ProtectSystem', required: true, check: exact('strict') },
-    { section: 'Service', key: 'ProtectHome', required: true, check: exact('read-only') },
+    { section: 'Service', key: 'Restart', required: true, check: expectUnitValue('on-failure') },
+    { section: 'Service', key: 'RestartSec', required: true, check: expectUnitTimeSpan },
+    { section: 'Service', key: 'NoNewPrivileges', required: true, check: expectUnitTruthyBoolean },
+    { section: 'Service', key: 'PrivateTmp', required: true, check: expectUnitTruthyBoolean },
+    { section: 'Service', key: 'ProtectSystem', required: true, check: expectUnitValue('strict') },
+    { section: 'Service', key: 'ProtectHome', required: true, check: expectUnitValue('read-only') },
     {
       section: 'Service',
       key: 'ReadWritePaths',
@@ -629,22 +698,42 @@ export function validateSystemUnit(
         return null;
       },
     },
-    { section: 'Service', key: 'StandardOutput', required: true, check: exact('journal') },
-    { section: 'Service', key: 'StandardError', required: true, check: exact('journal') },
-    { section: 'Install', key: 'WantedBy', required: true, check: exact('multi-user.target') },
+    {
+      section: 'Service',
+      key: 'StandardOutput',
+      required: true,
+      check: expectUnitValue('journal'),
+    },
+    { section: 'Service', key: 'StandardError', required: true, check: expectUnitValue('journal') },
+    {
+      section: 'Install',
+      key: 'WantedBy',
+      required: true,
+      check: expectUnitValue('multi-user.target'),
+    },
   ];
 
-  for (const { section, key, required, check } of contract) {
-    const found = occurrences(directives, section, key);
-    if (found.length === 0) {
-      if (required) issues.push(`[${section}] is missing the required directive ${key}=`);
-      continue;
-    }
-    for (const directive of found) {
-      const problem = check(directive);
-      if (problem !== null) issues.push(`line ${directive.line}: ${problem}`);
-    }
-  }
-
-  return issues;
+  return checkUnitShape(content, {
+    allowedKeys: {
+      Unit: ['Description', 'Documentation', 'After', 'Wants'],
+      Service: [
+        'Type',
+        'User',
+        'Group',
+        'ExecStart',
+        'Environment',
+        'Restart',
+        'RestartSec',
+        'NoNewPrivileges',
+        'PrivateTmp',
+        'ProtectSystem',
+        'ProtectHome',
+        'ReadWritePaths',
+        'StandardOutput',
+        'StandardError',
+      ],
+      Install: ['WantedBy'],
+    },
+    contract,
+  });
 }

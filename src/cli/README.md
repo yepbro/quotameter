@@ -11,21 +11,22 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 
 ## Dispatch skeleton (task 128, decision D-044)
 
-| File                 | Owns                                                                                                  |
-| -------------------- | ----------------------------------------------------------------------------------------------------- |
-| `main.ts`            | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                 |
-| `commands.ts`        | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub |
-| `parser.ts`          | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                             |
-| `help.ts`            | pure help renderers (general, command, group)                                                         |
-| `output.ts`          | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                              |
-| `prompts.ts`         | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets   |
-| `init-questions.ts`  | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly         |
-| `init-yes.ts`        | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel     |
-| `init-account.ts`    | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer        |
-| `init-persist.ts`    | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write   |
-| `init.ts`            | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries |
-| `raw-diagnostics.ts` | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
-| `systemd-unit.ts`    | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                 |
+| File                   | Owns                                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                 |
+| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub |
+| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                             |
+| `help.ts`              | pure help renderers (general, command, group)                                                         |
+| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                              |
+| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets   |
+| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly         |
+| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel     |
+| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer        |
+| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write   |
+| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries |
+| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
+| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                 |
+| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                 |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -357,9 +358,60 @@ Installing/enabling the unit (`quotameter service install`, §5.2) is task
   not reproduce the divergent value so a smuggled secret can never be
   echoed into diagnostics (§15.4).
 
-Task 135's user unit reuses the shared pieces — `renderUnitFile`,
-`assertUnitPathInput`, `assertUnitUserInput` — composing them with the
-user-compatible minimal hardening set instead of the system set.
+Task 135's user unit — `systemd-user-unit.ts`, the next section — reuses
+the shared pieces: `renderUnitFile`, `assertUnitPathInput`,
+`assertUnitRestartSecSeconds`, `checkUnitShape` with the exported check
+builders, and the pinned `Description`/`Documentation` constants.
+
+## The systemd user unit generator (task 135, spec §5.3 step 7 / §5.4, decision D-104)
+
+`systemd-user-unit.ts` is the user-unit twin of task 134's module — pure
+generation and structural validation, **no filesystem, no systemd calls**.
+Installing under `~/.config/systemd/user/`, `systemctl --user enable`, and
+linger guidance are tasks 137–139.
+
+- **`buildUserUnit(input)`** renders the user unit deterministically from
+  `UserUnitInput { nodePath, cliPath, restartSecSeconds }` — there is
+  deliberately no user, group, config-directory, or data-directory field,
+  and no secret-carrying field at all (§5.4's no-secrets rule holds by
+  construction). §5.4's unit-generic directives are kept verbatim (D-104:
+  the spec's first sentence prescribes them for units, and only the
+  hardening sentence splits by manager kind): absolute `ExecStart=<node>
+<cli> run`, `Restart=on-failure` with `RestartSec=<n>s`,
+  `After=`/`Wants=network-online.target`,
+  `Environment=NODE_ENV=production`, journald output, `Type=exec`, the
+  pinned `Description`/`Documentation`, and no `WorkingDirectory` (D-103
+  carried over). The manager-compatible adaptations, verified against
+  systemd.exec(7): **no `User=`/`Group=`** ("only available for system
+  services and not supported for services running in per-user instances";
+  the user manager already runs the service as the owning regular account,
+  §5.1 by construction); **the minimal hardening set is
+  `NoNewPrivileges=true` only** (the namespacing directives the system unit
+  carries — `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only`,
+  `ReadWritePaths` — are unavailable to the unprivileged user manager
+  without `PrivateUsers=true`/unprivileged user namespaces; write
+  protection in user mode is the application's own §6.3 permission
+  discipline); and **`WantedBy=default.target`** (the user manager ships
+  `default.target` and no `multi-user.target`; `network-online.target`
+  stays because ordering against a missing unit is trivially satisfied and
+  the want has no effect — benign, and §5.4 prescribes the directives
+  without a user-unit exception).
+- **`USER_UNIT_NAME`** is the same file name as the system unit's — the
+  system and user managers keep separate unit namespaces.
+  **`userUnitInstallPath(homeDir)`** composes §5.3 step 7's literal
+  `~/.config/systemd/user/quotameter.service` under an injection-guarded
+  absolute home directory (the shared `assertUnitPathInput` guard; honoring
+  a custom `XDG_CONFIG_HOME` is task 139's installer decision).
+- **`validateUserUnit(content)`** is the user shape on the shared
+  `checkUnitShape` engine extracted from `validateSystemUnit` (a
+  behavior-preserving refactor — task 134's suite passes unchanged): the
+  system-only directives are not in the allowed key set, so their presence
+  (a system unit pasted into `~/.config/systemd/user/`) is an
+  unexpected-directive problem; `WantedBy=` must be `default.target`; and
+  any `Environment=` line other than `NODE_ENV=production` is rejected
+  without echoing the divergent value. The two-way cross-check in
+  `test/unit/cli-systemd-user-unit.spec.ts` — each validator rejects the
+  other twin's generated unit — pins the contracts as genuinely distinct.
 
 ### Launcher notes (`bin/quotameter.mjs`)
 
