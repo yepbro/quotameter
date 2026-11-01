@@ -693,3 +693,88 @@ production seams against real directories and real child processes); the three
 real-launcher routes — not-running, rejected with no signal delivered to a live
 signal-holding child, and accepted with the child's SIGHUP marker appearing
 after exit 0 — are pinned in `test/integration/cli-service-reload.spec.ts`.
+
+## The `status` command (task 142, spec §5.2/§7.3, decision D-114)
+
+`service-status.ts` holds the §5.2 `quotameter status` handler — the status
+report: service status, latest collection, and last error for each account,
+useful for a system unit, a user unit, and a foreground run alike. It is
+composed of landed layers only, each fact from the layer that owns it:
+
+- **Installed scope** — D-110's disk discovery (the 139 exists-seam over the
+  two install paths), never a re-derived install route. Both unit kinds on
+  disk is reported as the mistake task 139 warns about, in the report's own
+  Installed line.
+- **Running state** — D-112's lock read (the shared `readServiceLock` over
+  `lockFilePath` of the owner's data directory, liveness through
+  `isProcessAlive`): run-mode independent, answering "running, at which pid?"
+  where a manager query could only answer "installed". The four read states
+  render honestly: absent → stopped; a live holder → `running (pid …)`; a
+  dead holder → stopped with the stale-lock explanation; unreadable/invalid →
+  `unknown` plus a stderr failure line.
+- **Manager state** — `systemctl [-–user] is-active quotameter.service`
+  through task 137's command seam, only for an installed unit, and only as an
+  unprivileged query (D-105's vocabulary: status queries run as the service
+  owner). A privileged run never asks a `--user` manager (it would be root's,
+  not the owner's — the report prints the regular-account step instead). The
+  binary exit status renders `active`/`not active` **only for a command that
+  ran and answered**: a non-zero exit carrying a stderr diagnostic (spawn
+  failure, unreachable bus) renders `unknown (<diagnostic>)` and makes the
+  exit 1 — never a false `not active`; the unit kind disambiguates the line
+  only when both are installed.
+- **Per-account facts** — the account list is the live configuration (the
+  service's own `loadConfigWithEnv` pipeline); each status is task 111's
+  `deriveAccountStatus` (§7.3's vocabulary through `ACCOUNT_STATUS_LABELS`)
+  over `readPollingRunEvidence` storage reads. The two inputs a separate
+  process cannot observe take their honest proxies (D-114): the D-064
+  suspension passes `INITIAL_SUSPENSION_STATE` (the `auth_error`-run branch
+  keeps rank 1 truthful — D-070's recorded stance for this consumer), and
+  `configured` resolves `apiKeyEnv` against this invocation's environment
+  (the D-112 residual: the CLI cannot see the service's environment).
+- **§7.2's two most-recents** — the last collection is the evidence's
+  `lastSuccessAt` (the latest snapshot's §8.4 stamp); the last error is the
+  newest **non-success** run (six bounded, indexed `getLatestCollectionRun`
+  probes), rendered with its §7.3-named outcome label and the stored message
+  (sanitized by construction, D-048) after an exact-occurrence redaction of
+  every §6.3 secret source — file-stored keys, environment-supplied key
+  values, and the password hash (§7.4's rule mirrored — the public sanitizer
+  is payload-shaped).
+- **§10 time discipline** — every rendered timestamp is
+  `formatZonedDate`/`formatZonedTime` in the configured display zone with the
+  zone's name, never a machine-local reading; `now` comes from the injectable
+  clock seam (D-021 — `createSystemClock` stays the only `Date.now` site).
+- **Storage** — `openStatusStore` opens an **existing** database only, and
+  **read-only** (through the additive storage sibling
+  `openReadOnlyStorageConnection` — the layout's `node:sqlite` layer rule
+  keeps the read-only knowledge inside `src/storage/`): the
+  command never creates a database (a read-only handle cannot), never writes
+  pages (no hot-journal recovery as another user under `sudo`), and still
+  passes the §11.1 pragma verification because a quotameter database is
+  already WAL — the accepted residual is that a crashed writer's hot journal
+  needs a writer first and reads as an honest failure. An absent file is
+  empty evidence (the §7.3 no-run paths answer); an unreadable one is a
+  stderr failure with the accounts section marked unavailable, and only the
+  repository reads sit inside that failure's try. The existence probe runs
+  before any storage module loads, so `node:sqlite`'s ExperimentalWarning
+  belongs to invocations that actually open a database, not to every
+  launcher invocation through the dispatch table (the raw-diagnostics.ts
+  discipline). §6.3's env-only mode reports its provenance (`valid — from
+environment overrides, no configuration file`), never implying a file
+  exists.
+- **Exit codes (D-114)** — 0 exactly when every probe _answered_ (stopped,
+  not installed, no accounts, and no data are states, not failures); 1 when a
+  probe could not answer (owner problems, unusable home, unreadable/invalid
+  lock, invalid configuration, storage failure) — the report still renders
+  everything established, with the failure lines on stderr. The handler never
+  throws.
+
+Branch coverage: the installed-scope × manager × running × configuration ×
+storage matrix is seam-driven in `test/unit/cli-service-status.spec.ts`
+(beside the pure-helper tables — the manager probe plan, the outcome-filtered
+latest-error read, the §6.3 secret resolution, the §10 formatter, the
+redaction — and the production opener against real directories, including a
+corrupt database); the real-launcher routes — the bare machine, the full
+report over a real configuration and a real migrated SQLite database (marker
+key never rendered), the invalid configuration, and a real §5.6 lock naming a
+live pid — plus the in-process opener-over-seeded-database read are pinned in
+`test/integration/cli-service-status.spec.ts`.

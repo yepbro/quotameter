@@ -111,7 +111,10 @@ the storage seam — the three D-058 lookups designed for this consumer
 (latest cycle, latest snapshot's §8.4 stamp as the last success, oldest
 run as the no-success `Stale` anchor) frozen into one evidence object.
 Time is an argument (D-021); the §13 `/api/status` route, §5.2's
-`quotameter status`, and §14.3's overview are the consumers.
+`quotameter status` (landed: task 142's handler in
+[`../cli/service-status.ts`](../cli/service-status.ts), which passes
+`INITIAL_SUSPENSION_STATE` and resolves `configured` against its own
+environment per D-114), and §14.3's overview are the consumers.
 
 Landed: [`polling-persist.ts`](./polling-persist.ts) — the run writer behind
 the scheduler's settle seam (task 110, decision D-069):

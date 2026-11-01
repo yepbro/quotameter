@@ -7,6 +7,7 @@ import {
   BUSY_TIMEOUT_MS,
   DATABASE_FILENAME,
   databaseFilePath,
+  openReadOnlyStorageConnection,
   openStorageConnection,
 } from '../../src/storage/connection';
 import { createMigrationRunner, type Migration } from '../../src/storage/migrations';
@@ -305,6 +306,40 @@ describe('storage connection (§11.1 settings)', () => {
       } finally {
         reader.close();
       }
+    });
+  });
+
+  it('opens read-only for CLI readers: no writes, no creation, and the explicit seam still wins (task 142, D-114)', async () => {
+    await withTempDir(async (dir) => {
+      // A WAL database this application wrote: the read-only open must pass
+      // the same §11.1 verification (a quotameter database is already WAL).
+      const writer = openStorageConnection({ dataDir: dir.path });
+      writer.database.exec('CREATE TABLE probe (id INTEGER PRIMARY KEY) STRICT;');
+      writer.database.prepare('INSERT INTO probe (id) VALUES (1)').run();
+      writer.close();
+
+      const reader = openReadOnlyStorageConnection({ dataDir: dir.path });
+      try {
+        expect(reader.database.prepare('SELECT id FROM probe').all()).toEqual([{ id: 1 }]);
+        // A read-only handle refuses writes with the driver's own errno.
+        expect(() => reader.database.prepare('INSERT INTO probe (id) VALUES (2)').run()).toThrow(
+          /readonly|read-only/i,
+        );
+      } finally {
+        reader.close();
+      }
+
+      // The explicit openDatabase seam still wins over the read-only default.
+      const opens: string[] = [];
+      const seam = openReadOnlyStorageConnection({
+        dataDir: dir.path,
+        openDatabase: (databasePath) => {
+          opens.push(databasePath);
+          return new DatabaseSync(databasePath);
+        },
+      });
+      expect(opens).toEqual([databaseFilePath(dir.path)]);
+      seam.close();
     });
   });
 });

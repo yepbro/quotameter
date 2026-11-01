@@ -205,6 +205,34 @@ function defaultOpenDatabase(databasePath: string): DatabaseSync {
   return new DatabaseSync(databasePath);
 }
 
+/**
+ * Opens the database **read-only** (task 142, decision D-114): a sibling of
+ * {@link openStorageConnection} for readers that must never write — the CLI
+ * `status` command. A read-only handle cannot create the file (an existence
+ * probe beside it closes the probe-then-open window) and cannot write pages
+ * (no WAL recovery as another user under `sudo`); the §11.1 pragma
+ * verification still passes because a quotameter database is already WAL —
+ * verified on the pinned runtime (a rollback-journal or empty file refuses,
+ * which is correct: it is not a database this application wrote). The
+ * accepted residual, recorded in D-114: a database needing WAL recovery (a
+ * crashed writer's hot journal) refuses a read-only open — a writer must
+ * open it first. The explicit `openDatabase` seam still wins, so tests keep
+ * their fail-fast injection path.
+ */
+export function openReadOnlyStorageConnection(
+  options: StorageConnectionOptions,
+): StorageConnection {
+  return openStorageConnection({
+    ...options,
+    openDatabase: options.openDatabase ?? readOnlyDatabaseOpener,
+  });
+}
+
+/** The read-only default {@link StorageConnectionOptions.openDatabase}. */
+function readOnlyDatabaseOpener(databasePath: string): DatabaseSync {
+  return new DatabaseSync(databasePath, { readOnly: true });
+}
+
 /** Applies every §11.1 setting and verifies it by readback. */
 function applyPragmaSettings(database: DatabaseSync, databasePath: string): void {
   for (const setting of PRAGMA_SETTINGS) {

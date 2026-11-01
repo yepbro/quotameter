@@ -19,6 +19,7 @@ import { runInitCommand } from './init';
 import { runServiceControlCommand, type ServiceControlVerb } from './service-control';
 import { runServiceInstallCommand, runServiceUninstallCommand } from './service-install';
 import { runReloadCommand } from './service-reload';
+import { runStatusCommand } from './service-status';
 import { INIT_RESTART_SEC_SECONDS } from './service-setup';
 
 /** Everything a command handler receives; injected by the dispatcher. */
@@ -171,9 +172,19 @@ export function buildCommandTable(): Command[] {
       maxPositionals: 0,
       run: runReloadCommand(),
     },
-    stub('status', 'Show service status, latest collection, and last error for each account', [
-      'status',
-    ]),
+    // Task 142 (spec §5.2/§7.3; decision D-114): the status report — the
+    // installed scope (139/140's disk discovery), the manager view, the
+    // running state through the §5.6 lock (141's reader), and every
+    // account's §7.3 status, last collection, and last error; §5.2 defines
+    // no options for the command.
+    {
+      kind: 'leaf',
+      name: 'status',
+      summary: 'Show service status, latest collection, and last error for each account',
+      options: {},
+      maxPositionals: 0,
+      run: runStatusCommand(),
+    },
     stub('logs', 'Convenient journalctl wrapper for system or user service', ['logs']),
     {
       kind: 'group',
