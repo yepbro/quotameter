@@ -30,6 +30,7 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136)             |
 | `service-setup.ts`     | the §5.3 step-7 branch layer: capability probes, the route matrix, the no-sudo user-unit install, the manual-steps fallbacks (task 137)        |
 | `service-linger.ts`    | the §5.3 linger detection + guidance layer: flag-file tri-state probe, the enable-linger command with the logout/reboot consequence (task 138) |
+| `service-install.ts`   | the §5.2 `service install`/`uninstall` handlers: idempotent unit lifecycle on both unit kinds, through the 136/137 seams (task 139)            |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -568,6 +569,63 @@ systemd routes for real), while the systemd-less manual route — the one
 real on the development container — is additionally pinned through the real
 launcher (piped, `--yes`, and under a real PTY) in
 `test/integration/cli-init-service.spec.ts`.
+
+## The `service install` / `service uninstall` commands (task 139, spec §5.2/§5.4, decision D-108)
+
+`service-install.ts` holds both §5.2 handlers — `runServiceInstallCommand(deps)` and
+`runServiceUninstallCommand(deps)`, wired into the `service` group of the dispatch table
+(install declares `--restart-sec <seconds>`). The commands are **independent of `init` by
+construction**: nothing here reads, writes, or requires a configuration — the unit content
+comes from the task 134/135 generators, the owner context from task 136's resolver, the
+route from task 137's matrix, and the linger guidance from task 138.
+
+- **Idempotency** — §5.4's "`quotameter service install` must regenerate the unit" is the
+  whole design: install-when-absent and install-when-present run the _same_ sequence
+  (deterministic generator rewrite → `daemon-reload` → `enable --now`, a no-op on an
+  enabled service), so re-running install after an upgrade is the stale-Node/CLI-path
+  remedy. A pre-existing unit file (probed before the write) only adds a regenerated note
+  — a running service keeps the previous unit until restarted. Uninstall-when-absent is a
+  `nothing to do` success with zero side effects.
+- **Routing** — task 137's matrix decides the unit kind: privileges held on a systemd
+  machine manage the **system** unit (the privileged operations of D-105's vocabulary run
+  in-process: write/remove `/etc/systemd/system/quotameter.service`, `daemon-reload`,
+  `enable --now`/`disable --now`, and the `is-active` verification §5.3 step 7 prescribes
+  for the privileged route); a regular user manages the **user** unit entirely
+  unprivileged (write under the owner's home, `systemctl --user`). Cross-unit mistakes
+  draw a stderr warning on install and the exact removal hint on a no-op uninstall; the
+  §5.6 single-instance lock is the backstop, not the mechanism.
+- **System-unit paths** — `ReadWritePaths` resolves through the §6.1 `resolvePaths`
+  precedence over the process environment with `HOME` forced to the owner's home (a
+  privileged run must never pin root's paths into a unit that runs as the owner): sudo's
+  default environment stripping yields the owner's XDG defaults, while an
+  operator-declared override (`sudo -E`, `sudo QUOTAMETER_CONFIG_DIR=…`) is honored. The
+  owner's home passes the shared injection guard; install does not create or chown the
+  directories (D-106's deferred ownership machinery stays out of scope — a missing
+  configuration surfaces in `is-active` with actionable guidance).
+- **Unavailable routes** — install on a systemd-less machine refuses with the exact
+  foreground alternative (exit 1: unlike init, whose configuration write already
+  succeeded, install's whole job is the service); an unreachable user manager still
+  writes the unit file and prints the exact session commands plus the detected linger
+  guidance. Uninstall on manager-less machines removes the file without manager commands
+  and says so.
+- **Exit codes** — install exits 0 exactly when the unit was written, reloaded, and
+  enabled/started (plus `is-active` on the system route); uninstall exits 0 exactly when
+  the file is gone (or was absent) and every executed manager command succeeded — a
+  failed `disable`/`daemon-reload` is reported but does not block the file removal, since
+  the manager self-heals on its next reload while a half-removed unit would not; the
+  partial outcome then names the exact cleanup command (`sudo systemctl daemon-reload`,
+  or the `--user` spelling). Prescriptive system-route commands print with the `sudo`
+  prefix — the normal invocation is the one-shot `sudo quotameter service install`,
+  whose shell is the regular account. The owner-problem gate (D-105, including the
+  broken-system throw of an unreadable user database, rendered as the standard failure
+  line) and the POSIX owner-name guard (D-106) fail fast like init's; neither handler
+  throws.
+
+Branch coverage: every route and failure path is seam-driven in
+`test/unit/cli-service-install.spec.ts` (the container and CI images ship no systemd);
+the systemd-less routes the container does produce — the install refusal and the
+no-op/manager-less uninstall — are additionally pinned through the real launcher in
+`test/integration/cli-service-install.spec.ts`.
 
 ### Launcher notes (`bin/quotameter.mjs`)
 

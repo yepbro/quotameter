@@ -16,6 +16,8 @@
 import type { CliOutput } from './output';
 import type { CliOptions } from './parser';
 import { runInitCommand } from './init';
+import { INIT_RESTART_SEC_SECONDS } from './service-setup';
+import { runServiceInstallCommand, runServiceUninstallCommand } from './service-install';
 
 /** Everything a command handler receives; injected by the dispatcher. */
 export interface CliContext {
@@ -142,8 +144,31 @@ export function buildCommandTable(): Command[] {
       name: 'service',
       summary: 'Install or remove the service independently of init',
       subcommands: [
-        stub('install', 'Install the systemd service unit', ['service', 'install']),
-        stub('uninstall', 'Remove the installed systemd service unit', ['service', 'uninstall']),
+        // Task 139 (spec §5.2/§5.4, decision D-108): idempotent install that
+        // regenerates the unit on re-run (§5.4's stale-path remedy) and its
+        // uninstall twin; both route system vs user unit through the landed
+        // owner/capability layers, independently of `init`.
+        {
+          kind: 'leaf',
+          name: 'install',
+          summary: 'Install the systemd service unit',
+          options: {
+            'restart-sec': {
+              type: 'string',
+              description: `Restart delay in seconds, >= 1 (default ${INIT_RESTART_SEC_SECONDS})`,
+            },
+          },
+          maxPositionals: 0,
+          run: runServiceInstallCommand(),
+        },
+        {
+          kind: 'leaf',
+          name: 'uninstall',
+          summary: 'Remove the installed systemd service unit',
+          options: {},
+          maxPositionals: 0,
+          run: runServiceUninstallCommand(),
+        },
       ],
     },
     stub('passwd', 'Set or change the web password', ['passwd']),

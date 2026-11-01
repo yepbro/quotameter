@@ -189,6 +189,9 @@ describe('service subcommands (spec §5.2)', () => {
     const result = await cli(['service', 'install', '--help']);
     expect(result.code).toBe(0);
     expect(result.out).toContain('Usage: quotameter service install [options]');
+    // Task 139: the §5.4 configurable RestartSec flag renders with its default.
+    expect(result.out).toContain('--restart-sec <value>');
+    expect(result.out).toContain('(default 5)');
   });
 });
 
@@ -252,10 +255,14 @@ describe('stub dispatch (tasks 129–145 replace these)', () => {
     expect(result.err).toBe('quotameter doctor: not implemented yet\n');
   });
 
-  it('reports a subcommand with its full path', async () => {
-    const result = await cli(['service', 'uninstall']);
+  it('reports a stubbed service-adjacent command with its full path', async () => {
+    // `service install`/`uninstall` are real since task 139 and run real
+    // probes against the machine (never exercised against the test host's
+    // systemd here — the dedicated suites inject every seam); the full-path
+    // prefix for subcommands is pinned by the usage-error tests above.
+    const result = await cli(['logs']);
     expect(result.code).toBe(1);
-    expect(result.err).toBe('quotameter service uninstall: not implemented yet\n');
+    expect(result.err).toBe('quotameter logs: not implemented yet\n');
   });
 });
 
@@ -422,8 +429,10 @@ describe('dispatch-table pinning (U-006 mutation triage)', () => {
 
   it('reports every stubbed command with its exact full command path', async () => {
     // `init` is real since task 130 (it prompts on stdin — exercising it in
-    // this table would touch the test runner's own stdin); its behavior is
-    // covered by the dedicated init suites.
+    // this table would touch the test runner's own stdin); `service
+    // install`/`uninstall` are real since task 139 (they probe the machine
+    // and may spawn systemctl — likewise covered by the dedicated suites,
+    // which inject every seam). Both behaviors are covered elsewhere.
     for (const path of [
       ['run'],
       ['start'],
@@ -432,8 +441,6 @@ describe('dispatch-table pinning (U-006 mutation triage)', () => {
       ['reload'],
       ['status'],
       ['logs'],
-      ['service', 'install'],
-      ['service', 'uninstall'],
       ['passwd'],
       ['doctor'],
     ] as const) {

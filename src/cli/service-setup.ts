@@ -408,13 +408,17 @@ export function renderHeldManualSetup(ownerName: string): string {
   ].join('\n');
 }
 
-/** A failure line for stderr, one bounded diagnostic included. */
-function failureLine(errorPrefix: string, what: string, detail: string): string {
+/**
+ * A failure line for stderr, one bounded diagnostic included. Shared with
+ * the `service install`/`uninstall` handlers (task 139) — exported since
+ * both layers render failures in the same shape.
+ */
+export function failureLine(errorPrefix: string, what: string, detail: string): string {
   return detail === '' ? `${errorPrefix}: ${what}` : `${errorPrefix}: ${what} (${detail})`;
 }
 
 /** The message of a thrown value, type-honestly (the init-account.ts pattern). */
-function thrownMessage(error: unknown): string {
+export function thrownMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
