@@ -25,6 +25,7 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `init-persist.ts`    | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write   |
 | `init.ts`            | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries |
 | `raw-diagnostics.ts` | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
+| `systemd-unit.ts`    | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                 |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -297,6 +298,68 @@ mechanically by `test/unit/raw-response-gate.spec.ts`: any `src/**` or
 `ui/**` file outside `src/storage/**` and `src/cli/**` that references the
 raw-payload surface (facade identifiers, or this module's own API and
 import path) fails `make check`.
+
+## The systemd unit generator (task 134, spec §5.4, decision D-103)
+
+`systemd-unit.ts` is the pure content half of service installation —
+**generation, parsing, validation; no filesystem, no systemd calls**.
+Installing/enabling the unit (`quotameter service install`, §5.2) is task
+139 and consumes this module.
+
+- **`buildSystemUnit(input)`** renders the system unit deterministically
+  from validated inputs: absolute `nodePath`/`cliPath` (§5.4 — Node may live
+  in nvm or NodeSource, so the unit pins `process.execPath`'s and the CLI
+  entry's absolute values; the same inputs must produce byte-identical
+  content, which is what `service install`'s regeneration and `doctor`'s
+  staleness check build on), regular `User=` (never `root`, §5.1; optional
+  `Group=`), `Restart=on-failure` with `RestartSec=<n>s` from input,
+  `After=`/`Wants=network-online.target`, `Environment=NODE_ENV=production`,
+  the §5.4 hardening set (`NoNewPrivileges`, `PrivateTmp`,
+  `ProtectSystem=strict`, `ProtectHome=read-only`, `ReadWritePaths` limited
+  to the config/data directories of §6.1), journald output, and
+  `Type=exec` + `WantedBy=multi-user.target` (D-103). Input validation
+  throws before any content is built: relative paths, whitespace or control
+  characters in interpolated values (a newline could inject directives),
+  systemd metacharacters (`\`, `"`, `'`, `$`, `%` — this generator does not
+  escape them, and unescaped they change unit semantics, so a path that
+  would need quoting or escaping is a loud error), `root` as user or group,
+  and non-safe-integer `restartSecSeconds` are all refused with
+  field-naming messages. `SystemUnitInput` has no secret-carrying field at
+  all — §5.4's "never put secrets in unit files" holds by construction, and
+  the validator enforces the read-back half.
+- **`parseUnitFile(content)`** reads unit content back into sections and
+  directives the way systemd's documented grammar
+  ([systemd.syntax(7)](https://www.freedesktop.org/software/systemd/man/latest/systemd.syntax.html))
+  parses it: full-line `#`/`;` comments, blank lines, CRLF/CR, BOM, all
+  whitespace after `=` ignored, section names kept verbatim between the
+  brackets (systemd does not trim them — `[ Service ]` is a different,
+  unknown section), backslash continuations where the backslash becomes a
+  single space and comment blocks between continued lines are skipped (an
+  even, escaped number of trailing backslashes does not continue). It
+  reports malformed lines as problem strings — no throws: it reads files
+  the application does not control (hand-edited installed units). `doctor`
+  (task 145) reuses it for the §5.4 stale Node/CLI path check on
+  `ExecStart`.
+- **`validateSystemUnit(content, expected?)`** is the structural validator:
+  the container and CI images ship no systemd (`systemd-analyze` is absent —
+  verified on the pinned image), so a generated unit's done-condition is
+  the exact-content snapshot plus this invariant checker. It verifies every
+  §5.4 contract directive (exact values, truthy-boolean spellings, systemd
+  time units, absolute `ExecStart` tokens `<node> <cli> run`, `User=`/
+  `Group=` neither `root` nor a numeric id — id 0 is root by another
+  spelling — absolute `ReadWritePaths` entries that never include `/`, and
+  with `expected` supplied exactly the generated config/data pair in
+  order), flags duplicate keys (systemd's silent last-wins hides
+  corruption), rejects unexpected sections (empty ones included, via the
+  parsed headers) and directives (strict shape of the generated unit), and
+  rejects **any** `Environment=` line other than `NODE_ENV=production` —
+  the mechanical no-secrets rule, whose problem message deliberately does
+  not reproduce the divergent value so a smuggled secret can never be
+  echoed into diagnostics (§15.4).
+
+Task 135's user unit reuses the shared pieces — `renderUnitFile`,
+`assertUnitPathInput`, `assertUnitUserInput` — composing them with the
+user-compatible minimal hardening set instead of the system set.
 
 ### Launcher notes (`bin/quotameter.mjs`)
 
