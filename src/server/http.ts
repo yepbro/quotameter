@@ -8,8 +8,10 @@
  * timeouts, static file serving with the SPA fallback, and the `/api` route
  * seam (`./api`) — and a second factory wraps it as a `LifecycleComponent`
  * the application shell (task 060) can start and stop. The remaining
- * routes (149+) and the request-security checks are later Stage-12 tasks;
- * nothing in this module implements an endpoint. The §13 error envelope
+ * routes (153+) and request-security layers (150–152, 156, 158) are later
+ * Stage-12 tasks; task 149's Origin/Fetch-Metadata guard registers inside
+ * the `/api` scope itself (`./api`), so nothing in this module implements
+ * an endpoint or a security check. The §13 error envelope
  * (task 148, D-113) is the one error surface: the root-scope
  * `apiErrorHandler` from `./api/error` behind every thrown error, and the
  * not-found handler resolving 404s onto the same envelope.

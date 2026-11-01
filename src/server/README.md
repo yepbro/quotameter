@@ -52,9 +52,17 @@ not-found handler's 404 arm, because an unmatched route is not an error
 in fastify, and with the api scope's own catch-all route: the
 mode-independent unmatched arm for `/api` paths (it outranks the static
 wildcard), re-deriving the URI_TOO_LONG class for segments past the
-router's parameter bound.
+router's parameter bound. `security.ts` (task 149) is the §15.3
+request-security seam: the Origin/Fetch-Metadata guard — a pure,
+fail-closed `classifyOriginRequest` plus the `originGuard` `onRequest`
+hook the scope registers (async by runtime necessity: fastify's hook
+runner advances on the returned promise) — rejects cross-origin
+mutations through the envelope's `FORBIDDEN` class with a closed
+`details.reason` vocabulary, mode-independently by construction (D-115);
+task 150's custom-header/JSON checks register beside it and task 151's
+Host allowlist reuses its `normalizeAuthority` yardstick.
 Later: the remaining HTTP API routes and auth/session endpoints
-(149–163), and the security middleware (149–152, 156–158). It is the only
+(150–163), and the security middleware (150–152, 156–158). It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3
