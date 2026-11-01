@@ -649,3 +649,47 @@ message until the packaging tasks (184–186) ship them; any other module
 failure surfaces as itself. All exits set `process.exitCode` and let the
 event loop drain rather than calling `process.exit()`, so buffered pipe
 output cannot be truncated.
+
+## The `reload` command (task 141, spec §5.2/§6.4, decision D-112)
+
+`service-reload.ts` holds the §5.2 `quotameter reload` handler — the command that
+triggers §6.4's change application without a restart and answers whether the
+configuration was accepted or rejected. It is composed of landed layers only:
+the D-105 owner resolution (shared `resolveOwnerForCommand`), the D-108
+owner-scoped §6.1 directories (the now-exported `ownerUnitDirectories` — `HOME`
+forced to the owner's passwd home, `QUOTAMETER_*` overrides honored), the §5.6
+single-instance lock of the landed `src/server/single-instance.ts` (imported
+read-only), and the task 068 pipeline the service itself re-runs on SIGHUP.
+
+- **Running-service discovery** — the handler reads the lock file of the owner's
+  data directory: it exists exactly while a service instance holds that
+  directory, for every run mode (systemd unit or foreground `quotameter run`),
+  and names the holder pid. The four read states are honest outcomes: absent →
+  not-running guidance (`quotameter start` / `quotameter run`); a dead holder
+  pid → the same guidance with the stale-lock explanation (§5.6's next start
+  clears it); unreadable or invalid → a loud failure with the lock module's own
+  remedy wording. Nothing is signalled in any of them.
+- **Accepted/rejected (D-112)** — the command re-runs `loadConfigWithEnv` — the
+  exact function the service reloader executes on SIGHUP — over the same §6.1
+  configuration path in its own process. A file with problems is **rejected**:
+  every pipeline problem prints (one prefixed stderr line each) and **no SIGHUP
+  is sent**, because §6.2 pins the signal's effect as a guaranteed no-op (keep
+  the last valid configuration). A valid file is signalled via
+  `process.kill(pid, 'SIGHUP')`, with errno classified by a pure classifier
+  (`ESRCH` → exited meanwhile; `EPERM` → the owner-account/sudo steps, the
+  owner-account first because sudo's default `env_reset` drops the
+  `QUOTAMETER_*` path override that located the lock).
+- **§6.4 honesty** — the success report advises (live settings apply;
+  `server.host`/`server.port`/`auth.mode` need `quotameter restart`) but never
+  fabricates the service's `applied`/`pending-restart` classification — only
+  the service's reloader can diff against its in-memory configuration, and the
+  authoritative record is its log line (`quotameter logs`, task 143).
+- **Exit codes** — 0 exactly when the configuration validated and SIGHUP was
+  delivered; every other outcome exits 1. The handler never throws.
+
+Branch coverage: every outcome is seam-driven in
+`test/unit/cli-service-reload.spec.ts` (beside the payload-parse table and the
+production seams against real directories and real child processes); the three
+real-launcher routes — not-running, rejected with no signal delivered to a live
+signal-holding child, and accepted with the child's SIGHUP marker appearing
+after exit 0 — are pinned in `test/integration/cli-service-reload.spec.ts`.

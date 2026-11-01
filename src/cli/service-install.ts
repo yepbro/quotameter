@@ -185,8 +185,13 @@ export function parseRestartSecSeconds(value: string): RestartSecParse {
  * validated by the shared injection guard first: a passwd row with an
  * unusable home must fail the install loudly, not pin a bogus path into
  * `ReadWritePaths` (the generator re-validates every interpolated value).
+ *
+ * Shared with the `reload` handler (task 141, D-112), which resolves the
+ * owner's data directory (the §5.6 lock lives there) and the configuration
+ * path the same way — additive export, D-110's `resolveOwnerForCommand`
+ * precedent.
  */
-function ownerUnitDirectories(
+export function ownerUnitDirectories(
   owner: PasswdEntry,
   env: PathEnv,
 ): { readonly configDir: string; readonly dataDir: string } {

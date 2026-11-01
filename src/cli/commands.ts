@@ -17,8 +17,9 @@ import type { CliOutput } from './output';
 import type { CliOptions } from './parser';
 import { runInitCommand } from './init';
 import { runServiceControlCommand, type ServiceControlVerb } from './service-control';
-import { INIT_RESTART_SEC_SECONDS } from './service-setup';
 import { runServiceInstallCommand, runServiceUninstallCommand } from './service-install';
+import { runReloadCommand } from './service-reload';
+import { INIT_RESTART_SEC_SECONDS } from './service-setup';
 
 /** Everything a command handler receives; injected by the dispatcher. */
 export interface CliContext {
@@ -158,7 +159,18 @@ export function buildCommandTable(): Command[] {
     serviceControlLeaf('start'),
     serviceControlLeaf('stop'),
     serviceControlLeaf('restart'),
-    stub('reload', 'Reload configuration on SIGHUP without restarting where supported', ['reload']),
+    // Task 141 (spec §5.2, §6.4; decision D-112): pre-flight validation plus
+    // SIGHUP to the RUNNING service, discovered through the §5.6 lock —
+    // run-mode-independent (systemd or foreground), unlike the manager-
+    // scoped verbs above.
+    {
+      kind: 'leaf',
+      name: 'reload',
+      summary: 'Reload configuration on SIGHUP without restarting where supported',
+      options: {},
+      maxPositionals: 0,
+      run: runReloadCommand(),
+    },
     stub('status', 'Show service status, latest collection, and last error for each account', [
       'status',
     ]),

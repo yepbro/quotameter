@@ -10,11 +10,15 @@
  * the §6.2 rule — keeps the last valid configuration untouched on failure:
  * a reload failure must never leave the process without a working config.
  *
- * The reload *result* is the vocabulary the future consumers share: the CLI
- * `reload` command (task 141) reports `applied` / `pending-restart` /
- * `rejected`, and the UI labels `restartRequired` fields "restart required"
- * with a `quotameter restart` hint (spec §6.4). Signal installation is not
- * here: `src/server/main.ts` deliberately leaves SIGHUP unhandled, and the
+ * The reload *result* is the vocabulary the future consumers share: on the
+ * service side the reloader classifies `applied` / `pending-restart` (the
+ * diff against its own in-memory configuration), while the CLI `reload`
+ * command (task 141, D-112) reports the accepted / rejected answer of its
+ * pre-flight validation and carries the restart advisory — it cannot see
+ * the service's memory, so the three-way classification stays here. The UI
+ * labels `restartRequired` fields "restart required" with a `quotameter
+ * restart` hint (spec §6.4). Signal installation is not here:
+ * `src/server/main.ts` deliberately leaves SIGHUP unhandled, and the
  * later assembly task wires `process.on('SIGHUP', …)` to `reload()` (the
  * D-024 readiness discipline); until then production behavior is identical.
  *
