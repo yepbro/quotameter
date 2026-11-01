@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Settings } from 'luxon';
 import { fc } from '../helpers/property';
 import { resolveTimeZone, zonedParts } from '../../src/util/clock';
 import { DAY_MS } from '../../src/util/rolling-ranges';
@@ -18,7 +19,10 @@ import type { LocalScheduleTime } from '../../src/services/peak-hours-intervals'
  *    The oracle shares no code with the resolver's offset differencing.
  * 2. **Luxon parity** — the same enumeration checks the compat resolver
  *    `resolveLocalInstantLuxon` against the oracle, pinning the exported
- *    default of task 114 to the authoritative policy across the matrix.
+ *    default of task 114 to the authoritative policy across the matrix:
+ *    strict equality for unambiguous and gapped readings, valid-occurrence
+ *    membership for ambiguous ones (Luxon's choice there is seeded by the
+ *    current instant — D-079's caveat, pinned in the seeding regression).
  * 3. **Fixed-offset zones never shift** — for generated readings in zones
  *    without DST, resolving is the constant-offset inverse of `zonedParts`.
  * 4. **Arbitrary dates** — generated readings anywhere in 2024–2028 (any
@@ -109,9 +113,12 @@ function scanZoneAround(
   centerMs: number,
 ): {
   firstByWall: Map<string, number>;
+  /** Every instant reading back as each wall time, chronological (1–2 entries inside the radius). */
+  occurrencesByWall: Map<string, number[]>;
   transitions: { instant: number; fromWallMs: number; gapMinutes: number }[];
 } {
   const firstByWall = new Map<string, number>();
+  const occurrencesByWall = new Map<string, number[]>();
   const transitions: { instant: number; fromWallMs: number; gapMinutes: number }[] = [];
   let previous: WallFields | undefined;
   let previousOffset = 0;
@@ -127,6 +134,12 @@ function scanZoneAround(
     if (!firstByWall.has(wallKey(fields))) {
       firstByWall.set(wallKey(fields), t);
     }
+    const occurrences = occurrencesByWall.get(wallKey(fields));
+    if (occurrences === undefined) {
+      occurrencesByWall.set(wallKey(fields), [t]);
+    } else if (occurrences[occurrences.length - 1] !== t) {
+      occurrences.push(t);
+    }
     if (previous !== undefined && parts.offsetMinutes !== previousOffset) {
       // An offset jump at `t`: the minute after the last pre-jump reading is
       // the first wall time the jump covers (a gap start; negative for an
@@ -140,7 +153,19 @@ function scanZoneAround(
     previous = fields;
     previousOffset = parts.offsetMinutes;
   }
-  return { firstByWall, transitions };
+  return { firstByWall, occurrencesByWall, transitions };
+}
+
+/**
+ * The valid occurrences of `time`'s wall reading per the scan: `[first]` for
+ * unambiguous readings, `[first, second]` for ambiguous ones (§9.3's policy
+ * picks `first`); `undefined` marks a nonexistent (gapped) reading.
+ */
+function oracleOccurrences(
+  scan: ReturnType<typeof scanZoneAround>,
+  time: LocalScheduleTime,
+): number[] | undefined {
+  return scan.occurrencesByWall.get(wallKey(wallFieldsOf(time)));
 }
 
 /** The §9.3 answer derived purely from the scan: first occurrence or gap shift. */
@@ -210,15 +235,83 @@ describe('every minute of every §17.1 transition day agrees with the scan oracl
               // `peak-hours-dst.spec.ts`.
               continue;
             }
-            expect(
-              resolveLocalInstantLuxon(time, branded),
-              `Luxon parity ${zone} ${centerDay} ${minute}`,
-            ).toBe(expected);
+            // Luxon parity (D-079): strict for unambiguous and gapped
+            // readings, but only membership for ambiguous ones — Luxon's
+            // choice among the valid occurrences is seeded by the current
+            // instant (the mechanism is pinned in the seeding regression
+            // below), so it is a real occurrence guarantee, not a
+            // first-occurrence guarantee. Observed live: the Havana
+            // midnight overlap flipped to the second occurrence when the
+            // zone's season crossed 2026-11-01, red through the winter.
+            const luxonValue = resolveLocalInstantLuxon(time, branded);
+            const occurrences = oracleOccurrences(scan, time);
+            if (occurrences !== undefined && occurrences.length > 1) {
+              expect(occurrences, `Luxon occurrence ${zone} ${centerDay} ${minute}`).toContain(
+                luxonValue,
+              );
+            } else {
+              expect(luxonValue, `Luxon parity ${zone} ${centerDay} ${minute}`).toBe(expected);
+            }
           }
         }
       }, 25_000);
     }
   }
+});
+
+/**
+ * The mechanism behind the sweep's ambiguous-membership rule, as executable
+ * knowledge (observed live 2026-11-01: the suite went seasonally red when
+ * Havana crossed to standard time). Luxon resolves an ambiguous wall time
+ * from an offset guess seeded by the current instant — D-079's recorded
+ * caveat — so the compat resolver's ambiguous-hour choice flips with the
+ * zone's season while every returned instant stays a genuine occurrence.
+ * The authoritative {@link resolveLocalInstantDst} is seeded by nothing and
+ * keeps §9.3's first occurrence under both seeds.
+ */
+describe('Luxon ambiguous-hour seeding (the D-079 caveat, pinned)', () => {
+  const HAVANA_MIDNIGHT: LocalScheduleTime = {
+    year: 2026,
+    month: 11,
+    day: 1,
+    minutesSinceMidnight: 0,
+  };
+  const FIRST_OCCURRENCE = Date.UTC(2026, 10, 1, 4); // 00:00 at −04 (DST side)
+  const SECOND_OCCURRENCE = Date.UTC(2026, 10, 1, 5); // 00:00 at −05 (standard side)
+
+  it('picks the first occurrence from a DST-season seed, the second from a standard-season seed', () => {
+    const realNow = Settings.now;
+    try {
+      Settings.now = () => Date.UTC(2026, 6, 15); // Havana on −04
+      expect(resolveLocalInstantLuxon(HAVANA_MIDNIGHT, resolveTimeZone('America/Havana'))).toBe(
+        FIRST_OCCURRENCE,
+      );
+      Settings.now = () => Date.UTC(2026, 11, 15); // Havana on −05
+      expect(resolveLocalInstantLuxon(HAVANA_MIDNIGHT, resolveTimeZone('America/Havana'))).toBe(
+        SECOND_OCCURRENCE,
+      );
+    } finally {
+      Settings.now = realNow;
+    }
+  });
+
+  it('keeps both seeds inside the oracle occurrence set, and the authoritative resolver seed-free', () => {
+    const branded = resolveTimeZone('America/Havana');
+    const scan = scanZoneAround(branded, Date.UTC(2026, 10, 1));
+    const occurrences = oracleOccurrences(scan, HAVANA_MIDNIGHT);
+    expect(occurrences).toEqual([FIRST_OCCURRENCE, SECOND_OCCURRENCE]);
+
+    const realNow = Settings.now;
+    try {
+      for (const seed of [() => Date.UTC(2026, 6, 15), () => Date.UTC(2026, 11, 15)]) {
+        Settings.now = seed;
+        expect(occurrences).toContain(resolveLocalInstantLuxon(HAVANA_MIDNIGHT, branded));
+        expect(resolveLocalInstantDst(HAVANA_MIDNIGHT, branded)).toBe(FIRST_OCCURRENCE);
+      }
+    } finally {
+      Settings.now = realNow;
+    }
+  });
 });
 
 describe('generated readings (fast-check)', () => {

@@ -169,10 +169,12 @@ export interface PeakHoursTimeline {
  * fall-back overlap) to its first occurrence; `24:00` resolves to the
  * following day's local midnight through calendar-aware day arithmetic.
  * Empirically equal to the authoritative {@link resolveLocalInstantDst}
- * across the §17.1 transition matrix on the pinned runtime (Luxon 3.7.2;
- * the parity sweep lives in `test/unit/peak-hours-dst.property.spec.ts`) —
- * but the equality is verified, not guaranteed: Luxon converges on these
- * answers from an offset guess seeded by the current instant (D-079).
+ * across the §17.1 transition matrix on the pinned runtime for
+ * unambiguous and gapped readings; for ambiguous wall times Luxon resolves
+ * to one of the valid occurrences — which one is seeded by the current
+ * instant and flips with the schedule zone's season (D-079; the parity
+ * sweep in `test/unit/peak-hours-dst.property.spec.ts` asserts membership
+ * there and pins the seeding mechanism).
  *
  * Fails loudly, never `NaN`: an unvalidatable zone, a non-integer or
  * out-of-range minute value, or an impossible calendar date (February 30)
