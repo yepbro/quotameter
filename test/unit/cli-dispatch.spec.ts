@@ -430,14 +430,13 @@ describe('dispatch-table pinning (U-006 mutation triage)', () => {
   it('reports every stubbed command with its exact full command path', async () => {
     // `init` is real since task 130 (it prompts on stdin — exercising it in
     // this table would touch the test runner's own stdin); `service
-    // install`/`uninstall` are real since task 139 (they probe the machine
-    // and may spawn systemctl — likewise covered by the dedicated suites,
-    // which inject every seam). Both behaviors are covered elsewhere.
+    // install`/`uninstall` are real since task 139 and `start`/`stop`/
+    // `restart` since task 140 (they probe the machine, read the user
+    // database, and may spawn systemctl — likewise covered by the dedicated
+    // suites, which inject every seam or run the real launcher). Both
+    // behaviors are covered elsewhere.
     for (const path of [
       ['run'],
-      ['start'],
-      ['stop'],
-      ['restart'],
       ['reload'],
       ['status'],
       ['logs'],

@@ -16,6 +16,7 @@
 import type { CliOutput } from './output';
 import type { CliOptions } from './parser';
 import { runInitCommand } from './init';
+import { runServiceControlCommand, type ServiceControlVerb } from './service-control';
 import { INIT_RESTART_SEC_SECONDS } from './service-setup';
 import { runServiceInstallCommand, runServiceUninstallCommand } from './service-install';
 
@@ -87,6 +88,25 @@ function stub(name: string, summary: string, commandPath: readonly string[]): Le
   };
 }
 
+/** The §5.2 summaries of the three service-control verbs, pinned per verb. */
+const CONTROL_SUMMARIES: Readonly<Record<ServiceControlVerb, string>> = {
+  start: 'Start an installed service through systemd',
+  stop: 'Stop an installed service through systemd',
+  restart: 'Restart an installed service through systemd',
+};
+
+/** Builds one of the §5.2 service-control leaves (task 140, D-110). */
+function serviceControlLeaf(verb: ServiceControlVerb): LeafCommand {
+  return {
+    kind: 'leaf',
+    name: verb,
+    summary: CONTROL_SUMMARIES[verb],
+    options: {},
+    maxPositionals: 0,
+    run: runServiceControlCommand(verb),
+  };
+}
+
 /**
  * The §5.2 command set, in spec order. Service control (`start`, `stop`,
  * `restart`) and unit management (`service install`/`uninstall`) are
@@ -131,9 +151,13 @@ export function buildCommandTable(): Command[] {
       run: runInitCommand(),
     },
     stub('run', 'Foreground execution for systemd and debugging', ['run']),
-    stub('start', 'Start an installed service through systemd', ['start']),
-    stub('stop', 'Stop an installed service through systemd', ['stop']),
-    stub('restart', 'Restart an installed service through systemd', ['restart']),
+    // Task 140 (spec §5.2, decision D-110): start/stop/restart control the
+    // currently installed unit — the manager scope (system vs --user) comes
+    // from which unit file is on disk, not from this invocation's
+    // privileges; §5.2's helpful next step covers the not-installed case.
+    serviceControlLeaf('start'),
+    serviceControlLeaf('stop'),
+    serviceControlLeaf('restart'),
     stub('reload', 'Reload configuration on SIGHUP without restarting where supported', ['reload']),
     stub('status', 'Show service status, latest collection, and last error for each account', [
       'status',

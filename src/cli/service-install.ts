@@ -431,10 +431,14 @@ function otherUnitWarning(existingKind: 'system' | 'user'): string {
  * (an unreadable user database is D-105's documented throw) as one failure
  * line — so the handlers keep their never-throw promise (review round P2).
  * Returns null when the command must stop with exit 1.
+ *
+ * Shared with the `start`/`stop`/`restart` handlers (task 140), the same way
+ * `failureLine`/`thrownMessage` are shared with this module — the deps
+ * parameter takes any seam set carrying `resolveOwner`.
  */
-function resolveOwnerForCommand(
+export function resolveOwnerForCommand(
   output: CliOutput,
-  deps: ServiceCommandDeps,
+  deps: Pick<ServiceCommandDeps, 'resolveOwner'>,
   errorPrefix: string,
 ): ServiceOwnerContext | null {
   let resolution: ServiceOwnerResolution;
