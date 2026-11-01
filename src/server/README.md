@@ -22,7 +22,12 @@ the seam for the structured logger (task 072); its timeout clock is injectable
 for deterministic tests (decision D-020). Later: Fastify construction and
 plugins (146), the HTTP API routes (147–163), static UI serving, and security
 middleware. It is the only layer allowed to wire concrete provider adapters
-into the registry.
+into the registry. `providers.ts` (task 133) is that privilege's first
+exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
+production defaults for `init`'s initial-account connection test (spec §5.3
+step 6) — the factory constructs and never registers, so the future
+bootstrap composition that fills the `ProviderRegistry` is unchanged by it
+(decision D-102).
 
 **Rule:** as the composition root it may import every layer except
 `src/cli/`. Route handlers validate input through `src/schemas/api/` and

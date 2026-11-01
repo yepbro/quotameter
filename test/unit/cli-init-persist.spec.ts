@@ -463,6 +463,34 @@ describe('assembleInitConfig', () => {
     expect(badZone.ok).toBe(false);
     if (!badZone.ok) expect(badZone.problems.join('\n')).toContain('app.timezone');
   });
+
+  it('fresh run with a stored account: the account joins the configuration (task 133)', () => {
+    const assembled = assembleInitConfig(ANSWERS, undefined, {
+      id: 'work',
+      providerId: 'zai-coding-plan',
+      label: 'work',
+      enabled: true,
+      apiKey: 'sk-stored-by-133',
+    });
+    expect(assembled).toMatchObject({ ok: true, passwordPending: false });
+    if (assembled.ok) {
+      expect(assembled.config.accounts).toEqual([
+        {
+          id: 'work',
+          providerId: 'zai-coding-plan',
+          label: 'work',
+          enabled: true,
+          apiKey: 'sk-stored-by-133',
+        },
+      ]);
+    }
+  });
+
+  it('no account leaves the fresh configuration accountless as before', () => {
+    const assembled = assembleInitConfig(ANSWERS);
+    expect(assembled.ok).toBe(true);
+    if (assembled.ok) expect(assembled.config.accounts).toEqual([]);
+  });
 });
 
 describe('initSettingsChanged', () => {

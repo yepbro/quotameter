@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configFilePath } from '../../src/config/load';
 import { createTempDir, type TempDir } from '../helpers/isolation';
@@ -17,6 +17,9 @@ import { createTempDir, type TempDir } from '../helpers/isolation';
  * or stderr. Since task 132 every run resolves its configuration through
  * `QUOTAMETER_CONFIG_DIR` into a temporary directory: a successful run
  * writes the file, and the idempotency cases run twice in one directory.
+ * Since task 133 a keyed invocation runs the initial connection test —
+ * guard-blocked here into the deterministic `provider-unavailable` failure
+ * class, explained and continued (§5.3 step 6, D-102).
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -32,13 +35,28 @@ interface RunResult {
  * Runs `quotameter init <args>` with stdin closed (`/dev/null`) and a
  * controlled environment. `--yes` must never depend on stdin; keeping it
  * closed makes any prompt fallback surface as an immediate EOF cancellation
- * that the assertions can tell apart from the dedicated failures.
+ * that the assertions can tell apart from the dedicated failures. The test
+ * no-network guard is preloaded into the child so a keyed invocation's
+ * connection test fails deterministically (`provider-unavailable`) instead
+ * of reaching a real provider endpoint (§17: no real endpoints, ever).
  */
 function runInitYes(args: readonly string[], env: NodeJS.ProcessEnv): Promise<RunResult> {
-  const child = spawn(process.execPath, ['--import', 'jiti/register', BIN, 'init', ...args], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env,
-  });
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'jiti/register',
+      '--import',
+      pathToFileURL(join(REPO_ROOT, 'test/helpers/network-guard.ts')).href,
+      BIN,
+      'init',
+      ...args,
+    ],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    },
+  );
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
@@ -88,7 +106,7 @@ async function freshConfigDir(): Promise<TempDir> {
 }
 
 describe('quotameter init --yes (real launcher, stdin closed)', () => {
-  it('collects every value from the options, writes the config, and masks the key', async () => {
+  it('collects every value from the options, tests, writes, and masks the key', async () => {
     const dir = await freshConfigDir();
     try {
       const result = await runInitYes(FULL_ARGS, inDir(dir));
@@ -98,17 +116,34 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
       expect(result.stdout).toContain('Port:              9000');
       expect(result.stdout).toContain('Polling interval:  120 seconds');
       expect(result.stdout).toContain(
-        "'work' (API key from environment variable 'QM_E2E_TEST_KEY', value never stored or printed)",
+        "'work' (API key from environment variable 'QM_E2E_TEST_KEY', value never " +
+          'stored or printed; connection test failed: provider-unavailable — ' +
+          'stored in error state)',
       );
       expect(result.stdout).toContain('requires a password before the service');
+      // §5.3 step 6 through the guard: the failed test is explained with its
+      // class and the run continues (exit 0) — never a prompt, never a crash.
+      expect(result.stderr).toContain("the initial connection test for 'work' failed:");
+      expect(result.stderr).toContain('the check was inconclusive');
       // The key value itself never reaches any stream (spec §15.4)…
       expect(result.stdout + result.stderr).not.toContain(SECRET);
-      // …and never the written configuration either (the account is 133's).
+      // …and the written configuration carries the account with the
+      // variable-name secret source — the value exists only in the
+      // environment (§6.3, D-004, D-100).
       const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<
         string,
         unknown
       >;
       expect(config.server).toEqual({ host: '0.0.0.0', port: 9000 });
+      expect(config.accounts).toEqual([
+        {
+          id: 'work',
+          providerId: 'zai-coding-plan',
+          label: 'work',
+          enabled: true,
+          apiKeyEnv: 'QM_E2E_TEST_KEY',
+        },
+      ]);
       expect(JSON.stringify(config)).not.toContain(SECRET);
     } finally {
       await dir.remove();

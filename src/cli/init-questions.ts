@@ -42,8 +42,9 @@
  * command-line values with the same functions — in both fresh and retain
  * mode ({@link retainOnEmpty}) — and `buildInitConfig` is the single
  * answers→`Config` assembly the follow-up tasks reuse. The `accounts` array
- * is deliberately not assembled here: a stable account id and the §6.3
- * secret-source choice belong to task 133's safe account setup.
+ * is assembled by `init-account.ts` (task 133's safe account setup: the
+ * stable id and the §6.3 secret source), joined to this mapping by
+ * `assembleInitConfig`.
  *
  * Secret discipline (spec §6.3, §15.4): the key travels only inside the
  * answers object; no complaint, prompt, or summary line in this module ever
@@ -371,8 +372,8 @@ function timeZonePrompt(hint: string | undefined): string {
 /**
  * Assembles the configuration sections the questions own: `server` and
  * `app`. `auth` stays with its defaults (`auto`, §15.1) and `accounts` is
- * task 133's concern (stable id + §6.3 secret source), so the follow-up
- * tasks extend this mapping instead of re-deriving it.
+ * `init-account.ts`'s concern (task 133: stable id + §6.3 secret source),
+ * joined to this mapping by `assembleInitConfig` in `init-persist.ts`.
  */
 export function buildInitConfig(answers: InitAnswers): Pick<Config, 'server' | 'app'> {
   return {

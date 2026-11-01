@@ -82,20 +82,20 @@ Where the remaining plan tasks land. Rows name the files each task owns, and
 the sets are disjoint — directories may repeat across rows for stages that
 run sequentially:
 
-| Tasks   | Files                                                                                                                                                                 |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 060     | `src/server/main.ts`, `src/server/app.ts` (bootstrap and assembly)                                                                                                    |
-| 061–068 | `src/schemas/config.ts`, `src/config/*`                                                                                                                               |
-| 069     | `src/schemas/metrics.ts` (normalized snapshot/metric model)                                                                                                           |
-| 070     | `src/providers/registry.ts`, provider contracts                                                                                                                       |
-| 071–072 | `src/util/clock.ts`, `src/util/logger.ts`                                                                                                                             |
-| 073–076 | `src/services/config*` (settings validation), `src/server/single-instance.ts`, `src/server/shutdown.ts`                                                               |
-| 078–092 | `src/storage/*` (connection, migrations, repository, retention, backups)                                                                                              |
-| 093–111 | `src/providers/zai-coding-plan/*`, `src/providers/transport.ts`, `src/providers/sanitize.ts`, `src/services/polling*`                                                 |
-| 112–127 | `src/services/peak-hours*`, `src/services/history*`, `src/services/events*`                                                                                           |
-| 128–145 | `src/cli/*`                                                                                                                                                           |
-| 146–164 | `src/server/api/*` (routes), `src/schemas/api/*`, `src/services/auth*` (AuthService, sessions, hashing), `src/server/auth*` (HTTP middleware, cookies, rate limiting) |
-| 165–183 | `ui/src/*` (see below)                                                                                                                                                |
+| Tasks   | Files                                                                                                                                                                         |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 060     | `src/server/main.ts`, `src/server/app.ts` (bootstrap and assembly)                                                                                                            |
+| 061–068 | `src/schemas/config.ts`, `src/config/*`                                                                                                                                       |
+| 069     | `src/schemas/metrics.ts` (normalized snapshot/metric model)                                                                                                                   |
+| 070     | `src/providers/registry.ts`, provider contracts                                                                                                                               |
+| 071–072 | `src/util/clock.ts`, `src/util/logger.ts`                                                                                                                                     |
+| 073–076 | `src/services/config*` (settings validation), `src/server/single-instance.ts`, `src/server/shutdown.ts`                                                                       |
+| 078–092 | `src/storage/*` (connection, migrations, repository, retention, backups)                                                                                                      |
+| 093–111 | `src/providers/zai-coding-plan/*`, `src/providers/transport.ts`, `src/providers/sanitize.ts`, `src/services/polling*`                                                         |
+| 112–127 | `src/services/peak-hours*`, `src/services/history*`, `src/services/events*`                                                                                                   |
+| 128–145 | `src/cli/*` (plus `src/server/providers.ts` — task 133's provider factory for `init`'s connection test, the composition root's one adapter-importing module the CLI consumes) |
+| 146–164 | `src/server/api/*` (routes), `src/schemas/api/*`, `src/services/auth*` (AuthService, sessions, hashing), `src/server/auth*` (HTTP middleware, cookies, rate limiting)         |
+| 165–183 | `ui/src/*` (see below)                                                                                                                                                        |
 
 Tasks that produce no `src/` code land where their artefacts belong: research,
 fixtures, and provider documentation (093–097, 127) in `test/fixtures/` and

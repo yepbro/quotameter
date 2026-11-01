@@ -45,7 +45,12 @@ async function runHandler(
     const value = remaining.shift();
     return Promise.resolve(value === undefined ? null : value);
   };
-  const prompter: PromptHandle = { ask: step, askSecret: step, close: () => undefined };
+  const prompter: PromptHandle = {
+    ask: step,
+    askSecret: step,
+    close: () => undefined,
+    interrupted: () => false,
+  };
   const ctx: CliContext = {
     output: {
       out: (text: string) => void outText.push(`${text}\n`),
@@ -76,18 +81,25 @@ async function readConfig(configDir: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(configFilePath(configDir), 'utf8')) as Record<string, unknown>;
 }
 
-const FULL_FRESH = ['Europe/Berlin', '0.0.0.0', '9000', '120', 'work', 'sk-e2e-key-value'];
+const FULL_FRESH = ['Europe/Berlin', '0.0.0.0', '9000', '120', 'work', 'sk-e2e-key-value', 'y'];
 const KEEP_ALL = ['', '', '', ''];
 
 describe('init idempotency (in-process, real filesystem)', () => {
-  it('first run creates the configuration: 0700 directory, 0600 file, no key inside', async () => {
+  it('first run creates the configuration: 0700 directory, 0600 file, key inside', async () => {
     const dir = await createTempDir('qm-init-132-');
     try {
+      // The connection test runs through the real default provider under
+      // the suite's no-network guard: the deterministic unavailable failure
+      // is explained, the scripted `y` keeps the account (task 133).
       const run = await runHandler(dir.path, {}, FULL_FRESH);
       expect(run.code).toBe(0);
-      expect(run.err).toBe('');
+      expect(run.err).toContain("the initial connection test for 'work' failed:");
+      expect(run.err).toContain('the check was inconclusive');
+      expect(run.out).toContain(
+        'connection test failed: provider-unavailable — stored in error state',
+      );
       expect(run.out).toContain('Configuration written to');
-      expect(run.out).toContain('not stored yet — account setup');
+      expect(run.out).toContain('Service setup follows.');
 
       const dirStat = await stat(dir.path);
       expect(dirStat.mode & 0o777).toBe(0o700);
@@ -98,9 +110,19 @@ describe('init idempotency (in-process, real filesystem)', () => {
       const config = await readConfig(dir.path);
       expect(config.server).toEqual({ host: '0.0.0.0', port: 9000 });
       expect(config.app).toMatchObject({ timezone: 'Europe/Berlin', pollingIntervalSeconds: 120 });
-      // The account is task 133's: the collected key must not be persisted.
-      expect(JSON.stringify(config)).not.toContain('sk-e2e-key-value');
-      expect(config.accounts).toEqual([]);
+      // Task 133: the account is real — the key lives in the 0600 file
+      // (§6.3, D-004) and never in any output line (§15.4).
+      expect(config.accounts).toEqual([
+        {
+          id: 'work',
+          providerId: 'zai-coding-plan',
+          label: 'work',
+          enabled: true,
+          apiKey: 'sk-e2e-key-value',
+        },
+      ]);
+      expect(JSON.stringify(config)).toContain('sk-e2e-key-value');
+      expect(run.out + run.err).not.toContain('sk-e2e-key-value');
       // §15.1 pending (D-101): the remote bind is written hash-less, with
       // the passwd remedy — the service refuses to start on it until then.
       expect(config.auth).toEqual({ mode: 'auto' });

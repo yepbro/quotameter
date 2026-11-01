@@ -65,7 +65,17 @@ export interface Prompter {
 }
 
 /** A {@link Prompter} whose underlying interface the caller can close. */
-export type PromptHandle = Prompter & { close(): void };
+export type PromptHandle = Prompter & {
+  close(): void;
+  /**
+   * Whether the user interrupted the session (Ctrl-C / `SIGINT`), as
+   * distinct from the input merely ending (piped EOF also closes the
+   * interface, but automation that delivered all its answers must not be
+   * treated as cancelled — task 133's connection-test wait needed the
+   * distinction). Latches once fired; a close by EOF leaves it `false`.
+   */
+  interrupted(): boolean;
+};
 
 /**
  * Builds the production prompter over the given streams.
@@ -111,6 +121,8 @@ export function createReadlinePrompter(
   /** Questions waiting for their line (resolved with `null` on close). */
   const waiters: Array<(value: string | null) => void> = [];
   let closed = false;
+  /** Latched by the interface's SIGINT event, before the close it causes. */
+  let interrupted = false;
 
   iface.on('line', (line: string) => {
     const deliver = waiters.shift();
@@ -127,9 +139,13 @@ export function createReadlinePrompter(
     for (const deliver of waiters.splice(0)) deliver(null);
   });
   // Ctrl-C on a TTY reaches the interface as a SIGINT event only in terminal
-  // mode; closing the interface settles any pending question as `null`, so an
-  // interrupt cancels the flow through the same path as EOF.
+  // mode; closing the interface settles any pending question as `null`, so
+  // an interrupt cancels the flow through the same path as EOF. The latch
+  // first: a SIGINT that fires while no question is pending (task 133's
+  // connection-test wait) must still be observable as an interruption — the
+  // `close` it triggers is indistinguishable from piped EOF otherwise.
   iface.on('SIGINT', () => {
+    interrupted = true;
     iface.close();
   });
 
@@ -165,6 +181,9 @@ export function createReadlinePrompter(
     },
     close(): void {
       iface.close();
+    },
+    interrupted(): boolean {
+      return interrupted;
     },
   };
 }

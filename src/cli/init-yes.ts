@@ -47,9 +47,8 @@
  * §5.3's "absence is an error" is unconditional, and re-stating the zone
  * keeps init from ever picking a time zone the user did not type in this
  * invocation. The account flags are rejected outright in retain mode — the
- * optional initial account is a first-run step, and collecting a label no
- * write would persist (account assembly is task 133's) would silently
- * ignore the flags D-100 promised were never ignored.
+ * optional initial account is a first-run step, and the account-setup leg
+ * (task 133) consumes the flags only on fresh runs.
  */
 
 import type { CanonicalConfig } from '../config/load';
@@ -268,12 +267,15 @@ function parseApiKeyEnvFlag(
   }
   // Own property only: an inherited `toString`-shaped lookup is not a set
   // variable (verified on the pinned runtime — `process.env` resolves
-  // prototype properties).
-  if (!Object.hasOwn(env, name) || env[name] === undefined || env[name] === '') {
+  // prototype properties). A blank value counts as unset (the D-011 uniform
+  // rule, blank-inclusive since task 133: whitespace is never a credential,
+  // and a later account context would reject it outside the guarded
+  // connection test — fail here, at the input boundary, with the remedy).
+  if (!Object.hasOwn(env, name) || (env[name] ?? '').trim() === '') {
     problems.push(
       '--api-key-env names an environment variable that is not set in this ' +
-        'environment (an empty value counts as unset). Export the API key ' +
-        'there and run init again.',
+        'environment (an empty or blank value counts as unset). Export the ' +
+        'API key there and run init again.',
     );
     return undefined;
   }

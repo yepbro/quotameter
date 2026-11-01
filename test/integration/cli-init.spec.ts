@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configFilePath } from '../../src/config/load';
@@ -12,17 +13,27 @@ import { createTempDir, type TempDir } from '../helpers/isolation';
  * child-process pattern as `cli-bin.spec.ts`) answering the real readline
  * prompter over a pipe — including the one-chunk piped-input case that
  * drops answers when a prompter relies on `readline`'s own `question()`.
- * The final case runs under a real PTY (`script`) to prove the typed API
+ * The final cases run under a real PTY (`script`) to prove the typed API
  * key never reaches the terminal while normal answers do echo.
  *
  * Since task 132 a successful run writes the configuration (spec §5.3 step
- * 5), so every run gets its own temporary configuration directory through
+ * 5), and since task 133 a collected key runs the initial connection test
+ * (§5.3 step 6) — through the real production provider, which in these
+ * child processes must never reach the real provider endpoint: the test
+ * no-network guard is preloaded into the child (`--import`), so the check
+ * fails deterministically as the `provider-unavailable` class and every
+ * keyed script answers the §5.3 offer afterwards (`y`). The happy-path and
+ * both failure classes through the real adapter are covered against the
+ * loopback mock provider server by `test/integration/cli-init-account.spec.ts`.
+ * Every run gets its own temporary configuration directory through
  * `QUOTAMETER_CONFIG_DIR` — no shared state, nothing in the container home.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const BIN = join(REPO_ROOT, 'bin/quotameter.mjs');
-const NODE_ARGS = ['--import', 'jiti/register', BIN, 'init'];
+/** The no-network guard preloaded into every child (see the suite header). */
+const GUARD = pathToFileURL(join(REPO_ROOT, 'test/helpers/network-guard.ts')).href;
+const NODE_ARGS = ['--import', 'jiti/register', '--import', GUARD, BIN, 'init'];
 
 interface RunResult {
   code: number | null;
@@ -67,11 +78,14 @@ async function freshConfigDir(): Promise<TempDir> {
 }
 
 describe('quotameter init (piped stdin, real launcher)', () => {
-  it('collects, validates, writes, and summarizes typed answers — key never printed', async () => {
+  it('collects, validates, tests, writes, and summarizes — key never printed', async () => {
     const dir = await freshConfigDir();
     try {
+      // The child's connection test is guard-blocked (deterministic
+      // `provider-unavailable`), so the run explains the failure, asks the
+      // §5.3 offer, and the scripted `y` keeps the account.
       const result = await runInit(
-        'Europe/Berlin\n0.0.0.0\n9000\n120\nwork\nsk-e2e-key-value\n',
+        'Europe/Berlin\n0.0.0.0\n9000\n120\nwork\nsk-e2e-key-value\ny\n',
         dir.path,
       );
       expect(result.code).toBe(0);
@@ -79,17 +93,31 @@ describe('quotameter init (piped stdin, real launcher)', () => {
       expect(result.stdout).toContain('Bind host:         0.0.0.0');
       expect(result.stdout).toContain('Port:              9000');
       expect(result.stdout).toContain('Polling interval:  120 seconds');
-      expect(result.stdout).toContain("'work' (API key configured, hidden)");
+      expect(result.stdout).toContain(
+        "'work' (API key configured, hidden; connection test failed: " +
+          'provider-unavailable — stored in error state)',
+      );
       expect(result.stdout).toContain('requires a password before the service');
+      expect(result.stderr).toContain("the initial connection test for 'work' failed:");
+      expect(result.stderr).toContain('the check was inconclusive');
       expect(result.stdout + result.stderr).not.toContain('sk-e2e-key-value');
-      // Task 132: the run wrote the configuration — without the key (the
-      // account is task 133's).
+      // Task 133: the run wrote the configuration with the account — the
+      // key inside the file (§6.3, D-004), never in any stream.
       const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<
         string,
         unknown
       >;
       expect(config.server).toEqual({ host: '0.0.0.0', port: 9000 });
-      expect(JSON.stringify(config)).not.toContain('sk-e2e-key-value');
+      expect(config.accounts).toEqual([
+        {
+          id: 'work',
+          providerId: 'zai-coding-plan',
+          label: 'work',
+          enabled: true,
+          apiKey: 'sk-e2e-key-value',
+        },
+      ]);
+      expect(JSON.stringify(config)).toContain('sk-e2e-key-value');
     } finally {
       await dir.remove();
     }
@@ -198,6 +226,8 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
       Buffer.concat(stdout).toString('utf8') + Buffer.concat(stderr).toString('utf8');
 
     const typed = (async () => {
+      // Task 133: the guard-blocked connection test makes the keyed runs
+      // fail into the §5.3 offer — the extra marker and answer step.
       const markers = [
         'IANA time zone to use',
         'Bind host',
@@ -205,6 +235,7 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
         'Polling interval',
         'account label',
         "API key for 'work'",
+        "Keep 'work' configured anyway?",
       ];
       if (mode === 'pasted') {
         // The whole answer block in one write — a paste. The prompt having
@@ -239,7 +270,7 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
     try {
       const result = await runUnderPty(
         'typed',
-        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value'],
+        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value', 'y'],
         dir.path,
       );
       expect(result.code).toBe(0);
@@ -249,13 +280,28 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
       expect(transcript).toContain('work');
       // …the typed secret never does, and the summary reports it hidden.
       expect(transcript).not.toContain('sk-pty-key-value');
-      expect(transcript).toContain("'work' (API key configured, hidden)");
-      // …and the written configuration carries everything but the key.
+      expect(transcript).toContain('API key configured, hidden');
+      // The guard-blocked connection test is explained (the §5.3 step-6
+      // failure contract) without ever naming the key…
+      expect(transcript).toContain("the initial connection test for 'work' failed:");
+      expect(transcript).toContain('the check was inconclusive');
+      expect(transcript).toContain('stored in error state');
+      // …and the written configuration carries the account — key inside
+      // the file only (§6.3, D-004).
       const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<
         string,
         unknown
       >;
-      expect(JSON.stringify(config)).not.toContain('sk-pty-key-value');
+      expect(config.accounts).toEqual([
+        {
+          id: 'work',
+          providerId: 'zai-coding-plan',
+          label: 'work',
+          enabled: true,
+          apiKey: 'sk-pty-key-value',
+        },
+      ]);
+      expect(transcript).not.toContain('sk-pty-key-value');
     } finally {
       await dir.remove();
     }
@@ -266,7 +312,7 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
     try {
       const result = await runUnderPty(
         'pasted',
-        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value'],
+        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value', 'y'],
         dir.path,
       );
       expect(result.code).toBe(0);
@@ -274,7 +320,7 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
       // Prompts and the summary are the only terminal output…
       expect(transcript).toContain('IANA time zone to use');
       expect(transcript).toContain('Initial configuration collected');
-      expect(transcript).toContain("'work' (API key configured, hidden)");
+      expect(transcript).toContain('API key configured, hidden');
       // …the pasted block never echoes: the time zone appears exactly once
       // (the summary line), never a second time as terminal echo…
       expect(transcript.split('Europe/Berlin').length - 1).toBe(1);

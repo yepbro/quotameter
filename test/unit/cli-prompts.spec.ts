@@ -80,12 +80,24 @@ describe('createReadlinePrompter (terminal mode)', () => {
     h.prompter.close();
   });
 
-  it('a Ctrl-C byte during terminal-mode input cancels the question', async () => {
+  it('a Ctrl-C byte during terminal-mode input cancels the question and latches the interrupt', async () => {
     const h = harness(true);
     const answer = h.prompter.ask('Name: ');
     h.type('partial');
     h.type('\x03');
     await expect(answer).resolves.toBe(null);
+    // The latch distinguishes Ctrl-C from piped EOF (task 133): a caller
+    // with no pending question still sees that the user interrupted.
+    expect(h.prompter.interrupted()).toBe(true);
+    h.prompter.close();
+  });
+
+  it('plain EOF closes without latching an interrupt (piped automation is not a cancel)', async () => {
+    const h = harness(false);
+    const answer = h.prompter.ask('Name: ');
+    h.endInput();
+    await expect(answer).resolves.toBe(null);
+    expect(h.prompter.interrupted()).toBe(false);
     h.prompter.close();
   });
 

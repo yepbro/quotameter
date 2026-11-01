@@ -21,8 +21,9 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `prompts.ts`         | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets   |
 | `init-questions.ts`  | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly         |
 | `init-yes.ts`        | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel     |
+| `init-account.ts`    | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer        |
 | `init-persist.ts`    | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write   |
-| `init.ts`            | the `init` handler: mode branch, detection outcomes, cancellation, the masked summaries               |
+| `init.ts`            | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries |
 | `raw-diagnostics.ts` | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
 
 Everything a handler touches is injected: output (writer seam), version
@@ -107,9 +108,57 @@ through three modules:
   password note for non-loopback hosts (§5.3 step 4), and — since task 132 —
   the write trailer naming the file the run wrote (or kept unchanged).
 
-The remaining §5.3 steps (the account connection test, service
-installation) extend `InitAnswers`/`buildInitConfig` rather than
-re-deriving validation.
+The remaining §5.3 steps (service installation) extend `InitAnswers`/
+`buildInitConfig` rather than re-deriving validation.
+
+## The initial account setup (task 133, spec §5.3 step 6, decision D-102)
+
+`init-account.ts` makes the optional initial account real on fresh runs —
+re-runs never collect one (their questions are not asked, their flags are
+rejected, D-101):
+
+- **Assembly** — the answers become the persisted `AccountConfig`: a
+  deterministic id slug of the label (`work`, `My Work` → `my-work`;
+  charset-safe — leading/trailing separators including underscores are
+  trimmed, since the id's first character must be alphanumeric — capped at
+  the schema/SQL id length, `account` when nothing usable survives), the
+  provider's own id, `enabled: true`, and exactly one
+  §6.3 secret source — the typed key (`apiKey`) or `--api-key-env`'s
+  variable (`apiKeyEnv`; the collection modes are each capable of only one,
+  D-099/D-100, and a blank variable value counts as unset, never a
+  credential). A label without any key assembles nothing (§6.3's
+  exactly-one rule) — the summary states the account is added later in the
+  web UI, which is §5.3 step 3's skip path.
+- **The connection test** — `validateCredentials` through the §8.1
+  contract, with the secret sealed in a non-enumerable `AccountContext`
+  (only an explicit `.secret` read reaches it). The provider comes from
+  `InitDeps.provider`, whose production default is the composition root's
+  `createInitialAccountProvider()` factory (`src/server/providers.ts` —
+  `src/server/` is the one layer the package layout allows to import
+  concrete adapters, and `cli` may import `server`, so the CLI layer stays
+  provider-neutral).
+- **The failure contract** — a failed test **never aborts the run**: the
+  failure is explained on stderr (the provider-neutral detail plus one
+  class-specific guidance line — `credentials-rejected` means the provider
+  refused the key, `provider-unavailable` means the check was
+  inconclusive; an error without a recognized `kind` classifies
+  unavailable — hostile shapes included, the `kind` read and the detail
+  stringification are independently guarded — and the known secret is
+  scrubbed from every detail line as defense in depth). Interactively,
+  §5.3's "offer to continue with the account in an error state" is then
+  asked (Enter/`y` keeps, `n` drops the account from this run's write,
+  closed input cancels like a closed question); `init --yes` has no
+  prompter and always keeps the account. A Ctrl-C during the
+  connection-test wait cancels through the prompter's `interrupted()` latch
+  (`SIGINT`-only, never piped EOF); the step runs **before** the consented
+  write, so a dropped account is simply absent from it and the
+  stale-detection guard still re-reads the file immediately before the
+  write.
+- **Secret discipline (§15.4)** — the key value appears in no stdout/stderr
+  line at any stage (prompt handling, validation, failure explanation,
+  offer, success summary, decline path) — pinned by marker tests in the
+  unit, in-process, real-launcher, and PTY suites — and lives exactly where
+  §6.3/D-004 put it: inside the `0600` configuration file.
 
 ## The idempotent `init` layer (task 132, spec §5.3, decision D-101)
 
@@ -122,9 +171,10 @@ the resolved configuration path (`resolvePaths` → `config.json`):
   writes the configuration: `enforceConfigPermissions` creates the
   directory at `0700` (or corrects/refuses), `writeConfigFile` writes the
   canonical file at `0600` atomically (§5.3 step 5's configuration half;
-  the database lands with the storage-consuming steps, task 133+). The
-  collected initial account is **not** persisted — the stable id and the
-  §6.3 secret-source assembly are task 133's — and the summary says so.
+  the database lands with the storage-consuming steps, task 133+). Since
+  task 133 a fresh run with a key source also stores the initial account
+  (see the account-setup section above) — tested, offered on failure, and
+  persisted with its secret inside the `0600` file.
 - **Valid file** — the §5.3 subsequent-run flow: current settings are
   displayed (accounts masked to their secret state — a stored key never
   appears, an environment-sourced key names only its variable), every

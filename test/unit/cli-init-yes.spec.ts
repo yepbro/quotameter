@@ -4,9 +4,11 @@ import type { CliContext } from '../../src/cli/commands';
 import { buildCommandTable } from '../../src/cli/commands';
 import { renderInitSummary, runInitCommand, type InitDeps } from '../../src/cli/init';
 import type { WriteInitConfigOptions } from '../../src/cli/init-persist';
+import type { InitAnswers } from '../../src/cli/init-questions';
 import { buildYesAnswers, INIT_VALUE_OPTIONS } from '../../src/cli/init-yes';
 import { runCli } from '../../src/cli/main';
 import type { CliOutput } from '../../src/cli/output';
+import type { QuotaProvider } from '../../src/providers/registry';
 
 /**
  * The non-interactive `init --yes` layer (task 131, spec §5.3; decision
@@ -58,7 +60,10 @@ const EXISTING: CanonicalConfig = canonical({
 });
 
 /** `--yes` deps with detection and persistence seams: fresh or existing. */
-function yesDeps(existing?: CanonicalConfig): {
+function yesDeps(
+  existing?: CanonicalConfig,
+  provider?: QuotaProvider,
+): {
   deps: InitDeps;
   writes(): readonly WriteInitConfigOptions[];
 } {
@@ -74,8 +79,35 @@ function yesDeps(existing?: CanonicalConfig): {
       persistConfig: async (options) => {
         writes.push(options);
       },
+      // The connection test's provider seam: a fake by default (no network
+      // in unit tests), rejecting when a case needs the failure path.
+      provider: provider ?? acceptingProvider(),
     },
     writes: () => writes,
+  };
+}
+
+/** A provider-shaped error carrying the provider-neutral `kind` field. */
+function kindError(kind: string, message: string): Error {
+  return Object.assign(new Error(message), { kind });
+}
+
+/** A connection-test provider that accepts every key. */
+function acceptingProvider(): QuotaProvider {
+  return rejectingProvider(undefined);
+}
+
+/** A connection-test provider that rejects with a provider-neutral kind. */
+function rejectingProvider(rejectWith: Error | undefined): QuotaProvider {
+  return {
+    id: 'zai-coding-plan',
+    name: 'Fake Z.ai Coding Plan',
+    async validateCredentials(): Promise<void> {
+      if (rejectWith !== undefined) throw rejectWith;
+    },
+    async fetchSnapshot(): Promise<never> {
+      throw new Error('fetchSnapshot is not part of the init --yes tests');
+    },
   };
 }
 
@@ -249,8 +281,8 @@ describe('buildYesAnswers', () => {
     expect(result).toEqual({
       problems: [
         '--api-key-env names an environment variable that is not set in ' +
-          'this environment (an empty value counts as unset). Export the ' +
-          'API key there and run init again.',
+          'this environment (an empty or blank value counts as unset). ' +
+          'Export the API key there and run init again.',
       ],
     });
     expect(JSON.stringify(result)).not.toContain('QM_UNSET');
@@ -266,6 +298,25 @@ describe('buildYesAnswers', () => {
         expect.stringContaining('--api-key-env names an environment variable that is not set'),
       ],
     });
+  });
+
+  it('a whitespace-only variable value counts as unset too (review P1)', () => {
+    // Blank is never a credential: accepting it here would hand the account
+    // step a secret its own context factory rejects, outside the guarded
+    // connection test — an abort instead of the explained failure.
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'account-label': 'work', 'api-key-env': 'QM_BLANK' },
+      { QM_BLANK: '   ' },
+    );
+    expect(result).toEqual({
+      problems: [
+        expect.stringContaining(
+          'an environment variable that is not set in this environment ' +
+            '(an empty or blank value counts as unset)',
+        ),
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain('   ');
   });
 
   it('an own property holding undefined counts as unset', () => {
@@ -467,13 +518,56 @@ describe('runInitCommand (--yes mode)', () => {
     expect(h.out()).toContain('Bind host:         0.0.0.0');
     expect(h.out()).toContain('Port:              9000');
     expect(h.out()).toContain('Polling interval:  120 seconds');
+    expect(h.out()).toContain('Connection test passed');
     expect(h.out()).toContain(
-      "'work' (API key from environment variable 'ZAI_TEST_KEY', value never stored or printed)",
+      "'work' (API key from environment variable 'ZAI_TEST_KEY', value never " +
+        'stored or printed; connection test passed)',
     );
     expect(h.out() + h.err()).not.toContain('sk-unit-secret-value');
     expect(h.out()).toContain('Configuration written to');
-    expect(h.out()).toContain('not stored yet — account setup');
+    expect(h.out()).toContain('Service setup follows.');
     expect(writes()).toHaveLength(1);
+    // The account is real (task 133): persisted with the variable-name
+    // secret source — the value itself exists only in the environment.
+    const written = writes()[0];
+    expect(written?.config.accounts).toEqual([
+      {
+        id: 'work',
+        providerId: 'zai-coding-plan',
+        label: 'work',
+        enabled: true,
+        apiKeyEnv: 'ZAI_TEST_KEY',
+      },
+    ]);
+    expect(JSON.stringify(written?.config)).not.toContain('sk-unit-secret-value');
+  });
+
+  it('a failed connection test is explained and the account kept — no prompter exists', async () => {
+    const h = context({
+      yes: true,
+      timezone: 'UTC',
+      'account-label': 'work',
+      'api-key-env': 'ZAI_TEST_KEY',
+    });
+    const { deps, writes } = yesDeps(
+      undefined,
+      rejectingProvider(
+        kindError(
+          'credentials-rejected',
+          'the provider rejected the account credentials (HTTP 401)',
+        ),
+      ),
+    );
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(h.err()).toContain("the initial connection test for 'work' failed:");
+    expect(h.err()).toContain('the provider refused the key');
+    expect(h.out()).toContain(
+      'connection test failed: credentials-rejected — stored in error state',
+    );
+    expect(h.out()).toContain('Configuration written to');
+    expect(writes()[0]?.config.accounts).toHaveLength(1);
+    expect(h.out() + h.err()).not.toContain('sk-unit-secret-value');
   });
 
   it('warns about the password requirement for non-loopback hosts too', async () => {
@@ -568,29 +662,38 @@ describe('runInitCommand --yes (existing configuration, decision D-101)', () => 
 });
 
 describe('renderInitSummary (environment key source)', () => {
-  const base = {
+  const base: InitAnswers = {
     timezone: 'UTC',
     host: '127.0.0.1',
     port: 8787,
     pollingIntervalSeconds: 300,
-  } as const;
+  };
 
   it('an environment-sourced key names the variable and never a value', () => {
-    const summary = renderInitSummary({
-      ...base,
-      accountLabel: 'work',
-      accountApiKeyEnv: 'ZAI_KEY',
-    });
+    const summary = renderInitSummary(
+      { ...base, accountLabel: 'work', accountApiKeyEnv: 'ZAI_KEY' },
+      {
+        kind: 'stored',
+        account: {
+          id: 'work',
+          providerId: 'zai-coding-plan',
+          label: 'work',
+          enabled: true,
+          apiKeyEnv: 'ZAI_KEY',
+        },
+        test: { outcome: 'passed' },
+      },
+    );
     expect(summary).toContain(
-      "'work' (API key from environment variable 'ZAI_KEY', value never stored or printed)",
+      "'work' (API key from environment variable 'ZAI_KEY', value never stored or printed; connection test passed)",
     );
     expect(summary).not.toContain('Nothing has been written');
   });
 
-  it('a label without any key source still says skipped', () => {
-    expect(renderInitSummary({ ...base, accountLabel: 'work' })).toContain(
-      "'work' (API key skipped — add it later in the UI)",
-    );
+  it('a label without any key source states the skip outcome', () => {
+    expect(
+      renderInitSummary({ ...base, accountLabel: 'work' }, { kind: 'no-key', label: 'work' }),
+    ).toContain("none ('work' was named without an API key — add the account in the web UI)");
   });
 });
 

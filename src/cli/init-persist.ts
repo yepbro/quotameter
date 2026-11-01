@@ -286,10 +286,18 @@ export type InitAssembled =
 
 /**
  * Assembles the configuration the answers produce: `buildInitConfig`'s
- * `server`/`app` mapping merged over `base` by `validateSettings` (task
- * 073's §5.3 keep-or-change layer — omitted fields keep the base value,
- * object sections merge field-wise, and the result is the canonical,
- * re-validated configuration the write path persists).
+ * `server`/`app` mapping — plus, on a fresh run with a stored initial
+ * account (task 133), that account as the configuration's `accounts` array
+ * — merged over `base` by `validateSettings` (task 073's §5.3 keep-or-change
+ * layer — omitted fields keep the base value, object sections merge
+ * field-wise, and the result is the canonical, re-validated configuration
+ * the write path persists).
+ *
+ * The `account` argument is fresh-run-only by construction: re-runs never
+ * collect an account (the questions are not asked and the flags are
+ * rejected, D-101), so a defined `account` always means no `base`, and the
+ * merge never has to reconcile a submitted account array against existing
+ * ones (arrays replace wholesale in the merge — unreachable here).
  *
  * One state is tolerated as pending (decision D-101): a non-loopback bind
  * or `required` mode without a password — the only §15.1 defect — is
@@ -302,8 +310,13 @@ export type InitAssembled =
  * write a file the service would refuse for another reason (§6.2). Total,
  * like the layers it composes — problems, never a throw, never a secret.
  */
-export function assembleInitConfig(answers: InitAnswers, base?: CanonicalConfig): InitAssembled {
-  const submission = buildInitConfig(answers);
+export function assembleInitConfig(
+  answers: InitAnswers,
+  base?: CanonicalConfig,
+  account?: AccountConfig,
+): InitAssembled {
+  const mapped = buildInitConfig(answers);
+  const submission = account === undefined ? mapped : { ...mapped, accounts: [account] };
   // The base feeds only the merge (every field is re-validated on the
   // merged result), so the brand assertion states the pipeline origin of a
   // canonical configuration — including the probe-validated pending one.
