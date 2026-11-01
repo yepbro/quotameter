@@ -111,16 +111,18 @@ describe('GET /api/health — the minimal public response (§13)', () => {
 });
 
 describe('GET /api/health — routing edges (§13)', () => {
-  it('keeps the route GET-only: other methods get the pre-148 default 404 shape', async () => {
+  it('keeps the route GET-only: other methods get the §13 error envelope', async () => {
     const { server } = buildServer();
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'] as const) {
       const response = await server.inject({ method, url: '/api/health' });
       expect(response.statusCode, method).toBe(404);
-      // Task 146's not-found shape, verbatim until task 148's §13 envelope.
+      // Task 148's §13 envelope (D-113), byte-pinned in api-errors.spec.ts.
       expect(response.json(), method).toEqual({
-        message: `Route ${method}:/api/health not found`,
-        error: 'Not Found',
-        statusCode: 404,
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Not found',
+          details: { method, path: '/api/health' },
+        },
       });
     }
   });
@@ -139,7 +141,7 @@ describe('GET /api/health — routing edges (§13)', () => {
     const { server } = buildServer();
     const response = await server.inject({ method: 'GET', url: '/api/health/' });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toMatchObject({ statusCode: 404 });
+    expect(response.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
   });
 });
 

@@ -19,8 +19,15 @@ TypeBox schemas for `server`/`app`/`auth`/`logging`/`providers`/`accounts`
 with derived types, spec defaults, and the cross-field invariants of
 `findConfigProblems`; trust boundary 3, consumed by `src/config/` tasks 064+),
 and `api/` (the spec §13 HTTP API request/response contracts every route
-serializes through and task 163 generates OpenAPI from — `health.ts` is the
-first: the closed `{ "status": "ok" }` literal of the public health
-response, task 147). The contract is published as a JSON Schema document (`CONFIG_SCHEMA_DOCUMENT`
+serializes through and task 163 generates OpenAPI from — `health.ts` is
+the first route contract: the closed `{ "status": "ok" }` literal of the
+public health response, task 147; `error.ts` (task 148) is the common
+error envelope — the stable-code registry `API_ERROR_DEFINITIONS`
+(`VALIDATION`/`UNAUTHENTICATED`/`FORBIDDEN`/`NOT_FOUND`/`PAYLOAD_TOO_LARGE`/
+`URI_TOO_LONG`/`UNSUPPORTED_MEDIA_TYPE`/`INTERNAL`, each with status and
+default message, decision D-113) and the closed TypeBox body contract
+`ApiErrorBodySchema`, which the behavior module (`src/server/api/error.ts`)
+types its composition against and the suites byte-pin on the wire — task
+163 generates OpenAPI from it). The contract is published as a JSON Schema document (`CONFIG_SCHEMA_DOCUMENT`
 → the committed, generated [`schema/config.schema.json`](../../schema/config.schema.json);
 task 062, D-015 — see [docs/config-schema.md](../../docs/config-schema.md)).

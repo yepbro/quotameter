@@ -175,21 +175,24 @@ describe('buildHttpServer — construction pins (§3, §15.5)', () => {
     expect(server.hasPlugin('@fastify/helmet')).toBe(false);
     expect(server.hasPlugin('@fastify/rate-limit')).toBe(false);
   });
-
   it('resolves the default static root to the package ui/dist directory', () => {
     expect(resolveUiDistDir()).toBe(join(REPO_ROOT, 'ui', 'dist'));
   });
 });
 
 describe('buildHttpServer — route seam and injection (§13)', () => {
-  it('answers injected requests for unknown /api paths with the 404 shape', async () => {
+  it('answers injected requests for unknown /api paths with the error envelope', async () => {
     const { server } = buildServer();
     const response = await server.inject({ method: 'GET', url: '/api/unknown' });
     expect(response.statusCode).toBe(404);
+    // Task 148's §13 envelope (D-113) — byte-pinned in api-errors.spec.ts;
+    // pinned structurally here as part of the construction contract.
     expect(response.json()).toEqual({
-      message: 'Route GET:/api/unknown not found',
-      error: 'Not Found',
-      statusCode: 404,
+      error: {
+        code: 'NOT_FOUND',
+        message: 'Not found',
+        details: { method: 'GET', path: '/api/unknown' },
+      },
     });
   });
 
@@ -213,7 +216,15 @@ describe('buildHttpServer — static files and SPA fallback (§14.1)', () => {
     try {
       const { server } = buildServer({ staticRoot: dist.path });
       await server.ready();
-      expect(server.hasPlugin('@fastify/static')).toBe(true);
+      // Since task 148's containment scope (D-113 review fix), the static
+      // plugin registers inside `staticServingScope` — encapsulated, and a
+      // root instance's `hasPlugin` sees only its own registrations
+      // (verified on the pinned runtime). `printPlugins` prints the booted
+      // tree, so the scope and the static plugin inside it stay
+      // root-observable — the construction-ownership pin.
+      const plugins = server.printPlugins();
+      expect(plugins).toContain('staticServingScope');
+      expect(plugins).toContain('@fastify/static');
 
       const home = await server.inject({ method: 'GET', url: '/' });
       expect(home.statusCode).toBe(200);
@@ -239,7 +250,7 @@ describe('buildHttpServer — static files and SPA fallback (§14.1)', () => {
       for (const url of ['/api', '/api?x=1', '/api/unknown']) {
         const api = await server.inject({ method: 'GET', url });
         expect(api.statusCode, `GET ${url}`).toBe(404);
-        expect(api.json()).toMatchObject({ statusCode: 404 });
+        expect(api.json(), `GET ${url}`).toMatchObject({ error: { code: 'NOT_FOUND' } });
       }
     } finally {
       await dist.remove();
@@ -251,14 +262,16 @@ describe('buildHttpServer — static files and SPA fallback (§14.1)', () => {
       staticRoot: join(REPO_ROOT, 'no-such-dist-directory'),
     });
     await server.ready();
-    expect(server.hasPlugin('@fastify/static')).toBe(false);
+    // The static plugin tree is absent in API-only mode — pinned through
+    // the root-observable booted tree (see the static-mode test above).
+    expect(server.printPlugins()).not.toContain('@fastify/static');
     const warnRecords = sink.records().filter((record) => record.level === 40);
     expect(warnRecords.length).toBe(1);
     expect(String(warnRecords[0]?.msg)).toContain('serving the API only');
 
     const home = await server.inject({ method: 'GET', url: '/' });
     expect(home.statusCode).toBe(404);
-    expect(home.json()).toMatchObject({ statusCode: 404 });
+    expect(home.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
     const deepLink = await server.inject({ method: 'GET', url: '/accounts' });
     expect(deepLink.statusCode).toBe(404);
   });
@@ -347,7 +360,7 @@ describe('createHttpServerComponent — lifecycle in the application shell (§5.
     // A real socket serves the constructed shell — startup, not just inject.
     const response = await httpGet(`http://127.0.0.1:${address.port}/api/unknown`);
     expect(response.status).toBe(404);
-    expect(JSON.parse(response.body)).toMatchObject({ statusCode: 404 });
+    expect(JSON.parse(response.body)).toMatchObject({ error: { code: 'NOT_FOUND' } });
 
     await app.stop();
     expect(component.server.server.address()).toBeNull();

@@ -33,13 +33,28 @@ redacting logger's Pino instance, and the `/api` route seam; the same
 factory wraps it as the `http-listener` lifecycle component the application
 shell starts and stops, and tests drive through `fastify.inject` without
 sockets. The routes live in `src/server/api/` (147–163): `index.ts` is the
-registered `/api` scope every Stage-12 endpoint joins, and `health.ts`
+registered `/api` scope every Stage-12 endpoint joins, `health.ts`
 (task 147) is the first endpoint — the public `GET /api/health` returning
 exactly `{"status":"ok"}` (§13), unauthenticated in every auth mode, its
 shape enforced by the closed TypeBox response contract in
-`src/schemas/api/health.ts`. Later: the remaining HTTP API routes and
-auth/session endpoints (153–163), the error envelope (148), and the
-security middleware (149–152, 156–158). It is the only
+`src/schemas/api/health.ts` — and `error.ts` (task 148) is the §13 error
+envelope every error response answers through: the code registry lives in
+`src/schemas/api/error.ts`, while `ApiError` (the throw-side extension
+point the auth/CSRF/rate-limit/endpoint tasks reject through), the pure
+`classifyApiError` trust boundary (strict unknown→INTERNAL, so no
+unvouched message reaches the wire), and the root-scope Fastify error
+handler the construction registers live here — also wired as fastify's
+`frameworkErrors` callback (router-level rejections bypass
+`setErrorHandler` without it) and as the static-serving scope's
+containment handler (the `send` library's client 403/404s map onto
+`FORBIDDEN`/`NOT_FOUND` instead of a false 500 INTERNAL) — with the
+not-found handler's 404 arm, because an unmatched route is not an error
+in fastify, and with the api scope's own catch-all route: the
+mode-independent unmatched arm for `/api` paths (it outranks the static
+wildcard), re-deriving the URI_TOO_LONG class for segments past the
+router's parameter bound.
+Later: the remaining HTTP API routes and auth/session endpoints
+(149–163), and the security middleware (149–152, 156–158). It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3

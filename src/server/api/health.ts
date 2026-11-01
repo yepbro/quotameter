@@ -21,10 +21,10 @@ export const HEALTH_RESPONSE: HealthResponse = Object.freeze({ status: 'ok' });
 
 /**
  * Registers `GET /health` inside the `/api` scope (`./index.ts`, task 146's
- * route seam). GET-only: other methods find no route and keep the pre-148
- * default 404 shape until task 148 replaces the error surface with the §13
- * envelope; Fastify's default `exposeHeadRoute` twin answers HEAD with the
- * same headers and no body (nothing can leak through it).
+ * route seam). GET-only: other methods find no route and answer the §13
+ * error envelope (task 148, D-113); Fastify's default `exposeHeadRoute`
+ * twin answers HEAD with the same headers and no body (nothing can leak
+ * through it).
  */
 export const healthRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(

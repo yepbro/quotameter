@@ -8,8 +8,11 @@
  * timeouts, static file serving with the SPA fallback, and the `/api` route
  * seam (`./api`) — and a second factory wraps it as a `LifecycleComponent`
  * the application shell (task 060) can start and stop. The remaining
- * routes (148+), the error envelope, and the request-security checks are
- * later Stage-12 tasks; nothing in this module implements an endpoint.
+ * routes (149+) and the request-security checks are later Stage-12 tasks;
+ * nothing in this module implements an endpoint. The §13 error envelope
+ * (task 148, D-113) is the one error surface: the root-scope
+ * `apiErrorHandler` from `./api/error` behind every thrown error, and the
+ * not-found handler resolving 404s onto the same envelope.
  *
  * Split of §3's plugin list (decision D-109): `@fastify/static` and
  * `@fastify/cookie` are construction — serving the built UI and parsing
@@ -45,12 +48,20 @@
  */
 
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import Fastify, { LogController } from 'fastify';
-import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { LifecycleComponent } from './app';
+import {
+  API_MAX_PARAM_LENGTH,
+  apiErrorHandler,
+  notFoundClassification,
+  sendApiError,
+  staticServingErrorHandler,
+} from './api/error';
 import { apiRoutes } from './api';
 import { MAX_DRAIN_TIMEOUT_MS } from './shutdown';
 import type { Logger } from '../util/logger';
@@ -169,6 +180,21 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
     requestTimeout: HTTP_REQUEST_TIMEOUT_MS,
     keepAliveTimeout: HTTP_KEEP_ALIVE_TIMEOUT_MS,
     forceCloseConnections: 'idle',
+    // The router's parameter bound (task 148, D-113): single-sited with
+    // the `/api` scope's catch-all classification (`unmatchedApiClassification`
+    // measures segments against this value), so the bound the router
+    // enforces and the bound the envelope re-derives cannot drift.
+    maxParamLength: API_MAX_PARAM_LENGTH,
+    // The §13 envelope behind fastify's router-level failures too (task
+    // 148, D-113 review fix): without this callback, a malformed
+    // percent-escape path (`/api/%zz`) bypasses `setErrorHandler` entirely
+    // and gets a hardcoded framework body with the unstable native code on
+    // the wire. Routed through the same handler, the codes classify onto
+    // the registry (`FST_ERR_BAD_URL` → VALIDATION,
+    // `FST_ERR_MAX_PARAM_LENGTH` → URI_TOO_LONG — the latter only at a
+    // routing dead end; the `/api` scope's catch-all route answers the
+    // rescued ones, mode-independently, per D-113's post-verification fix).
+    frameworkErrors: apiErrorHandler,
   });
 
   // Spec §3's enabling plugin for the §13 auth endpoints: cookie parsing
@@ -177,8 +203,26 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
 
   const staticRoot = options.staticRoot ?? resolveUiDistDir();
   const staticAvailable = existsSync(staticRoot);
+  // The SPA fallback serves `index.html`; a static root without it (a
+  // partial build, a pre-created volume) must not fall into `sendFile`'s
+  // ENOENT inside the 404 handler — fastify answers that with a plain-text
+  // basic 404 plus a warn line. The fallback branch below requires the
+  // file itself (D-113 review fix); assets keep serving either way.
+  const spaIndexAvailable = staticAvailable && existsSync(join(staticRoot, 'index.html'));
+  // The static plugin rides in its own scope with a containment error
+  // handler (D-113 review fix): `send`'s client rejections carry only a
+  // foreign 403/404 and would otherwise resolve to INTERNAL — a client
+  // typo answered as a server fault plus one error-level log record per
+  // request. A named function expression (not an inline arrow) keeps the
+  // scope identifiable in `printPlugins()` output — the root-observable
+  // pin of this registration (`hasPlugin` cannot see encapsulated
+  // plugins, only the booted tree shows them).
+  const staticServingScope: FastifyPluginAsync = async function staticServingScope(scope) {
+    scope.setErrorHandler(staticServingErrorHandler);
+    await scope.register(fastifyStatic, { root: staticRoot });
+  };
   if (staticAvailable) {
-    server.register(fastifyStatic, { root: staticRoot });
+    server.register(staticServingScope);
   } else {
     options.logger.warn(
       `no built UI at ${staticRoot}: serving the API only ` +
@@ -187,24 +231,33 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
   }
 
   // Static serving with SPA fallback (spec §14.1): deep links serve the app
-  // shell; everything else keeps Fastify's default 404 body until task 148
-  // replaces the error surface with the §13 envelope. The API boundary is
-  // the `/api` route scope exactly — `/api`, `/api/…` (query strings
-  // included) — never a string prefix, so `/apiary` stays a UI deep link.
+  // shell. This handler answers what the route table cannot match at all —
+  // the bare `/api` (the api scope's catch-all needs a trailing segment),
+  // non-API misses in API-only mode, and the partial-build degradation —
+  // while the `/api/…` unmatched arm lives in the api scope's own catch-all
+  // route (`./api`, D-113 post-verification fix), which outranks both this
+  // handler and the static wildcard. `/apiary` stays a UI deep link, never
+  // a string prefix. Every arm resolves to the §13 error envelope; an
+  // unmatched route is not an error in fastify, so the 404 class lives in
+  // route/not-found handlers, not in the error handler.
   server.setNotFoundHandler((request, reply) => {
     // `split` never returns an empty array — the first element always exists.
     const path = request.url.split('?')[0]!;
     const isApiPath = path === '/api' || path.startsWith('/api/');
-    if (staticAvailable && request.method === 'GET' && !isApiPath) {
+    if (spaIndexAvailable && request.method === 'GET' && !isApiPath) {
       reply.sendFile('index.html');
       return;
     }
-    reply.code(404).send({
-      message: `Route ${request.method}:${request.url} not found`,
-      error: 'Not Found',
-      statusCode: 404,
-    });
+    sendApiError(reply, notFoundClassification(request.method, path));
   });
+
+  // The §13 error envelope behind every thrown error (task 148, D-113):
+  // registered at root scope so API and non-API failures alike answer the
+  // one common shape — a second, framework-default error body for non-API
+  // paths would split the contract the UI client (169) builds against.
+  // Errors from encapsulated scopes (the static scope above, the `/api`
+  // route scope below) bubble to it unless the scope contains them first.
+  server.setErrorHandler(apiErrorHandler);
 
   // The §13 route scope (task 147 landed the health route; 148+ join here).
   server.register(apiRoutes, { prefix: '/api' });
