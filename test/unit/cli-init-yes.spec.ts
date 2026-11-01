@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { parseConfig, type CanonicalConfig } from '../../src/config/load';
 import type { CliContext } from '../../src/cli/commands';
 import { buildCommandTable } from '../../src/cli/commands';
-import { renderInitSummary, runInitCommand } from '../../src/cli/init';
+import { renderInitSummary, runInitCommand, type InitDeps } from '../../src/cli/init';
+import type { WriteInitConfigOptions } from '../../src/cli/init-persist';
 import { buildYesAnswers, INIT_VALUE_OPTIONS } from '../../src/cli/init-yes';
 import { runCli } from '../../src/cli/main';
 import type { CliOutput } from '../../src/cli/output';
@@ -40,6 +42,42 @@ function forbiddenPrompter(): () => never {
 }
 
 const ENV_WITH_KEY = { ZAI_TEST_KEY: 'sk-unit-secret-value' } as const;
+
+/** A validated canonical fixture through the real parser. */
+function canonical(input: unknown): CanonicalConfig {
+  const parsed = parseConfig(input);
+  if (!parsed.ok) throw new Error(`fixture configuration rejected: ${parsed.problems.join('; ')}`);
+  return parsed.value as CanonicalConfig;
+}
+
+/** The current configuration the retain-mode scenarios run against. */
+const EXISTING: CanonicalConfig = canonical({
+  server: { host: '127.0.0.1', port: 9000 },
+  app: { timezone: 'Europe/Berlin', pollingIntervalSeconds: 120, historyRetentionDays: 90 },
+  accounts: [{ id: 'work', providerId: 'zai', label: 'work', apiKey: 'sk-configured-key' }],
+});
+
+/** `--yes` deps with detection and persistence seams: fresh or existing. */
+function yesDeps(existing?: CanonicalConfig): {
+  deps: InitDeps;
+  writes(): readonly WriteInitConfigOptions[];
+} {
+  const writes: WriteInitConfigOptions[] = [];
+  return {
+    deps: {
+      createPrompter: forbiddenPrompter(),
+      env: ENV_WITH_KEY,
+      readExisting: async () =>
+        existing === undefined
+          ? { state: 'none' }
+          : { state: 'existing', config: existing, passwordPending: false },
+      persistConfig: async (options) => {
+        writes.push(options);
+      },
+    },
+    writes: () => writes,
+  };
+}
 
 describe('buildYesAnswers', () => {
   it('assembles every explicit value (happy path)', () => {
@@ -324,8 +362,94 @@ describe('buildYesAnswers', () => {
   });
 });
 
+describe('buildYesAnswers (retain mode — task 132, decision D-101)', () => {
+  it('absent optional flags keep the current values, not the spec defaults', () => {
+    const result = buildYesAnswers({ yes: true, timezone: 'Europe/Berlin' }, {}, EXISTING);
+    expect(result).toEqual({
+      answers: {
+        timezone: 'Europe/Berlin',
+        host: '127.0.0.1',
+        port: 9000,
+        pollingIntervalSeconds: 120,
+      },
+    });
+  });
+
+  it('a blank flag value keeps the current value too (blank is not supplied)', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'Europe/Berlin', port: '   ' },
+      {},
+      EXISTING,
+    );
+    expect(result).toEqual({
+      answers: {
+        timezone: 'Europe/Berlin',
+        host: '127.0.0.1',
+        port: 9000,
+        pollingIntervalSeconds: 120,
+      },
+    });
+  });
+
+  it('an explicit flag is the consent to change that setting', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'Europe/Berlin', port: '9001' },
+      {},
+      EXISTING,
+    );
+    expect(result).toEqual({
+      answers: {
+        timezone: 'Europe/Berlin',
+        host: '127.0.0.1',
+        port: 9001,
+        pollingIntervalSeconds: 120,
+      },
+    });
+  });
+
+  it('--timezone stays mandatory against an existing configuration', () => {
+    const result = buildYesAnswers({ yes: true }, {}, EXISTING);
+    expect(result).toEqual({
+      problems: [expect.stringContaining('--timezone is required with --yes')],
+    });
+  });
+
+  it('the account flags apply only to a fresh initialization', () => {
+    const withLabel = buildYesAnswers(
+      { yes: true, timezone: 'Europe/Berlin', 'account-label': 'work' },
+      ENV_WITH_KEY,
+      EXISTING,
+    );
+    expect(withLabel).toEqual({
+      problems: [expect.stringContaining('apply only to a fresh initialization')],
+    });
+
+    const withEnv = buildYesAnswers(
+      { yes: true, timezone: 'Europe/Berlin', 'api-key-env': 'ZAI_TEST_KEY' },
+      ENV_WITH_KEY,
+      EXISTING,
+    );
+    expect(withEnv).toEqual({
+      problems: [expect.stringContaining('apply only to a fresh initialization')],
+    });
+    // Neither the key value nor its variable leaks into the problem.
+    expect(JSON.stringify(withEnv)).not.toContain('sk-unit-secret-value');
+  });
+
+  it('invalid explicit values fail exactly like the fresh flow', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'Europe/Berlin', port: 'abc' },
+      {},
+      EXISTING,
+    );
+    expect(result).toEqual({
+      problems: ["Port must be a whole number (got 'abc')."],
+    });
+  });
+});
+
 describe('runInitCommand (--yes mode)', () => {
-  it('exits 0 with the summary and constructs no prompter', async () => {
+  it('exits 0 with the summary, writes the config, and constructs no prompter', async () => {
     const h = context({
       yes: true,
       timezone: 'Europe/Berlin',
@@ -335,10 +459,8 @@ describe('runInitCommand (--yes mode)', () => {
       'account-label': 'work',
       'api-key-env': 'ZAI_TEST_KEY',
     });
-    const code = await runInitCommand({
-      createPrompter: forbiddenPrompter(),
-      env: ENV_WITH_KEY,
-    })(h.ctx);
+    const { deps, writes } = yesDeps();
+    const code = await runInitCommand(deps)(h.ctx);
     expect(code).toBe(0);
     expect(h.err()).toBe('');
     expect(h.out()).toContain('Time zone:         Europe/Berlin');
@@ -349,19 +471,27 @@ describe('runInitCommand (--yes mode)', () => {
       "'work' (API key from environment variable 'ZAI_TEST_KEY', value never stored or printed)",
     );
     expect(h.out() + h.err()).not.toContain('sk-unit-secret-value');
-    expect(h.out()).toContain('Nothing has been written yet');
+    expect(h.out()).toContain('Configuration written to');
+    expect(h.out()).toContain('not stored yet — account setup');
+    expect(writes()).toHaveLength(1);
   });
 
   it('warns about the password requirement for non-loopback hosts too', async () => {
     const h = context({ yes: true, timezone: 'UTC', host: '192.168.1.10' });
-    const code = await runInitCommand({ createPrompter: forbiddenPrompter(), env: {} })(h.ctx);
+    const { deps, writes } = yesDeps();
+    const code = await runInitCommand(deps)(h.ctx);
     expect(code).toBe(0);
     expect(h.out()).toContain('requires a password before the service');
+    // §15.1 pending (D-101): the hash-less remote bind is written with the
+    // remedy; the service refuses to start on it until passwd completes it.
+    expect(h.out()).toContain('set one with quotameter passwd');
+    expect(writes()).toHaveLength(1);
   });
 
   it('a missing --timezone fails on stderr with exit 1 and prints no summary', async () => {
     const h = context({ yes: true });
-    const code = await runInitCommand({ createPrompter: forbiddenPrompter(), env: {} })(h.ctx);
+    const { deps } = yesDeps();
+    const code = await runInitCommand(deps)(h.ctx);
     expect(code).toBe(1);
     expect(h.err()).toBe(
       'quotameter init: --timezone is required with --yes: Quotameter never ' +
@@ -373,7 +503,8 @@ describe('runInitCommand (--yes mode)', () => {
 
   it('every problem is its own prefixed stderr line', async () => {
     const h = context({ yes: true, port: 'abc' });
-    const code = await runInitCommand({ createPrompter: forbiddenPrompter(), env: {} })(h.ctx);
+    const { deps } = yesDeps();
+    const code = await runInitCommand(deps)(h.ctx);
     expect(code).toBe(1);
     expect(
       h
@@ -387,10 +518,52 @@ describe('runInitCommand (--yes mode)', () => {
 
   it('a value option without --yes is a clear failure, not a silent ignore', async () => {
     const h = context({ timezone: 'Europe/Berlin' });
-    const code = await runInitCommand({ createPrompter: forbiddenPrompter(), env: {} })(h.ctx);
+    const { deps } = yesDeps();
+    const code = await runInitCommand(deps)(h.ctx);
     expect(code).toBe(1);
     expect(h.err()).toContain('--timezone requires --yes (non-interactive mode)');
     expect(h.out()).toBe('');
+  });
+});
+
+describe('runInitCommand --yes (existing configuration, decision D-101)', () => {
+  it('displays current settings, retains absent options, and writes nothing', async () => {
+    const h = context({ yes: true, timezone: 'Europe/Berlin' });
+    const { deps, writes } = yesDeps(EXISTING);
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(h.out()).toContain('Existing configuration found at');
+    expect(h.out()).toContain('Options that are not passed keep the current values.');
+    expect(h.out()).toContain("Accounts:          'work' (API key configured, hidden)");
+    expect(h.out()).toContain('No changes — the existing configuration is kept');
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('an explicit option changes that setting and writes the merged config', async () => {
+    const h = context({ yes: true, timezone: 'Europe/Berlin', port: '9001' });
+    const { deps, writes } = yesDeps(EXISTING);
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(writes()).toHaveLength(1);
+    const written = writes()[0];
+    if (written !== undefined) {
+      expect(written.config.server.port).toBe(9001);
+      expect(written.config.server.host).toBe('127.0.0.1');
+      expect(written.config.app.historyRetentionDays).toBe(90);
+      expect(written.config.accounts).toEqual(EXISTING.accounts);
+    }
+    expect(h.out()).toContain('Configuration updated at');
+  });
+
+  it('the account flags fail against an existing configuration', async () => {
+    const h = context({ yes: true, timezone: 'Europe/Berlin', 'account-label': 'work' });
+    const { deps, writes } = yesDeps(EXISTING);
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(1);
+    expect(h.err()).toContain(
+      'quotameter init: --account-label and --api-key-env apply only to a fresh initialization',
+    );
+    expect(writes()).toHaveLength(0);
   });
 });
 
@@ -411,7 +584,7 @@ describe('renderInitSummary (environment key source)', () => {
     expect(summary).toContain(
       "'work' (API key from environment variable 'ZAI_KEY', value never stored or printed)",
     );
-    expect(summary).toContain('Nothing has been written yet');
+    expect(summary).not.toContain('Nothing has been written');
   });
 
   it('a label without any key source still says skipped', () => {

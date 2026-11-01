@@ -21,7 +21,8 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `prompts.ts`         | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets   |
 | `init-questions.ts`  | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly         |
 | `init-yes.ts`        | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel     |
-| `init.ts`            | the `init` handler: mode branch, cancellation, the masked summary                                     |
+| `init-persist.ts`    | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write   |
+| `init.ts`            | the `init` handler: mode branch, detection outcomes, cancellation, the masked summaries               |
 | `raw-diagnostics.ts` | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
 
 Everything a handler touches is injected: output (writer seam), version
@@ -103,12 +104,74 @@ through three modules:
   (`quotameter init: input closed … — initialization cancelled`, exit 1),
   and prints `renderInitSummary`: every collected value except the key,
   which appears only as `configured (hidden)` / `skipped` (§6.3, §15.4), a
-  password note for non-loopback hosts (§5.3 step 4), and the explicit
-  "nothing has been written yet" line until the persistence tasks land.
+  password note for non-loopback hosts (§5.3 step 4), and — since task 132 —
+  the write trailer naming the file the run wrote (or kept unchanged).
 
-The remaining §5.3 steps (existing-config detection, account connection
-test, service installation) extend `InitAnswers`/`buildInitConfig` rather
-than re-deriving validation.
+The remaining §5.3 steps (the account connection test, service
+installation) extend `InitAnswers`/`buildInitConfig` rather than
+re-deriving validation.
+
+## The idempotent `init` layer (task 132, spec §5.3, decision D-101)
+
+`init` must be idempotent: "on subsequent runs, display current settings and
+let the user keep or change them". `init-persist.ts` plus the retain mode of
+the two collection layers implement that with three detection outcomes at
+the resolved configuration path (`resolvePaths` → `config.json`):
+
+- **No file** — the fresh flows of tasks 130/131 unchanged, and the run
+  writes the configuration: `enforceConfigPermissions` creates the
+  directory at `0700` (or corrects/refuses), `writeConfigFile` writes the
+  canonical file at `0600` atomically (§5.3 step 5's configuration half;
+  the database lands with the storage-consuming steps, task 133+). The
+  collected initial account is **not** persisted — the stable id and the
+  §6.3 secret-source assembly are task 133's — and the summary says so.
+- **Valid file** — the §5.3 subsequent-run flow: current settings are
+  displayed (accounts masked to their secret state — a stored key never
+  appears, an environment-sourced key names only its variable), every
+  settings question offers its current value (`Enter to keep …`, the
+  shared `retainOnEmpty` parser), and in `--yes` mode an absent optional
+  option keeps the current value (an explicit flag is the consent to
+  change that setting; `--timezone` stays mandatory, and the account flags
+  are a clear failure — the initial account is a first-run step). Existing
+  accounts and every setting init does not ask about are preserved
+  verbatim through `validateSettings`' §5.3 merge. **Nothing is written
+  unless a setting actually changes** — the done-condition: an unchanged
+  re-run prints `No changes` and leaves the file byte-identical.
+- **Stale-detection guard (both writing outcomes)** — immediately before
+  any write the file is re-read and compared against what the run
+  displayed (`sameDetectionState`: structural equality of the canonical
+  configuration, so a reformatted-but-unchanged file is not a change): a
+  fresh run requires the file to still be absent (a file created after
+  the initial `none` result is never replaced — the no-clobber half), a
+  re-run requires the same configuration that was shown, and anything
+  else refuses with exit 1 and nothing written. The short
+  re-read-to-rename window that remains is accepted (D-101): a lock would
+  serialize only cooperating init processes, not the hand edits and
+  foreign writers the guard exists for.
+- **Present but invalid** — a hard refusal (exit 1): the loader's own
+  secret-free problems are printed, the file is left untouched, and the
+  user is told to fix or remove it — overwriting a configuration whose
+  contents cannot be validated is never consented to (§6.2).
+
+One state is deliberately tolerated on both sides of the pipeline
+(D-101): a non-loopback bind (or `auth.mode: required`) without a password
+hash — §15.1's own sentence binds _starting_ ("refuse to start"), §15.2
+names `quotameter passwd` as the completer, and the task-130 note already
+promised "set one with quotameter passwd". The tolerance is probed
+structurally with a placeholder hash/password (D-022's technique, never by
+matching problem wording), and it applies only to a password hash that is
+**absent** — a present-but-malformed hash (empty, non-string) or a
+non-object `auth` section is a defect the probe never masks, and any
+further defect still refuses. Such a
+configuration is written and re-read as `passwordPending`, displayed with
+its remedy, and the service refuses to start on it until `passwd` completes
+it — exactly the §15.1 sentence. Password collection inside `init` lands
+with the scrypt tasks (§15.2, task 153).
+
+The handler's detection and persistence are injectable seams
+(`InitDeps.readExisting`/`persistConfig`) for unit tests; the real wiring —
+including the double-init done-condition evidence through the actual
+launcher — is pinned by `test/integration/cli-init-idempotent.spec.ts`.
 
 ## The `init --yes` layer (task 131, spec §5.3, decision D-100)
 
@@ -155,9 +218,14 @@ time zone automatically…`, exit 1) — a set `QUOTAMETER_APP_TIMEZONE`
   exactly as in the interactive flow). `--account-label` alone means
   "account with the key added later in the UI".
 - **Reproducibility:** `buildYesAnswers` is pure over flags + an
-  environment snapshot, and the summary rendered from its answers contains
-  no timestamps, hints, or randomness — the same invocation prints
-  byte-identical output (pinned by running the real launcher twice).
+  environment snapshot + the optional existing configuration, and the
+  summary rendered from its answers contains no timestamps, hints, or
+  randomness — the same invocation prints byte-identical output when it
+  starts from the same configuration state, which fresh directories
+  (no file yet) guarantee; retain-mode output legitimately depends on the
+  configuration the run started from (D-100's consequences say exactly
+  this about task 132), so the reproducibility pin runs the launcher
+  twice in fresh directories with the path normalized.
 - **Value options require `--yes`:** any of the six without it is a clear
   failure (`--<name> requires --yes (non-interactive mode)`), never a
   silently ignored flag and never a half-prefilled wizard.

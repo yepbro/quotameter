@@ -36,8 +36,23 @@
  * - **All value problems are reported at once** — one line each on stderr,
  *   then a single exit 1. The interactive flow complains per question because
  *   it can re-ask; a script gets the complete diagnosis in one run.
+ *
+ * Retain mode (task 132, spec §5.3, decision D-101): with an existing
+ * configuration passed in, an **absent optional flag keeps the current
+ * value** — `retainOnEmpty` wraps the shared parsers exactly as the
+ * interactive prompts do — because silently reverting a customized setting
+ * to the spec default is precisely the overwrite-without-consent §5.3's
+ * idempotency sentence forbids; an explicit flag remains explicit consent
+ * to change that setting. `--timezone` stays mandatory in retain mode:
+ * §5.3's "absence is an error" is unconditional, and re-stating the zone
+ * keeps init from ever picking a time zone the user did not type in this
+ * invocation. The account flags are rejected outright in retain mode — the
+ * optional initial account is a first-run step, and collecting a label no
+ * write would persist (account assembly is task 133's) would silently
+ * ignore the flags D-100 promised were never ignored.
  */
 
+import type { CanonicalConfig } from '../config/load';
 import { API_KEY_ENV_NAME_PATTERN } from '../schemas/config';
 import type { InitAnswers } from './init-questions';
 import {
@@ -46,6 +61,7 @@ import {
   parseIntervalSeconds,
   parsePort,
   parseTimeZone,
+  retainOnEmpty,
 } from './init-questions';
 
 /**
@@ -93,10 +109,21 @@ function parseFlag<T>(
 }
 
 /**
- * Assembles the non-interactive answers from the parsed `init` flags and an
- * environment snapshot. Pure: same flags and environment, same result — the
- * reproducibility behind "a valid invocation is reproducible" (the summary
- * rendered from the answers contains no timestamps, hints, or randomness).
+ * Assembles the non-interactive answers from the parsed `init` flags, an
+ * environment snapshot, and the optional existing configuration (absent on
+ * a fresh run). Pure: the same three inputs, the same result — the
+ * reproducibility behind "a valid invocation is reproducible" is defined
+ * over flags + environment + the starting configuration state, including
+ * "no configuration yet" (the summary rendered from the answers contains
+ * no timestamps, hints, or randomness; two fresh directories print
+ * byte-identical output, while retain-mode output legitimately depends on
+ * the configuration it started from — D-100's own consequences sentence).
+ *
+ * With `existing` (a re-run against a valid configuration, task 132/
+ * D-101): absent optional flags retain the current values instead of taking
+ * the spec defaults, and the account flags are a problem (the initial
+ * account is a first-run step; existing accounts are kept and managed in
+ * the web UI).
  *
  * The returned problems never contain a secret: the key's value is never
  * retained or echoed, and `--api-key-env` problems name the flag and the
@@ -105,10 +132,13 @@ function parseFlag<T>(
 export function buildYesAnswers(
   flags: Readonly<Record<string, boolean | string>>,
   env: YesEnv,
+  existing?: CanonicalConfig,
 ): YesInput {
   const problems: string[] = [];
 
-  // Time zone: the one mandatory value in non-interactive mode (spec §5.3).
+  // Time zone: the one mandatory value in non-interactive mode (spec §5.3) —
+  // in retain mode too (decision D-101): absence is an error, never a value
+  // this invocation did not type.
   const timezoneRaw = flagValue(flags, 'timezone');
   let timezone: string | undefined;
   if (timezoneRaw === undefined || timezoneRaw.trim() === '') {
@@ -123,12 +153,49 @@ export function buildYesAnswers(
     else problems.push(parsed.problem);
   }
 
-  const host = parseFlag(flags, 'host', parseHost, problems);
-  const port = parseFlag(flags, 'port', parsePort, problems);
-  const interval = parseFlag(flags, 'polling-interval', parseIntervalSeconds, problems);
-  const label = parseFlag(flags, 'account-label', parseAccountLabel, problems);
+  // Retain mode feeds absent (or blank) optional flags to retainOnEmpty —
+  // the empty answer keeps the current value (decision D-101); fresh mode
+  // keeps D-100's absent-flag-as-empty-input default semantics verbatim.
+  const host = parseFlag(
+    flags,
+    'host',
+    existing === undefined ? parseHost : retainOnEmpty(existing.server.host, parseHost),
+    problems,
+  );
+  const port = parseFlag(
+    flags,
+    'port',
+    existing === undefined ? parsePort : retainOnEmpty(existing.server.port, parsePort),
+    problems,
+  );
+  const interval = parseFlag(
+    flags,
+    'polling-interval',
+    existing === undefined
+      ? parseIntervalSeconds
+      : retainOnEmpty(existing.app.pollingIntervalSeconds, parseIntervalSeconds),
+    problems,
+  );
 
-  const apiKeyEnv = parseApiKeyEnvFlag(flags, env, label !== undefined, problems);
+  if (
+    existing !== undefined &&
+    (flagValue(flags, 'account-label') !== undefined ||
+      flagValue(flags, 'api-key-env') !== undefined)
+  ) {
+    problems.push(
+      '--account-label and --api-key-env apply only to a fresh initialization: ' +
+        'a configuration already exists. Accounts are kept as configured and ' +
+        'managed in the web UI.',
+    );
+  }
+  const label =
+    existing === undefined
+      ? parseFlag(flags, 'account-label', parseAccountLabel, problems)
+      : undefined;
+  const apiKeyEnv =
+    existing === undefined
+      ? parseApiKeyEnvFlag(flags, env, label !== undefined, problems)
+      : undefined;
 
   // `problems.length` is the real gate; the value disjuncts exist for the
   // type narrowing — every undefined above has pushed its problem, so the

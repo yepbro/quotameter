@@ -29,8 +29,13 @@ import {
   ConfigSchema,
   findConfigProblems,
   type AccountConfig,
+  type AppConfig,
+  type AuthConfig,
   type Config,
+  type LoggingConfig,
   type PeakWindow,
+  type ProvidersConfig,
+  type ServerConfig,
 } from '../schemas/config';
 
 /* ── File naming (D-011 deferred it here; spec §6.1 names the file) ────── */
@@ -67,6 +72,29 @@ export type ConfigRejected = { ok: false; problems: string[] };
 export type ConfigParseResult = ConfigParsed | ConfigRejected;
 /** Result of loading and validating the configuration file from disk. */
 export type ConfigLoadResult = { ok: true; config: Validated<Config> } | ConfigRejected;
+
+/**
+ * `Config` in the shape `parseConfig` actually emits: the optional sections
+ * materialized with their canonical fields (defaults completion, D-018) —
+ * concrete `server.host`/`server.port`, the defaulted `app` numbers, an
+ * `auth.mode`, a `logging.level` — while `auth.passwordHash` and
+ * per-account optionals deliberately stay optional (absent stays absent;
+ * §15.1's password state is exactly an absent hash). Converting a
+ * `Validated<Config>` to this view is a cast stating that invariant, not a
+ * runtime check. Type-only: no runtime code, so the module's pinned
+ * coverage keys are untouched.
+ */
+export type CanonicalConfig = Omit<
+  Config,
+  'server' | 'app' | 'auth' | 'logging' | 'providers' | 'accounts'
+> & {
+  readonly server: Required<ServerConfig>;
+  readonly app: Required<AppConfig>;
+  readonly auth: Required<Omit<AuthConfig, 'passwordHash'>> & Pick<AuthConfig, 'passwordHash'>;
+  readonly logging: Required<LoggingConfig>;
+  readonly providers: ProvidersConfig;
+  readonly accounts: NonNullable<Config['accounts']>;
+};
 
 /**
  * Parses untrusted configuration input into the validated, canonical

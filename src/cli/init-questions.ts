@@ -1,5 +1,5 @@
 /**
- * The `init` question flow (task 130, spec §5.3; decision D-099).
+ * The `init` question flow (task 130, spec §5.3; decisions D-099, D-101).
  *
  * The interactive half of §5.3 steps 2–3, in spec order: the explicit IANA
  * time zone, bind host, port, polling interval, and an optional initial
@@ -27,17 +27,30 @@
  *   the flow with `null` — nothing is half-collected and no value is ever
  *   defaulted out of a missing answer.
  *
+ * Retain mode (task 132, decision D-101): when {@link InitQuestionDeps.existing}
+ * carries the current validated configuration, each settings question names
+ * the current value and the empty answer **keeps it** — the same informed-
+ * Enter semantics as the shown default of a fresh run, now over a value the
+ * user once chose explicitly (the anti-default rule of D-099 targets the
+ * *system* zone silently adopted; retaining a validated explicit choice is
+ * the consent §5.3's "keep or change" asks for). The account questions are
+ * not asked in retain mode: the optional initial account is a first-run
+ * step, existing accounts are displayed masked and kept verbatim, and
+ * adding accounts after initialization is the web UI's job (§5.3 step 3).
+ *
  * The per-value parsers are exported: `init --yes` (task 131) validates its
- * command-line values with the same functions, and `buildInitConfig` is the
- * single answers→`Config` assembly the follow-up tasks reuse. The `accounts`
- * array is deliberately not assembled here: a stable account id and the
- * §6.3 secret-source choice belong to task 133's safe account setup.
+ * command-line values with the same functions — in both fresh and retain
+ * mode ({@link retainOnEmpty}) — and `buildInitConfig` is the single
+ * answers→`Config` assembly the follow-up tasks reuse. The `accounts` array
+ * is deliberately not assembled here: a stable account id and the §6.3
+ * secret-source choice belong to task 133's safe account setup.
  *
  * Secret discipline (spec §6.3, §15.4): the key travels only inside the
  * answers object; no complaint, prompt, or summary line in this module ever
  * contains it.
  */
 
+import type { CanonicalConfig } from '../config/load';
 import type { Config } from '../schemas/config';
 import { CONFIG_DEFAULTS, isValidTimeZoneName } from '../schemas/config';
 import type { CliOutput } from './output';
@@ -78,9 +91,18 @@ export interface InitQuestionDeps {
   /**
    * Yields the system's IANA zone for the prompt hint, or `undefined` when
    * none can be determined. Hint-only: the value is never adopted as an
-   * answer (spec §5.3 step 2).
+   * answer (spec §5.3 step 2). Fresh runs only — a re-run shows the current
+   * value instead (decision D-101).
    */
   readonly systemTimeZone: () => string | undefined;
+  /**
+   * The current validated configuration, when `init` runs against one
+   * (task 132, spec §5.3, decision D-101): every settings question then
+   * names the current value and an empty answer keeps it, and the account
+   * questions are not asked — existing accounts are displayed and kept
+   * verbatim by the caller.
+   */
+  readonly existing?: CanonicalConfig;
 }
 
 /** The system-zone lookup used when no seam is injected. */
@@ -207,30 +229,79 @@ function optionalTrimmed(raw: string, what: string): Parsed<string | undefined> 
   return { value };
 }
 
+/**
+ * A retain-mode parser over an existing configuration (task 132, decision
+ * D-101): the empty answer keeps `current` — the prompt names it, so
+ * pressing Enter is the same informed choice as taking a shown default —
+ * and any other answer goes through the shared parser unchanged. Exported
+ * because `init --yes` (task 131) applies the identical retain semantics to
+ * its absent optional flags.
+ */
+export function retainOnEmpty<T>(
+  current: T,
+  parse: (raw: string) => Parsed<T>,
+): (raw: string) => Parsed<T> {
+  return (raw) => (raw.trim() === '' ? { value: current } : parse(raw));
+}
+
 /* ── The flow ───────────────────────────────────────────────────────────── */
 
 /**
  * Asks the §5.3 questions in order and returns the validated answers, or
  * `null` when the input closed before every question was answered.
+ *
+ * Fresh runs ask all six questions with the D-099 empty-answer semantics.
+ * Runs against an existing configuration ({@link InitQuestionDeps.existing})
+ * ask the four settings questions in retain mode — each prompt names the
+ * current value, empty keeps it — and skip the account questions (decision
+ * D-101).
  */
 export async function askInitQuestions(deps: InitQuestionDeps): Promise<InitAnswers | null> {
-  const hint = deps.systemTimeZone();
-  const timezone = await askValidated(deps, timeZonePrompt(hint), false, parseTimeZone);
+  const current = deps.existing;
+
+  const timezone = await askValidated(
+    deps,
+    current === undefined
+      ? timeZonePrompt(deps.systemTimeZone())
+      : keepPrompt('IANA time zone', current.app.timezone),
+    false,
+    current === undefined ? parseTimeZone : retainOnEmpty(current.app.timezone, parseTimeZone),
+  );
   if (timezone === null) return null;
 
-  const host = await askValidated(deps, 'Bind host (Enter for 127.0.0.1): ', false, parseHost);
+  const host = await askValidated(
+    deps,
+    current === undefined
+      ? 'Bind host (Enter for 127.0.0.1): '
+      : keepPrompt('Bind host', current.server.host),
+    false,
+    current === undefined ? parseHost : retainOnEmpty(current.server.host, parseHost),
+  );
   if (host === null) return null;
 
-  const port = await askValidated(deps, 'Port (Enter for 8787): ', false, parsePort);
+  const port = await askValidated(
+    deps,
+    current === undefined ? 'Port (Enter for 8787): ' : keepPrompt('Port', current.server.port),
+    false,
+    current === undefined ? parsePort : retainOnEmpty(current.server.port, parsePort),
+  );
   if (port === null) return null;
 
   const interval = await askValidated(
     deps,
-    'Polling interval in seconds (Enter for 300): ',
+    current === undefined
+      ? 'Polling interval in seconds (Enter for 300): '
+      : keepPrompt('Polling interval in seconds', current.app.pollingIntervalSeconds),
     false,
-    parseIntervalSeconds,
+    current === undefined
+      ? parseIntervalSeconds
+      : retainOnEmpty(current.app.pollingIntervalSeconds, parseIntervalSeconds),
   );
   if (interval === null) return null;
+
+  if (current !== undefined) {
+    return { timezone, host, port, pollingIntervalSeconds: interval };
+  }
 
   const label = await askValidated(
     deps,
@@ -260,6 +331,11 @@ export async function askInitQuestions(deps: InitQuestionDeps): Promise<InitAnsw
     ...(label === undefined ? {} : { accountLabel: label }),
     ...(apiKey === undefined ? {} : { accountApiKey: apiKey }),
   };
+}
+
+/** A retain-mode prompt: names the value Enter keeps (decision D-101). */
+function keepPrompt(what: string, current: string | number): string {
+  return `${what} (Enter to keep ${current}): `;
 }
 
 /**

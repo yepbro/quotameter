@@ -186,8 +186,13 @@ export function findReloadChanges(baseline: Config, next: Config): ReloadChanges
   };
 }
 
-/** Structural equality for JSON-derived values (configurations are such). */
-function jsonEquals(a: unknown, b: unknown): boolean {
+/**
+ * Structural equality for JSON-derived values (configurations are such):
+ * equal content in a fresh object is equal — key order is not data. Exported
+ * for the config family's other consumers of "did the configuration change";
+ * the first is the CLI's stale-detection guard (task 132, `init-persist.ts`).
+ */
+export function jsonEquals(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
   if (Array.isArray(a) || Array.isArray(b)) {

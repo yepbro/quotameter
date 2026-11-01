@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseConfig, type CanonicalConfig } from '../../src/config/load';
 import {
   askInitQuestions,
   buildInitConfig,
@@ -8,6 +9,7 @@ import {
   parseIntervalSeconds,
   parsePort,
   parseTimeZone,
+  retainOnEmpty,
   type InitQuestionDeps,
 } from '../../src/cli/init-questions';
 import type { CliOutput } from '../../src/cli/output';
@@ -286,6 +288,113 @@ describe('askInitQuestions', () => {
     await expect(askInitQuestions(f.deps)).resolves.toBeNull();
     // The closing question was asked (and recorded); none after it.
     expect(f.prompts()).toHaveLength(Math.min(index + 1, 6));
+  });
+});
+
+describe('askInitQuestions (retain mode — task 132, decision D-101)', () => {
+  /** A current configuration the re-run asks about. */
+  const EXISTING: CanonicalConfig = (() => {
+    const parsed = parseConfig({
+      server: { host: '127.0.0.1', port: 9000 },
+      app: { timezone: 'Europe/Berlin', pollingIntervalSeconds: 120, historyRetentionDays: 90 },
+    });
+    if (!parsed.ok) throw new Error(`fixture rejected: ${parsed.problems.join('; ')}`);
+    return parsed.value as CanonicalConfig;
+  })();
+
+  /** A retain-mode flow: the existing config plus a scripted prompter. */
+  function retainFlow(answers: readonly string[]): {
+    deps: InitQuestionDeps;
+    out(): string;
+    err(): string;
+    prompts(): string[];
+  } {
+    const sink = recorder();
+    const prompter = script(answers);
+    return {
+      deps: { output: sink.output, prompter, systemTimeZone: NO_HINT, existing: EXISTING },
+      out: sink.out,
+      err: sink.err,
+      prompts: prompter.prompts,
+    };
+  }
+
+  it('Enter keeps every current value — four questions, no account questions', async () => {
+    const f = retainFlow(['', '', '', '']);
+    const answers = await askInitQuestions(f.deps);
+    expect(answers).toEqual({
+      timezone: 'Europe/Berlin',
+      host: '127.0.0.1',
+      port: 9000,
+      pollingIntervalSeconds: 120,
+    });
+    expect(f.prompts()).toHaveLength(4);
+    expect(f.prompts().some((p) => p.startsWith('secret:'))).toBe(false);
+    expect(f.err()).toBe('');
+  });
+
+  it('each prompt names the value Enter keeps', async () => {
+    const f = retainFlow(['', '', '', '']);
+    await askInitQuestions(f.deps);
+    expect(f.prompts()[0]).toBe('ask: IANA time zone (Enter to keep Europe/Berlin): ');
+    expect(f.prompts()[1]).toBe('ask: Bind host (Enter to keep 127.0.0.1): ');
+    expect(f.prompts()[2]).toBe('ask: Port (Enter to keep 9000): ');
+    expect(f.prompts()[3]).toBe('ask: Polling interval in seconds (Enter to keep 120): ');
+  });
+
+  it('typing a value changes exactly that setting', async () => {
+    const f = retainFlow(['UTC', '', '9001', '']);
+    const answers = await askInitQuestions(f.deps);
+    expect(answers).toEqual({
+      timezone: 'UTC',
+      host: '127.0.0.1',
+      port: 9001,
+      pollingIntervalSeconds: 120,
+    });
+  });
+
+  it('an invalid typed answer is a complaint and the same question again', async () => {
+    // tz keeps; host invalid then keeps; port keeps; interval invalid then keeps.
+    const f = retainFlow(['', 'my host', '', '', '59', '']);
+    const answers = await askInitQuestions(f.deps);
+    expect(answers).toEqual({
+      timezone: 'Europe/Berlin',
+      host: '127.0.0.1',
+      port: 9000,
+      pollingIntervalSeconds: 120,
+    });
+    expect(f.err()).toContain('Bind host cannot contain whitespace');
+    expect(f.err()).toContain('Polling interval must be between 60 and 3600');
+  });
+
+  it('the system-zone hint is not consulted in retain mode', async () => {
+    const sink = recorder();
+    const prompter = script(['', '', '', '']);
+    const deps: InitQuestionDeps = {
+      output: sink.output,
+      prompter,
+      systemTimeZone: () => {
+        throw new Error('the hint has no role once a configuration exists');
+      },
+      existing: EXISTING,
+    };
+    await expect(askInitQuestions(deps)).resolves.toMatchObject({ timezone: 'Europe/Berlin' });
+  });
+
+  it.each([0, 1, 2, 3])('input closed at question %i cancels with null', async (index) => {
+    const f = retainFlow(['', '', '', ''].slice(0, index));
+    await expect(askInitQuestions(f.deps)).resolves.toBeNull();
+    expect(f.prompts()).toHaveLength(index + 1);
+  });
+});
+
+describe('retainOnEmpty (the shared retain parser, decision D-101)', () => {
+  it('empty and blank input keep the current value; anything else parses', () => {
+    const parse = retainOnEmpty(9000, parsePort);
+    expect(parse('')).toEqual({ value: 9000 });
+    expect(parse('   ')).toEqual({ value: 9000 });
+    expect(parse('9001')).toEqual({ value: 9001 });
+    expect(parse('abc')).toEqual({ problem: expect.stringContaining('whole number') });
   });
 });
 
