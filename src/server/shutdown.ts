@@ -16,11 +16,15 @@
  *                                        └─ bounded in-flight wait
  * ```
  *
- * The polling service (109+) and HTTP listener (146) register their active
- * operations in the shared {@link createInFlightTracker} counter and stop
- * scheduling in their own `stop` — so the single wait covers every kind of
- * in-flight work (provider polls and HTTP requests alike) instead of each
- * subsystem duplicating timing semantics.
+ * The polling service (109+) registers its active operations in the shared
+ * {@link createInFlightTracker} counter and stops scheduling in its own
+ * `stop`, and this drain's single wait covers every kind of in-flight
+ * polling work. The HTTP listener (146) deliberately does not register
+ * here: it stops before this drain runs in the order above, and
+ * `fastify.close()` already serializes the in-flight-request wait, so
+ * `src/server/http.ts` keeps its own §5.6 bound (a raced close with a
+ * forced-completion fallback — decision D-109); the two mechanisms cover
+ * disjoint components and never double-count.
  *
  * Timing is injectable (`scheduleTimeout`, `now`): the §17.1 requirement
  * "clean SIGTERM shutdown" is tested deterministically without fake-timer
@@ -48,18 +52,18 @@ export interface InFlightOperation {
 }
 
 /**
- * The shared count of in-flight operations. The future polling service and
- * HTTP listener call {@link InFlightTracker.begin} when work starts and
- * `done()` when it settles; the drain component waits for the count to reach
- * zero.
+ * The shared count of in-flight operations. The future polling service
+ * calls {@link InFlightTracker.begin} when work starts and `done()` when
+ * it settles; the drain component waits for the count to reach zero.
+ * (The HTTP listener keeps its own bounded close instead — D-109, see
+ * the module comment.)
  *
  * The tracker is deliberately dumb: refusing to start new work ("stop
  * scheduling", §5.6) is each scheduler's own `stop`, which runs before the
  * drain by registration order. Work in flight when the drain starts delays
  * the shutdown by at most the ten-second bound; work begun after the count
  * has reached zero is outside the wait entirely — schedulers must not begin
- * work after their `stop` (the tasks that build them, 109+ and 146, own that
- * contract).
+ * work after their `stop` (the polling task owns that contract).
  */
 export interface InFlightTracker {
   /** Registers the start of one in-flight operation. */

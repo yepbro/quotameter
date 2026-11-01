@@ -199,7 +199,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 
 ## Stage 12 — Implement the HTTP API and server security
 
-- [ ] **146. Implement Fastify server construction** — **Status: [new]** — Configure required Fastify plugins, request limits, connection timeouts, static files, and route registration. **Done when:** server startup and test injection work in the application shell. **Spec:** [§3, §13, §15.5](SPECIFICATION.md#13-http-api).
+- [x] **146. Implement Fastify server construction** — **Status: [done]** — Configure required Fastify plugins, request limits, connection timeouts, static files, and route registration. **Done when:** server startup and test injection work in the application shell. **Spec:** [§3, §13, §15.5](SPECIFICATION.md#13-http-api).
 - [ ] **147. Implement the minimal public health response** — **Status: [new]** — Make unauthenticated `GET /api/health` return only `{ "status": "ok" }`. **Done when:** no extra system diagnostics leak before authentication. **Spec:** [§13](SPECIFICATION.md#13-http-api).
 - [ ] **148. Implement common API error handling** — **Status: [new]** — Normalize errors to the specified `error.code/message/details` envelope. **Done when:** validation, auth, not-found, and internal errors have tested stable codes. **Spec:** [§13](SPECIFICATION.md#13-http-api).
 - [ ] **149. Implement Origin and Fetch Metadata checks** — **Status: [new]** — Validate `Origin`/`Sec-Fetch-Site` for state-changing methods in every auth mode. **Done when:** cross-origin mutation attempts are rejected in security tests. **Spec:** [§15.3](SPECIFICATION.md#153-csrf-dns-rebinding-and-host-validation).

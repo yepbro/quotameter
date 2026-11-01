@@ -12,8 +12,9 @@
  * dependency order; shutdown runs in reverse, which realizes the sequence
  * required by spec §5.6 by construction: stop scheduling new polls, wait for
  * in-flight work, close the database and checkpoint WAL, release the lock.
- * The full timing semantics (the 10-second in-flight wait) arrive with the
- * graceful-shutdown coordinator (075) inside its component's `stop`.
+ * The bounded wait itself lives in the graceful-shutdown coordinator (075)
+ * for polling work and inside the HTTP listener's own raced close (146,
+ * decision D-109) — the components' `stop` implementations.
  */
 
 /** Lifecycle states of the application. */
