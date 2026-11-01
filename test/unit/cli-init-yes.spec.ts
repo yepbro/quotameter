@@ -525,7 +525,8 @@ describe('runInitCommand (--yes mode)', () => {
     );
     expect(h.out() + h.err()).not.toContain('sk-unit-secret-value');
     expect(h.out()).toContain('Configuration written to');
-    expect(h.out()).toContain('Service setup follows.');
+    // Task 137: the routed service-setup step follows the write trailer.
+    expect(h.out()).toContain('Service setup:');
     expect(writes()).toHaveLength(1);
     // The account is real (task 133): persisted with the variable-name
     // secret source — the value itself exists only in the environment.

@@ -37,6 +37,13 @@
  * declining drops it from this run's write). The key value never reaches
  * any output at any stage (§15.4).
  *
+ * Service setup (task 137, `service-setup.ts`, D-106): the owner context of
+ * §5.3 step 1 is resolved first and fails fast on problems; after a fresh
+ * run's write, step 7 routes by privilege and machine capabilities — the
+ * user unit installs without sudo, unavailable installation prints the
+ * exact manual steps, and a privileged run renders the system-unit plan
+ * (the privileged operations themselves are task 139's machinery).
+ *
  * Cancellation (interactive mode only): input closing before the questions
  * or the failure offer complete (EOF, Ctrl-C, a closed pipe) throws out of
  * the handler and is rendered by the dispatcher's standard failure path
@@ -70,6 +77,19 @@ import {
 import { askInitQuestions, defaultSystemTimeZone, type InitAnswers } from './init-questions';
 import { buildYesAnswers, INIT_VALUE_OPTIONS, type YesEnv } from './init-yes';
 import { createReadlinePrompter, type PromptHandle } from './prompts';
+import {
+  resolveServiceOwner,
+  type ServiceOwnerContext,
+  type ServiceOwnerResolution,
+} from './service-owner';
+import {
+  probeServiceCapabilities,
+  runServiceSetupStep,
+  type ServiceCapabilities,
+  type ServiceCommandRunner,
+  type ServiceExecPaths,
+  type ServiceUnitWriter,
+} from './service-setup';
 
 /** Injectable collaborators; every one has a production default. */
 export interface InitDeps {
@@ -92,6 +112,20 @@ export interface InitDeps {
    * provider-neutral, `src/cli/README.md`).
    */
   readonly provider?: QuotaProvider;
+  /**
+   * The service-owner resolution of §5.3 step 1 (task 136's layer, D-105):
+   * init resolves it before anything else and fails fast on problems.
+   * Production `resolveServiceOwner`.
+   */
+  readonly resolveOwner?: () => ServiceOwnerResolution;
+  /** The §5.3 step 1 capability probe; production `probeServiceCapabilities`. */
+  readonly probeCapabilities?: () => ServiceCapabilities;
+  /** The §5.3 step 7 service-command executor; production `spawnServiceCommand`. */
+  readonly runServiceCommand?: ServiceCommandRunner;
+  /** The §5.3 step 7 unit-file writer; production `writeUnitFileToDisk`. */
+  readonly writeServiceUnitFile?: ServiceUnitWriter;
+  /** The absolute paths pinned into the generated unit; production `serviceExecPaths`. */
+  readonly serviceExecPaths?: () => ServiceExecPaths;
 }
 
 /**
@@ -101,6 +135,19 @@ export interface InitDeps {
  */
 export function runInitCommand(deps: InitDeps = {}): CliHandler {
   return async (ctx: CliContext): Promise<number> => {
+    // §5.3 step 1, first: classify the invocation and resolve the service
+    // owner (task 136's layer). Problems fail fast — before any questions,
+    // writes, or prompts: a root-without-sudo run would otherwise collect a
+    // configuration into root's own XDG home, and D-105's problems already
+    // say how to run instead.
+    const ownerResolution = (deps.resolveOwner ?? resolveServiceOwner)();
+    if (ownerResolution.state === 'problems') {
+      for (const problem of ownerResolution.problems) {
+        ctx.output.err(`quotameter init: ${problem}`);
+      }
+      return 1;
+    }
+    const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
     const paths = resolvePaths(deps.pathEnv ?? process.env);
     const configFile = configFilePath(paths.configDir);
     const existing = await (deps.readExisting ?? readExistingConfig)(configFile);
@@ -109,7 +156,15 @@ export function runInitCommand(deps: InitDeps = {}): CliHandler {
       return 1;
     }
     if (ctx.flags.yes === true) {
-      return runYesInit(ctx, deps, paths.configDir, configFile, existing);
+      return runYesInit(
+        ctx,
+        deps,
+        paths.configDir,
+        configFile,
+        existing,
+        ownerResolution.context,
+        capabilities,
+      );
     }
     const stray = INIT_VALUE_OPTIONS.find((name) => ctx.flags[name] !== undefined);
     if (stray !== undefined) {
@@ -168,7 +223,16 @@ export function runInitCommand(deps: InitDeps = {}): CliHandler {
     } finally {
       prompter.close();
     }
-    return finishInit(ctx, deps, paths.configDir, configFile, existing, prepared);
+    return finishInit(
+      ctx,
+      deps,
+      paths.configDir,
+      configFile,
+      existing,
+      prepared,
+      ownerResolution.context,
+      capabilities,
+    );
   };
 }
 
@@ -185,6 +249,8 @@ async function runYesInit(
   configDir: string,
   configFile: string,
   existing: ExistingConfig,
+  owner: ServiceOwnerContext,
+  capabilities: ServiceCapabilities,
 ): Promise<number> {
   if (existing.state === 'existing') {
     ctx.output.out(renderExistingSettings(existing.config, configFile));
@@ -215,7 +281,7 @@ async function runYesInit(
     provider: deps.provider ?? createInitialAccountProvider(),
     env: deps.env ?? process.env,
   });
-  return finishInit(ctx, deps, configDir, configFile, existing, prepared);
+  return finishInit(ctx, deps, configDir, configFile, existing, prepared, owner, capabilities);
 }
 
 /**
@@ -235,6 +301,8 @@ async function finishInit(
   configFile: string,
   existing: ExistingConfig,
   prepared: PreparedAccount,
+  owner: ServiceOwnerContext,
+  capabilities: ServiceCapabilities,
 ): Promise<number> {
   const { answers, setup } = prepared;
   const base = existing.state === 'existing' ? existing.config : undefined;
@@ -285,7 +353,16 @@ async function finishInit(
   if (base === undefined) {
     ctx.output.out(renderInitSummary(answers, setup));
     ctx.output.out(`Configuration written to ${configFile}.`);
-    ctx.output.out('Service setup follows.');
+    // §5.3 step 7 (task 137): with the configuration written, set the
+    // service up along the routed path — user unit without sudo, manual
+    // steps when installation is unavailable, or the system-unit plan.
+    // Fresh runs only: re-runs keep their update trailers, and
+    // re-installation belongs to `quotameter service install` (task 139).
+    await runServiceSetupStep(ctx.output, owner, capabilities, {
+      runCommand: deps.runServiceCommand,
+      writeUnitFile: deps.writeServiceUnitFile,
+      execPaths: deps.serviceExecPaths,
+    });
   } else {
     ctx.output.out(renderUpdateSummary(assembled.config));
     ctx.output.out(`Configuration updated at ${configFile}.`);

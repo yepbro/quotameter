@@ -11,23 +11,24 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 
 ## Dispatch skeleton (task 128, decision D-044)
 
-| File                   | Owns                                                                                                                               |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                              |
-| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                              |
-| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                          |
-| `help.ts`              | pure help renderers (general, command, group)                                                                                      |
-| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                           |
-| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                |
-| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                      |
-| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                  |
-| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                     |
-| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                |
-| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                              |
-| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                           |
-| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                                              |
-| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                                              |
-| `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136) |
+| File                   | Owns                                                                                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                                   |
+| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                                   |
+| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                               |
+| `help.ts`              | pure help renderers (general, command, group)                                                                                           |
+| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                                |
+| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                     |
+| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                           |
+| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                       |
+| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                          |
+| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                     |
+| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                                   |
+| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                                |
+| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                                                   |
+| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                                                   |
+| `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136)      |
+| `service-setup.ts`     | the §5.3 step-7 branch layer: capability probes, the route matrix, the no-sudo user-unit install, the manual-steps fallbacks (task 137) |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -479,6 +480,80 @@ uninstall) with `isPrivilegedSystemdOperation` as the single classification
 point; everything else a service setup touches — configuration/data
 directories, the provider connection test, the user-unit install under the
 owner's home, status/journalctl queries — runs as the service owner.
+
+## The service-setup branch layer (task 137, spec §5.3 step 7, decision D-106)
+
+`service-setup.ts` routes §5.3 step 7 for a resolved owner context (task
+136's layer — `init` resolves it first and fails fast on its problems,
+printing each verbatim with the `quotameter init:` prefix, exit 1, nothing
+written and no prompter constructed) against the probed machine
+capabilities, and owns the two fallback paths:
+
+| privileges | systemd | user manager | route                                                |
+| ---------- | ------- | ------------ | ---------------------------------------------------- |
+| held       | yes     | (any)        | system-unit plan (rendered; execution is 139's)      |
+| held       | no      | (any)        | manual — initialize and run from the owner's account |
+| none       | yes     | yes          | **user-unit install without sudo** (executed here)   |
+| none       | yes     | no           | manual — unit written + exact session commands       |
+| none       | no      | (any)        | manual — `quotameter run`                            |
+
+- **Probes** — `probeServiceCapabilities` reads two well-known facts, no
+  commands: `/run/systemd/system` (the marker systemd itself creates when
+  it is the init system) for `systemd`, and an own, non-empty
+  `XDG_RUNTIME_DIR` whose `systemd` runtime directory exists for
+  `userManager` — the same reachability signal `systemctl --user` uses
+  (own-property read: an inherited `XDG_RUNTIME_DIR` is not a session).
+- **The no-sudo install** — all unprivileged, through injectable seams:
+  task 135's `buildUserUnit` (with `INIT_RESTART_SEC_SECONDS = 5`, D-106 —
+  D-103 keeps no default in the generator and 139 owns the configurable
+  flag), written by `writeUnitFileToDisk` to
+  `userUnitInstallPath(owner.home)`, then `systemctl --user daemon-reload`
+  and `systemctl --user enable --now quotameter.service` through
+  `spawnServiceCommand` (stderr captured only up to a small streaming cap
+  and reported as one bounded line). Unit preparation and installation are
+  one failure domain: any throw or failed command — §5.3's "or
+  installation fails" — falls back to exact manual steps (the two session
+  commands when the file made it to disk, the foreground command with the
+  real reason as the lead when it did not, the failure on stderr), never a
+  crash out of the step.
+- **Manual steps** — rendered commands each on their own indented line,
+  copy-pasteable, led by the actual reason. A privileged run on a
+  systemd-less machine is directed to **initialize and run from the
+  owner's regular account** (`quotameter init`, then `quotameter run`):
+  the sudo run's configuration file is root-owned `0600` wherever the
+  privileged environment placed it, so no regular account — the only kind
+  §5.1 allows to run the service — can use it (making a privileged run's
+  writes owner-readable is task 139's privileged machinery). When only the
+  user manager is unreachable, the unit file is still written (the write
+  needs no manager) and the steps are the exact `systemctl --user`
+  commands for the next login session plus the foreground alternative.
+- **The owner-name guard** — the owner's account name reaches copy-paste
+  command text (the linger and manual commands), so the step refuses a
+  name outside the POSIX account grammar
+  (`unsafeOwnerNameProblem`: letters, digits, underscore, hyphen, not
+  digit/hyphen-leading) with one stderr problem and no rendered commands —
+  a whitespace- or metacharacter-carrying `/etc/passwd` row cannot inject
+  into the printed steps.
+- **Linger, minimally** — the user-unit outputs carry §5.3's exact
+  `sudo loginctl enable-linger <owner>` command with the logout/reboot
+  explanation, printed unconditionally: **detecting** the linger status is
+  task 138's feature, which replaces the unconditional note with detected
+  guidance.
+- **The system-unit route** — routed and planned, not executed: the
+  privileged operations (install `/etc/systemd/system/quotameter.service`
+  with `User=<owner>`, daemon-reload, enable --now, verify `is-active` and
+  `/api/health`) belong to task 139's `quotameter service install`
+  machinery; the plan names them and directs to that §5.2 command from the
+  regular account.
+
+The step runs on fresh runs after the configuration write (re-runs keep
+their update trailers; re-installation is `service install`'s job) and asks
+no questions. Branch coverage: every route is seam-driven in
+`test/unit/cli-service-setup.spec.ts` (the container cannot produce the
+systemd routes for real), while the systemd-less manual route — the one
+real on the development container — is additionally pinned through the real
+launcher (piped, `--yes`, and under a real PTY) in
+`test/integration/cli-init-service.spec.ts`.
 
 ### Launcher notes (`bin/quotameter.mjs`)
 

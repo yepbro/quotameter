@@ -99,7 +99,9 @@ describe('init idempotency (in-process, real filesystem)', () => {
         'connection test failed: provider-unavailable — stored in error state',
       );
       expect(run.out).toContain('Configuration written to');
-      expect(run.out).toContain('Service setup follows.');
+      // Task 137: the routed service-setup step follows the write trailer
+      // (the systemd-less container takes the manual route).
+      expect(run.out).toContain('Service setup:');
 
       const dirStat = await stat(dir.path);
       expect(dirStat.mode & 0o777).toBe(0o700);

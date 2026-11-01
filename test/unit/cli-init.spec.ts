@@ -188,7 +188,10 @@ describe('runInitCommand (fresh run, task 130)', () => {
       expect(JSON.stringify(written.config)).toContain('sk-live-key-abc123');
       expect(h.out() + h.err()).not.toContain('sk-live-key-abc123');
     }
-    expect(h.out()).toContain('Service setup follows.');
+    // Task 137: the write trailer is followed by the routed service-setup
+    // step (the systemd-less container deterministically takes the manual
+    // route — asserted precisely by cli-service-setup.spec.ts).
+    expect(h.out()).toContain('Service setup:');
   });
 
   it('a label collected without a key stores no account and says so', async () => {
@@ -206,7 +209,7 @@ describe('runInitCommand (fresh run, task 130)', () => {
     const h = context();
     const { deps } = freshDeps(['UTC', '', '', '', '']);
     await runInitCommand(deps)(h.ctx);
-    expect(h.out()).toContain('Service setup follows.');
+    expect(h.out()).toContain('Service setup:');
     expect(h.out()).toContain('Account:           none (add one later in the UI)');
   });
 
