@@ -11,22 +11,23 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 
 ## Dispatch skeleton (task 128, decision D-044)
 
-| File                   | Owns                                                                                                  |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                 |
-| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub |
-| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                             |
-| `help.ts`              | pure help renderers (general, command, group)                                                         |
-| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                              |
-| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets   |
-| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly         |
-| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel     |
-| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer        |
-| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write   |
-| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries |
-| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                              |
-| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                 |
-| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                 |
+| File                   | Owns                                                                                                                               |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                              |
+| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                              |
+| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                          |
+| `help.ts`              | pure help renderers (general, command, group)                                                                                      |
+| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                           |
+| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                |
+| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                      |
+| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                  |
+| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                     |
+| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                |
+| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                              |
+| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                           |
+| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                                              |
+| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                                              |
+| `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136) |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -412,6 +413,72 @@ linger guidance are tasks 137–139.
   without echoing the divergent value. The two-way cross-check in
   `test/unit/cli-systemd-user-unit.spec.ts` — each validator rejects the
   other twin's generated unit — pins the contracts as genuinely distinct.
+
+## The ownership/privilege decision layer (task 136, spec §5.3 steps 1/7, decision D-105)
+
+`service-owner.ts` is the pure, injectable seam behind §5.3's ownership
+rules — the decision half only: it classifies the invocation, resolves the
+service owner, and states which operations may use privileges. It performs
+no installations and no privileged operations; tasks 137 (fallback paths),
+138 (linger guidance), and 139 (`service install`/`uninstall`) consume it.
+`resolveServiceOwner({ getuid?, env?, passwd? })` returns either
+`{ state: 'ok', context }` or `{ state: 'problems', problems }`
+(problems-not-throws, every problem in one pass):
+
+- **Regular user** (`uid !== 0`) — the owner is the first user-database
+  entry with the current uid, **and the name must resolve back to that same
+  entry**: a generated `User=` carries only the name, and systemd resolves
+  names by first database match, so duplicate account names with different
+  ids (an earlier same-name alias at uid 0, say) could select the wrong —
+  possibly root — account; an ambiguous database is refused (review round
+  P0). `kind: 'regular-user'`, `privileges: 'none'`
+  → §5.3 step 7's consent-to-invoke-sudo route, task 137's branch.
+  `SUDO_*` is **never consulted** at a non-root uid: any user can export
+  those names, so they are untrusted leftovers (`sudo -u otheruser` lands
+  here with the target account as the owner).
+- **Root with `SUDO_USER`** — the owner is the account sudo recorded
+  (`kind: 'sudo'`, `privileges: 'held'`: the privileged systemd operations
+  may run in-process), and the sudo environment must verify against the
+  user database: the variable is an own, non-empty property
+  (`Object.hasOwn`, the init-yes.ts `process.env` precedent — inherited
+  names never count), names an existing account that is not root
+  (`SUDO_USER` of `root` is a sudo chain invoked by root — §5.1 refuses),
+  and `SUDO_UID`/`SUDO_GID` are set, plain-decimal, and equal to the
+  account's database uid/gid — sudo itself guarantees that consistency, so
+  any deviation means the environment is not a genuine sudo invocation and
+  all deviations accumulate as problems. A `sudo -s` root shell keeps
+  exactly this consistent trio, so it resolves like a direct
+  `sudo quotameter init`.
+- **Root without a verifiable `SUDO_USER`** (unset, or any of the checks
+  above failing) — problems with actionable guidance (sudo from a regular
+  account, or a regular user's user-level service), never a guessed
+  account: §5.3's only owner-determination mechanism for a root process is
+  `SUDO_USER`. **There is no ok outcome whose owner is root** — pinned as
+  a property over arbitrary databases/environments/uids in
+  `test/unit/cli-service-owner.property.spec.ts`.
+
+The user database is `/etc/passwd`, parsed per passwd(5) by the pure
+`parsePasswdFile` (seven `:`-separated fields, non-empty name, plain-decimal
+ids within the exactly-comparable safe-integer range — values beyond `2^53-1`
+are skipped, since `Number` precision loss could make two different id
+strings compare equal; malformed lines are skipped — root-owned file, not
+ours to diagnose) with `readEtcPasswd` as the production seam; lookups take
+the first match (getpwnam/getpwuid semantics). Node has no getpwnam binding
+and §5.1's supported targets keep local users there; NSS/SSSD directory
+users are outside v1.0's supported targets and surface as the
+unknown-account refusal. An undeterminable uid (non-POSIX runtime) is the
+`permissions.ts` precedent's problem arm. The sudo id verification
+(`SUDO_UID`/`SUDO_GID`) uses the same decimal-id grammar, so no id enters
+the layer through two rules.
+
+Privilege routing is a frozen vocabulary: `PRIVILEGED_SYSTEMD_OPERATIONS`
+(install/remove system unit, `daemon-reload`, enable/disable, start/stop,
+`enable-linger` — §5.3 step 7's writes under `/etc/systemd/system/` and the
+system manager, plus the linger command §5.3 names and task 139's
+uninstall) with `isPrivilegedSystemdOperation` as the single classification
+point; everything else a service setup touches — configuration/data
+directories, the provider connection test, the user-unit install under the
+owner's home, status/journalctl queries — runs as the service owner.
 
 ### Launcher notes (`bin/quotameter.mjs`)
 
