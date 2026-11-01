@@ -256,13 +256,14 @@ describe('stub dispatch (tasks 129–145 replace these)', () => {
   });
 
   it('reports a stubbed service-adjacent command with its full path', async () => {
-    // `service install`/`uninstall` are real since task 139 and run real
-    // probes against the machine (never exercised against the test host's
-    // systemd here — the dedicated suites inject every seam); the full-path
-    // prefix for subcommands is pinned by the usage-error tests above.
-    const result = await cli(['logs']);
+    // `service install`/`uninstall` are real since task 139, `logs` since
+    // task 143, and both run real probes against the machine (never
+    // exercised against the test host's systemd here — the dedicated suites
+    // inject every seam); the full-path prefix for subcommands is pinned by
+    // the usage-error tests above.
+    const result = await cli(['passwd']);
     expect(result.code).toBe(1);
-    expect(result.err).toBe('quotameter logs: not implemented yet\n');
+    expect(result.err).toBe('quotameter passwd: not implemented yet\n');
   });
 });
 
@@ -431,12 +432,13 @@ describe('dispatch-table pinning (U-006 mutation triage)', () => {
     // `init` is real since task 130 (it prompts on stdin — exercising it in
     // this table would touch the test runner's own stdin); `service
     // install`/`uninstall` are real since task 139, `start`/`stop`/
-    // `restart` since task 140, `reload` since task 141, and `status`
-    // since task 142 (they probe the machine, read the user database or
-    // the filesystem, and may query the service manager — likewise
-    // covered by the dedicated suites, which inject every seam or run the
-    // real launcher). Both behaviors are covered elsewhere.
-    for (const path of [['run'], ['logs'], ['passwd'], ['doctor']] as const) {
+    // `restart` since task 140, `reload` since task 141, `status`
+    // since task 142, and `logs` since task 143 (they probe the machine,
+    // read the user database or the filesystem, and may query the service
+    // manager or spawn journalctl — likewise covered by the dedicated
+    // suites, which inject every seam or run the real launcher). Both
+    // behaviors are covered elsewhere.
+    for (const path of [['run'], ['passwd'], ['doctor']] as const) {
       const result = await cli([...path]);
       expect(result.code, `exit 1 for ${path.join(' ')}`).toBe(1);
       expect(result.err).toBe(`quotameter ${path.join(' ')}: not implemented yet\n`);

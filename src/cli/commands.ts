@@ -18,6 +18,7 @@ import type { CliOptions } from './parser';
 import { runInitCommand } from './init';
 import { runServiceControlCommand, type ServiceControlVerb } from './service-control';
 import { runServiceInstallCommand, runServiceUninstallCommand } from './service-install';
+import { runLogsCommand, LOGS_DEFAULT_LINES, LOGS_DEFAULT_OUTPUT } from './service-logs';
 import { runReloadCommand } from './service-reload';
 import { runStatusCommand } from './service-status';
 import { INIT_RESTART_SEC_SECONDS } from './service-setup';
@@ -185,7 +186,36 @@ export function buildCommandTable(): Command[] {
       maxPositionals: 0,
       run: runStatusCommand(),
     },
-    stub('logs', 'Convenient journalctl wrapper for system or user service', ['logs']),
+    // Task 143 (spec §5.2/§16; decision D-116): the journalctl wrapper —
+    // the manager scope (system vs --user) comes from the installed unit on
+    // disk (D-110's discovery, the 140 rule), the convenience defaults
+    // (--no-pager, --lines=100, --output=short-precise) and the follow
+    // passthrough (SIGINT/SIGTERM forwarded, an interrupted follow is a
+    // success) are D-116's.
+    {
+      kind: 'leaf',
+      name: 'logs',
+      summary: 'Convenient journalctl wrapper for system or user service',
+      options: {
+        follow: {
+          type: 'boolean',
+          short: 'f',
+          description: 'Keep following new journal entries until interrupted',
+        },
+        lines: {
+          type: 'string',
+          short: 'n',
+          description: `Most recent lines to show first: whole number >= 1 or all (default ${LOGS_DEFAULT_LINES})`,
+        },
+        output: {
+          type: 'string',
+          short: 'o',
+          description: `journalctl output format (default ${LOGS_DEFAULT_OUTPUT}; e.g. cat, json, json-pretty, verbose)`,
+        },
+      },
+      maxPositionals: 0,
+      run: runLogsCommand(),
+    },
     {
       kind: 'group',
       name: 'service',

@@ -208,11 +208,15 @@ export function renderControlledUserUnit(verb: ServiceControlVerb, ownerName: st
 
 /**
  * The cross-unit stderr note when both unit kinds are installed (task 139's
- * warning shape): the privileges-selected unit is controlled and the other
- * one named, because two installed units is the mistake install already
- * warns about, not a supported state.
+ * warning shape): the privileges-selected unit is used and the other one
+ * named, because two installed units is the mistake install already warns
+ * about, not a supported state.
+ *
+ * Shared with the `logs` handler (task 143, D-116), which prints it before
+ * streaming instead of after acting — the `resolveOwnerForCommand`
+ * additive-export precedent.
  */
-function otherUnitWarning(controlled: 'system' | 'user', ownerName: string): string {
+export function otherUnitWarning(controlled: 'system' | 'user', ownerName: string): string {
   const where =
     controlled === 'system'
       ? `a user unit is also installed for ${ownerName}`

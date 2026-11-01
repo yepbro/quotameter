@@ -161,12 +161,17 @@ export function resolveServiceSetupRoute(
 export const INIT_RESTART_SEC_SECONDS = 5;
 
 /**
- * How much stderr {@link spawnServiceCommand} ever buffers: the failure
+ * How much stderr a spawned service command ever buffers: the failure
  * detail is one trimmed line capped far below this, so a few kilobytes
  * preserve full lines while a malfunctioning child streaming megabytes
  * cannot grow the buffer (review-round P2).
+ *
+ * Shared with the `logs` passthrough runner (task 143, D-116), which
+ * captures journalctl's stderr to the same bound for its failure detail
+ * — one cap for every stderr-capturing spawner (the `resolveOwnerForCommand`
+ * additive-export precedent).
  */
-const STDERR_CAPTURE_CAP = 8192;
+export const STDERR_CAPTURE_CAP = 8192;
 
 /**
  * The POSIX account-name grammar the rendered commands interpolate
@@ -246,8 +251,11 @@ export interface ServiceSetupSeams {
  * The bounded first diagnostic line of `stderr`-shaped text: the first
  * non-empty line, trimmed and capped, so a failing command contributes one
  * readable line to the explanation instead of its whole output.
+ *
+ * Shared with the `logs` passthrough runner (task 143, D-116) — the same
+ * additive-export precedent as `failureLine`/`thrownMessage`.
  */
-function firstDiagnosticLine(text: string): string {
+export function firstDiagnosticLine(text: string): string {
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
     if (trimmed !== '') return trimmed.slice(0, 200);

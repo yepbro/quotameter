@@ -44,7 +44,11 @@ stdout/stderr output is its product and flows through `CliOutput` — direct
 stream writes in production, a recorder in tests. Help and version go to
 stdout; every error line goes to stderr in the form
 `quotameter [<command path>: ]<message>` plus a `Try 'quotameter … --help'`
-hint when the error is a usage error.
+hint when the error is a usage error. One documented exception (task 143,
+D-116): the `logs` passthrough runner forwards a child journalctl's stdout
+as **raw bytes** — a live stream cannot be expressed in the seam's
+one-newline lines — with its own EPIPE and backpressure handling for the
+run's duration.
 
 ### Exit codes
 
@@ -778,3 +782,80 @@ report over a real configuration and a real migrated SQLite database (marker
 key never rendered), the invalid configuration, and a real §5.6 lock naming a
 live pid — plus the in-process opener-over-seeded-database read are pinned in
 `test/integration/cli-service-status.spec.ts`.
+
+## The `logs` command (task 143, spec §5.2/§16, decision D-116)
+
+`service-logs.ts` holds the §5.2 `quotameter logs` handler — the convenient
+`journalctl` wrapper §16 names as the diagnostics surface for the Pino JSON
+logs journald collects. It composes the landed layers and adds exactly one
+new mechanism, the streaming passthrough:
+
+- **Scope** — D-110's installed-unit disk discovery (the 140 handler's
+  shape): a system unit runs `journalctl … -u quotameter.service`, a user
+  unit `journalctl --user … -u quotameter.service`. Both units installed is
+  the 139 mistake: D-108's privileges rule selects and the shared
+  cross-unit note goes to stderr **before** the stream (after a follow it
+  would be lost under the entries).
+- **Reading is unprivileged** — D-105's vocabulary names journalctl queries
+  service-owner operations: the system journal is read in-process whatever
+  this invocation's privileges are, and an OS-level refusal renders the
+  `sudo journalctl …` remedy; a privileged run facing a user unit is sent
+  to the regular account (root's `--user` query reads root's journal,
+  never the owner's). The 140/142 capability gates mirror over: no systemd
+  means no journal at all, and an unreachable user manager gets the exact
+  next-login-session command.
+- **Foreground-run honesty** — D-112's lock read (`readServiceLock` +
+  `isProcessAlive`), consulted only on the nothing-installed path: a live
+  lock holder is a foreground `quotameter run`, which has **no journal**
+  (its messages are on the terminal it was started from) and gets the
+  honest guidance naming its pid. An installed unit's journal is read
+  regardless of running state (journals persist across stops), so the lock
+  is not consulted there.
+- **The convenience defaults (D-116)** — `--no-pager` always (the wrapper
+  keeps the user's scrollback), `--lines=100` (`-n/--lines` takes a whole
+  count ≥ 1 or `all`), `--output=short-precise` (`-o/--output` validates
+  against a closed enum of journalctl's stable formats; `cat` shows the
+  raw §16 JSON line, `json` the full journal record), and `-f/--follow`
+  opt-in.
+- **The passthrough runner** — `runJournalctlPassthrough` spawns the built
+  command with piped stdio, forwards stdout chunks **raw** to the
+  process's stdout as they arrive (no line reassembly — follow mode is a
+  live stream; the raw byte path is the one documented exception to the
+  `CliOutput` line contract), captures stderr bounded (the house cap,
+  sliced chunk-exactly by the pure `appendCappedStderrChunk`) for the
+  failure detail, and forwards SIGINT/SIGTERM to the child: a Ctrl-C ends
+  a follow as success (the `docker logs -f` convention), a **second**
+  signal escalates to SIGKILL (a wedged child cannot hold the terminal),
+  and the forwarders are removed when the child closes. A closed output
+  pipe (`quotameter logs | head`, EPIPE on `process.stdout`) gets the same
+  stop-early semantics — the run resolves as an interrupted success
+  instead of an unhandled stream error — and `write`-reported
+  backpressure pauses the child's stdout until the sink drains
+  (`--lines=all` over a slow pipe cannot queue the journal in memory; an
+  `exit`-time resume guarantees `close` even on a paused stream).
+  journalctl's own stderr is part of its product: a non-empty capture is
+  flushed to stderr on a successful exit, while a failed exit quotes the
+  first line in the detail. journalctl missing is detected through the
+  spawn error arm (ENOENT), not a PATH probe.
+- **Exit codes (D-116)** — 0 exactly when journalctl ran and exited 0, or
+  was interrupted through a forwarded signal (no chatter either way — the
+  stream is the product); 1 for every honest failure: owner problems, an
+  unusable owner home, nothing installed (foreground or not), a privileged
+  run facing a user unit, an unavailable manager, a missing journalctl, or
+  a failed journalctl (with the exact command that ran and the scope's
+  direct journalctl remedy — the user's own `-f`/`-n`/`-o` flags carry
+  over — plus `quotameter status` on stdout). The handler never throws.
+
+Branch coverage: the scope × capability × viewer-outcome matrix, the flag
+parsers, and the byte-pinned command vectors are seam-driven in
+`test/unit/cli-service-logs.spec.ts`, beside the bounded-capture helper
+table and the real-child passthrough tests (stdout forwarding order and
+split-line content exactness, exit-status and first-stderr-line detail
+arms, the SIGKILL-without-forwarding arm, the missing-binary arm, the
+EPIPE-as-interrupted and stream-error arms, the backpressure gate with its
+drain replacement, the second-signal SIGKILL escalation); the
+real-launcher routes — nothing installed, a real §5.6 lock naming a live
+child (the foreground-run honesty), `--help`, and the follow-mode interrupt
+through a driver child running the real runner (U-001 readiness handshake,
+SIGINT forwarded to the grandchild, interrupted-success outcome) — are
+pinned in `test/integration/cli-service-logs.spec.ts`.

@@ -11,7 +11,10 @@
  *
  * The seam is line-oriented: renderers pass complete text (possibly
  * multi-line, without a trailing newline) and the sink appends exactly one
- * final newline.
+ * final newline. One documented exception (task 143, D-116): the `logs`
+ * passthrough runner forwards a child journalctl's stdout as raw bytes —
+ * a live stream cannot be expressed in one-newline lines — and guards its
+ * writes with its own EPIPE/backpressure handling for the run's duration.
  */
 
 /** Injected by `runCli`; the only way CLI code reaches the terminal. */
