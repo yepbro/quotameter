@@ -19,6 +19,7 @@ import { runInitCommand } from './init';
 import { runServiceControlCommand, type ServiceControlVerb } from './service-control';
 import { runServiceInstallCommand, runServiceUninstallCommand } from './service-install';
 import { runLogsCommand, LOGS_DEFAULT_LINES, LOGS_DEFAULT_OUTPUT } from './service-logs';
+import { runPasswdCommand } from './passwd';
 import { runReloadCommand } from './service-reload';
 import { runStatusCommand } from './service-status';
 import { INIT_RESTART_SEC_SECONDS } from './service-setup';
@@ -248,7 +249,18 @@ export function buildCommandTable(): Command[] {
         },
       ],
     },
-    stub('passwd', 'Set or change the web password', ['passwd']),
+    // Task 144 (spec §5.2, §15.2; decision D-118): set or change the web
+    // password — interactive only (§5.2 declares no options), validated
+    // against the §15.2 minimum, stored as a scrypt hash in the 0600
+    // configuration file, with every stored session revoked.
+    {
+      kind: 'leaf',
+      name: 'passwd',
+      summary: 'Set or change the web password',
+      options: {},
+      maxPositionals: 0,
+      run: runPasswdCommand(),
+    },
     // Doctor's option surface is declared now because spec §5.5/§7.4 fix it
     // (`quotameter doctor --raw <account>` — the CLI-only raw-payload
     // diagnostic, fed by `src/cli/raw-diagnostics.ts`, task 103); the

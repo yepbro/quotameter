@@ -16,6 +16,20 @@ landed parser (`src/config/load.ts`), so invalid settings surface as
 field-specific English problems. A supplied plaintext password is validated
 against the §15.2 minimum and returned pending hashing (Stage 12).
 
+Landed: [`password-hash.ts`](./password-hash.ts) — the §15.2 hash encoding
+(task 144, decision D-118), the half of the future `AuthService` the
+configuration schema's `auth.passwordHash` docblock assigns it.
+`hashPassword(password)` derives through `node:crypto`'s async scrypt with
+a fresh random 16-byte salt per hash and the frozen, exported
+`SCRYPT_PARAMETERS` (`N=2^16, r=8, p=1`, 64-byte key, explicit 128 MiB
+`maxmem`), and encodes self-describingly as
+`scrypt$N=…,r=…,p=…,keylen=…$<salt base64>$<hash base64>` — the parameters
+travel with the hash, so task 153's verifier parses them from the stored
+string and a future cost raise never invalidates stored hashes. Hashing is
+this module's whole contract: the §15.2 minimum belongs to the
+`config-validation` boundary (`MIN_PASSWORD_LENGTH`), and verification
+(constant-time comparison) is task 153's.
+
 **Rule:** may import `src/schemas/`, `src/util/`, `src/config/`, the provider
 core (`src/providers/` root, never a concrete adapter), and `src/storage/` —
 never `src/server/` or `src/cli/`.

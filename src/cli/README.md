@@ -31,6 +31,7 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `service-setup.ts`     | the §5.3 step-7 branch layer: capability probes, the route matrix, the no-sudo user-unit install, the manual-steps fallbacks (task 137)        |
 | `service-linger.ts`    | the §5.3 linger detection + guidance layer: flag-file tri-state probe, the enable-linger command with the logout/reboot consequence (task 138) |
 | `service-install.ts`   | the §5.2 `service install`/`uninstall` handlers: idempotent unit lifecycle on both unit kinds, through the 136/137 seams (task 139)            |
+| `passwd.ts`            | the §5.2 `passwd` handler: the §15.2 password pair, scrypt-hash-only persistence, session revocation (task 144)                                |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -859,3 +860,66 @@ child (the foreground-run honesty), `--help`, and the follow-mode interrupt
 through a driver child running the real runner (U-001 readiness handshake,
 SIGINT forwarded to the grandchild, interrupted-success outcome) — are
 pinned in `test/integration/cli-service-logs.spec.ts`.
+
+## The `passwd` command (task 144, spec §5.2/§15.2, decision D-118)
+
+`passwd.ts` holds the §5.2 `quotameter passwd` handler — set or change the
+web password — composed of landed layers (D-101 detection/staleness, the
+D-022 settings boundary, the §6.3 permission/atomic-write path, the
+D-105/D-108 owner resolution and directories, the D-112 lock read) plus one
+new module: the §15.2 hash encoding `src/services/password-hash.ts`
+(`hashPassword` — scrypt from `node:crypto`, a fresh 16-byte random salt
+per hash, the exported `SCRYPT_PARAMETERS` work parameters, and the
+self-describing `scrypt$N=…,r=…,p=…,keylen=…$<salt>$<hash>` encoding whose
+parameters travel with the hash so task 153's verifier never drifts from
+what is on disk).
+
+- **Interactive-only, no value flags** (§5.2 declares no options; a
+  `--password` flag would put the secret in the process listing — the
+  §15.4 rule behind init's env-by-name key channel). The password is asked
+  twice through the prompter's muted `askSecret`; a blank/too-short first
+  answer (the D-022 boundary's exported `MIN_PASSWORD_LENGTH` = 12, on the
+  raw untrimmed value) and a mismatching confirmation each draw one
+  secret-free stderr complaint and restart the pair, up to three attempts;
+  closed input or Ctrl-C cancels with nothing changed. No complaint, the
+  success report, or any other line ever contains the typed value — the
+  done-condition, pinned by marker tests at every level.
+- **The write is never privileged**: a run with privileges held is refused
+  to the owner's regular account before anything is asked — the atomic
+  write replaces the inode, so a root write would leave the owner's
+  configuration root-owned `0600`, unusable for the account §5.1 requires
+  the service to run as. Absent configuration → refusal pointing at
+  `quotameter init` (nothing to hang the hash on); invalid → problems
+  verbatim, nothing changed; existing → `validateSettings` merges the hash
+  over the canonical base and re-validates (the same boundary init uses),
+  completing the §15.1 password-pending state as a side effect — the
+  service starts on the file the completed run leaves.
+- **Fail-secure revocation (§15.2)**: after the D-101 stale-guard re-read,
+  every stored session is deleted through the repository's
+  `deleteAllSessions` (read-write connection of the owner's data
+  directory, behind the existence-probe discipline — no database means
+  "no stored sessions to revoke") **before** the configuration is
+  written. A failed revocation aborts with the password unchanged; the
+  safe-direction residual (revoked, then the write fails) is reported
+  exactly: sessions revoked, password unchanged, run passwd again.
+- **The reload advisory**: when D-112's lock read finds a live holder, the
+  report names the pid and the `quotameter reload` step —
+  `auth.passwordHash` is live-on-reload by D-026's classification (one of
+  the two settings §6.4's own list does not name), so a running service
+  keeps authenticating with the old password until it reloads. Every other
+  lock state changes nothing about the completed write and is silent.
+- **Exit codes (D-118)** — 0 exactly when the pair was confirmed, the
+  sessions were revoked, and the file was written; every refusal or
+  failure arm exits 1. The handler never throws.
+
+Branch coverage: the full matrix is seam-driven in
+`test/unit/cli-passwd.spec.ts` (the prompt-flow table, the renderers, the
+handler arms with a marker password asserted absent from all output, the
+real-filesystem revocation classification); the real-launcher routes — set
+with a real migrated SQLite database whose seeded sessions are gone after
+the run, change, pending completion (the file `loadConfigWithEnv` refused
+before and accepts after), the too-short-then-success piped route, closed
+stdin, no configuration, and `--help` — are pinned in
+`test/integration/cli-passwd.spec.ts`; the encoding itself (format, salt
+randomness, the known-answer recomputation from the exported constants) in
+`test/unit/password-hash.spec.ts`.
