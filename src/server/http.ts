@@ -8,10 +8,12 @@
  * timeouts, static file serving with the SPA fallback, and the `/api` route
  * seam (`./api`) — and a second factory wraps it as a `LifecycleComponent`
  * the application shell (task 060) can start and stop. The remaining
- * routes (153+) and request-security layers (150–152, 156, 158) are later
- * Stage-12 tasks; task 149's Origin/Fetch-Metadata guard registers inside
- * the `/api` scope itself (`./api`), so nothing in this module implements
- * an endpoint or a security check. The §13 error envelope
+ * routes (153+) and request-security layers (152, 156, 158) are later
+ * Stage-12 tasks; tasks 149/150's guards register inside the `/api`
+ * scope itself (`./api`), while task 151's Host allowlist — the one
+ * §15.3 check that must bind frontend routes too — registers here at
+ * root scope (D-120); apart from that hook nothing in this module
+ * implements an endpoint or a security check. The §13 error envelope
  * (task 148, D-113) is the one error surface: the root-scope
  * `apiErrorHandler` from `./api/error` behind every thrown error, and the
  * not-found handler resolving 404s onto the same envelope.
@@ -65,6 +67,7 @@ import {
   staticServingErrorHandler,
 } from './api/error';
 import { apiRoutes } from './api';
+import { createHostAllowlist, createHostGuard } from './api/security';
 import { MAX_DRAIN_TIMEOUT_MS } from './shutdown';
 import type { Logger } from '../util/logger';
 
@@ -103,7 +106,13 @@ export function resolveUiDistDir(): string {
 
 /** What `buildHttpServer` and `createHttpServerComponent` accept. */
 export interface HttpServerOptions {
-  /** Bind address; §15.1's loopback default is the config layer's call. */
+  /**
+   * Bind address; §15.1's loopback default is the config layer's call.
+   * Doubles as §15.3's "configured host" in the root-scope Host-allowlist
+   * guard (task 151, D-120): `server.host` is restart-requiring (§6.4),
+   * so capturing it here at construction time is the value's own
+   * lifecycle — a reload cannot change it under the running listener.
+   */
   readonly host: string;
   /** TCP port; `0` binds an ephemeral port (tests). */
   readonly port: number;
@@ -198,6 +207,38 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
     // rescued ones, mode-independently, per D-113's post-verification fix).
     frameworkErrors: apiErrorHandler,
   });
+
+  // Task 151 (spec §15.3, decision D-120): the Host-allowlist guard, the
+  // one §15.3 layer registered here at ROOT scope instead of inside the
+  // `/api` scope — validating `Host` against `localhost`, `127.0.0.1`,
+  // `[::1]`, and the configured host must bind every route (API routes,
+  // static assets, the SPA fallback), because the DNS-rebinding request
+  // it exists to stop arrives at the frontend paths as surely as at the
+  // API. Root registration also makes it the outermost §15.3 layer by
+  // fastify's own hook chain (root hooks run ahead of scoped ones —
+  // verified on the pinned runtime): a hostile-Host request never reaches
+  // the Origin/custom-header guards or any handler, in every auth mode
+  // and both static-serving states. The allowlist takes `options.host` —
+  // the validated `server.host`, restart-requiring per §6.4, so
+  // construction-time capture is the value's own lifecycle (D-120).
+  const configuredHostName = options.host.trim().toLowerCase();
+  if (
+    configuredHostName === '0.0.0.0' ||
+    configuredHostName === '::' ||
+    configuredHostName === '[::]'
+  ) {
+    // The wildcard bind admits only its literal name in the allowlist
+    // (the spec-literal fail-closed reading, D-120) — every concrete
+    // interface address a client would name is "any other host", so the
+    // operator hears it once, at construction, with the reachable
+    // shapes named (the review round's ask: a silent 403 wall is not a
+    // deployment recipe).
+    options.logger.warn(
+      `host allowlist: the wildcard bind ${configuredHostName} admits only its literal name in the Host check (spec §15.3) — ` +
+        'bind the concrete address clients use, or reach the service through an SSH tunnel (localhost) or a proxy hop under an allowlisted Host',
+    );
+  }
+  server.addHook('onRequest', createHostGuard(createHostAllowlist(options.host)));
 
   // Spec §3's enabling plugin for the §13 auth endpoints: cookie parsing
   // only — session cookie flags are per-response behavior (task 157).

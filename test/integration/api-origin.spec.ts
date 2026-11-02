@@ -29,11 +29,17 @@ import { createTempDir, type TempDir } from '../helpers/isolation';
 const openServers: FastifyInstance[] = [];
 
 /** Builds the real construction with test defaults and records it for teardown. */
-function buildServer(staticRoot?: string): { server: FastifyInstance; sink: MemoryLogSink } {
+function buildServer(
+  staticRoot?: string,
+  host = '127.0.0.1',
+): {
+  server: FastifyInstance;
+  sink: MemoryLogSink;
+} {
   const sink = createMemoryLogSink();
   const logger: Logger = createLogger({ level: 'warn', destination: sink });
   const server = buildHttpServer({
-    host: '127.0.0.1',
+    host,
     port: 0,
     logger,
     ...(staticRoot === undefined ? {} : { staticRoot }),
@@ -278,6 +284,11 @@ describe('legitimate mutations and safe requests — pass-through (§15.3)', () 
   });
 
   it('matches authorities across default ports and case', async () => {
+    // The proxied arm configures the public name as the server's host —
+    // since task 151 the root-scope Host allowlist (D-120) admits
+    // `QUOTAMETER.EXAMPLE:443` only as "the configured host" (§15.6's
+    // TLS-terminating-proxy hop); the loopback arm needs no configured
+    // name (the base allowlist carries `localhost`).
     const { server } = buildServer();
     // A browser Origin never serializes the default port; hosts and
     // proxies sometimes write one. Also the inject default (`localhost:80`).
@@ -287,7 +298,8 @@ describe('legitimate mutations and safe requests — pass-through (§15.3)', () 
       headers: { origin: 'http://localhost', host: 'localhost:80', ...MUTATION_HEADERS },
     });
     expect(localhost.statusCode).toBe(404);
-    const proxied = await server.inject({
+    const { server: proxiedServer } = buildServer(undefined, 'quotameter.example');
+    const proxied = await proxiedServer.inject({
       method: 'POST',
       url: '/api/settings',
       headers: {

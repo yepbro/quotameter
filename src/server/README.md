@@ -52,7 +52,7 @@ not-found handler's 404 arm, because an unmatched route is not an error
 in fastify, and with the api scope's own catch-all route: the
 mode-independent unmatched arm for `/api` paths (it outranks the static
 wildcard), re-deriving the URI_TOO_LONG class for segments past the
-router's parameter bound. `security.ts` (tasks 149/150) is the §15.3
+router's parameter bound. `security.ts` (tasks 149/150/151) is the §15.3
 request-security seam: the Origin/Fetch-Metadata guard — a pure,
 fail-closed `classifyOriginRequest` plus the `originGuard` `onRequest`
 hook the scope registers (async by runtime necessity: fastify's hook
@@ -67,10 +67,26 @@ mutation consumer set it) on each of §13's four state-changing methods
 and `Content-Type: application/json` on the ones that carry a body (a
 bodiless mutation has no payload to type), rejecting as FORBIDDEN
 (reason detail) and the registry-default 415 respectively, strictly
-after the Origin verdict; task 151's Host allowlist reuses the module's
-`normalizeAuthority` yardstick.
+after the Origin verdict. Task 151 (D-120) adds the Host allowlist in
+the same seam but registers it at ROOT scope in the construction
+(`http.ts`), not the `/api` scope: validating `Host` against
+`localhost`, `127.0.0.1`, `[::1]`, and the configured host is the one
+§15.3 check that must bind frontend routes too (static assets, SPA deep
+links, the API-only not-found arm), and root registration makes it the
+outermost §15.3 layer by fastify's hook chain (a hostile-Host request
+answers the Host verdict before any Origin/header class or handler).
+The `createHostAllowlist`/`classifyHostRequest` pair compares authority
+NAMES — ports unpinned, because §15.6's recommended SSH tunneling
+remaps them freely — and also adjudicates absolute-form request targets
+(the router matches their extracted path while `request.url` keeps the
+full attacker-controlled URL) plus the RFC 9112 duplicate/missing-Host
+rejects the runtime does not enforce itself; the configured host
+normalizes into the bracketed wire name (IPv6 binds, both spellings),
+a wildcard bind logs one construction-time `warn` beside admitting
+only its literal name, and rejections are the envelope's FORBIDDEN
+class over a closed five-value reason vocabulary.
 Later: the remaining HTTP API routes and auth/session endpoints
-(151–163), and the security middleware (151–152, 156–158). It is the only
+(152–163), and the security middleware (152, 156–158). It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3

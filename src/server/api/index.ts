@@ -13,8 +13,13 @@
  * (`./security`, spec §15.3) as this scope's `onRequest` hooks — they run
  * for every route here including the catch-all, in registration order
  * (the Origin verdict first), so state-changing requests are screened
- * mode-independently before any handler or body parser; tasks 151–152 add
- * the remaining request-security checks, tasks
+ * mode-independently before any handler or body parser; task 151's Host
+ * allowlist (`./security`, D-120) deliberately registers OUTSIDE this
+ * scope, at root scope in the construction (`../http.ts`) — it must bind
+ * frontend routes too, and fastify's hook chain runs it ahead of both
+ * guards here (outermost-first), so a hostile-Host request answers the
+ * Host verdict before any Origin/header class; task 152 adds the remaining
+ * request-security check (auth-mode selection), tasks
  * 153–155 the auth/session endpoints, and tasks 159–162 the remaining API
  * endpoints; each registers inside this scope, so the server construction
  * itself never changes shape again.

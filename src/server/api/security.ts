@@ -1,5 +1,6 @@
 /**
- * The §15.3 request-security checks (tasks 149/150; decisions D-115/D-117).
+ * The §15.3 request-security checks (tasks 149/150/151; decisions
+ * D-115/D-117/D-120).
  *
  * The Origin/Fetch-Metadata guard (149): every state-changing request
  * (§13's `POST`/`PUT`/`PATCH`/`DELETE`) under `/api` must look same-origin
@@ -62,8 +63,18 @@
  * class, so the 415 class has exactly one wire body regardless of which
  * layer rejected (D-113's one-vocabulary rule).
  *
- * This module is the seam for the remaining §15.3 check: task 151's Host
- * allowlist reuses {@link normalizeAuthority} as its comparison yardstick.
+ * The Host-allowlist guard (151, D-120) is §15.3's third leg and the one
+ * that cannot live in the `/api` scope: validating `Host` against
+ * `localhost`, `127.0.0.1`, `[::1]`, and the configured host binds every
+ * route — API, static assets, the SPA fallback — so the construction
+ * (`../http.ts`) registers it at root scope, outermost of the §15.3
+ * layers (a request with a hostile Host is rejected before the scope's
+ * Origin/header guards or any handler is consulted; fastify runs
+ * root-scope `onRequest` hooks ahead of every scoped one — verified on
+ * the pinned runtime). The classifier compares authority NAMES, not
+ * ports, and also adjudicates absolute-form request targets — see
+ * {@link classifyHostRequest} for both resolutions and D-120 for the
+ * rationale (§15.6's recommended SSH tunneling remaps ports freely).
  */
 
 import type { FastifyRequest } from 'fastify';
@@ -116,21 +127,28 @@ export interface OriginRequestSignal {
 }
 
 /**
- * The comparison yardstick for authorities (and task 151's Host
- * allowlist): case-normalized, with an explicit default port stripped.
- * Scheme-aware (the P2-2 review fix): only the given origin scheme's
- * default port is stripped — `http`'s `:80` or `https`'s `:443` — because
- * the opposite scheme's default is a NON-default port there and stays
- * identity (`http://a.example:443` must not collapse onto a port-80
- * authority). The scheme-less form strips both (inherently ambiguous
- * without a scheme; the guard always passes the Origin's, task 151 may
- * refine). `http://localhost` (a browser Origin never serializes the
- * default port) and `Host: localhost:80` (an explicitly written default)
- * are the same authority, as are `https://a.example` and
- * `a.example:443`; `new URL` already drops default ports from
- * `url.host`, so normalizing the Origin side with its own scheme is
- * idempotent. A non-default port always survives, making
- * `localhost:3000` and `localhost:8080` different authorities.
+ * The comparison yardstick for authorities: case-normalized, with an
+ * explicit default port stripped. Scheme-aware (the P2-2 review fix):
+ * only the given origin scheme's default port is stripped — `http`'s
+ * `:80` or `https`'s `:443` — because the opposite scheme's default is a
+ * NON-default port there and stays identity (`http://a.example:443` must
+ * not collapse onto a port-80 authority). The scheme-less form strips
+ * both (inherently ambiguous without a scheme) — this yardstick is the
+ * ORIGIN comparison's; task 151's Host parser (`parseAuthorityName`)
+ * does not route through it at all: it validates structure first and
+ * never lets the port reach the verdict (names only, D-120), which
+ * subsumes the default-port equivalence — `Host: localhost` and `Host:
+ * localhost:80` are the same name to the allowlist by construction.
+ * `http://localhost` (a browser Origin never serializes the default
+ * port) and `Host:
+ * localhost:80` (an explicitly written default) are the same authority,
+ * as are `https://a.example` and `a.example:443`; `new URL` already
+ * drops default ports from `url.host`, so normalizing the Origin side
+ * with its own scheme is idempotent. A non-default port always survives,
+ * making `localhost:3000` and `localhost:8080` different authorities —
+ * for the Origin comparison; the Host allowlist (151) compares the NAME
+ * component only ({@link parseAuthorityName} strips whatever port
+ * survives, D-120).
  */
 export function normalizeAuthority(value: string, scheme?: 'http' | 'https'): string {
   const lowered = value.trim().toLowerCase();
@@ -409,4 +427,247 @@ export async function customHeaderGuard(request: FastifyRequest): Promise<void> 
     });
   }
   throw new ApiError('UNSUPPORTED_MEDIA_TYPE');
+}
+
+/* ── The Host-allowlist guard (task 151, spec §15.3, decision D-120) ───── */
+
+/**
+ * Spec §15.3's literal allowlist base: `localhost`, `127.0.0.1`, `[::1]`.
+ * Deliberately the three names the spec spells — not the whole
+ * `127.0.0.0/8` range `isLoopbackHost` admits for bind addresses
+ * (`Host: 127.0.0.2` is "any other host" by the spec's letter, and no
+ * browser-resolved `localhost` connection ever carries such a name: the
+ * name the client used is what the Host header carries).
+ */
+const HOST_ALLOWLIST_BASE: readonly string[] = ['localhost', '127.0.0.1', '[::1]'];
+
+/**
+ * The §15.3 comparison set: the spec's three literal names plus the
+ * configured host (`server.host`), all lowered and name-normalized so the
+ * membership test in {@link classifyHostRequest} is a plain set lookup.
+ * The configured host is a bind address — it carries no port — and its
+ * IPv6 spellings are normalized into the bracketed wire form (the review
+ * round's P1: Node binds unbracketed literals like `fd00::5`, while the
+ * client's Host header brackets them — an unbracketed allowlist entry
+ * can never match, so a non-loopback IPv6 bind would have 403'd every
+ * request under the first draft); a zone id is percent-encoded the way
+ * the wire grammar spells it (`fe80::1%eth0` → `[fe80::1%25eth0]`).
+ * Anything else passes through verbatim, and a malformed entry (an
+ * unterminated bracket) simply never matches — the operator's own
+ * broken configuration. A wildcard bind (`0.0.0.0`, `::`) therefore
+ * admits only its literal name: direct access through any concrete
+ * interface address is rejected under such a bind (D-120 records the
+ * tunnel/proxy shapes that remain reachable; the construction logs one
+ * warning line for it).
+ */
+export function createHostAllowlist(configuredHost: string): ReadonlySet<string> {
+  const lowered = configuredHost.trim().toLowerCase();
+  let name = lowered;
+  if (lowered.startsWith('[')) {
+    const close = lowered.indexOf(']');
+    if (close !== -1) {
+      name = encodeZoneId(lowered.slice(0, close + 1));
+    }
+  } else if (lowered.includes(':')) {
+    name = encodeZoneId(`[${lowered}]`);
+  }
+  // An empty configured value (schema-impossible, caller-bug-shaped)
+  // adds nothing — an empty name could only ever match another empty
+  // value, and the wire's empty Host is `missing-host` long before the
+  // lookup, so skipping keeps the set exactly the names that can match.
+  const names = new Set(HOST_ALLOWLIST_BASE);
+  if (name !== '') {
+    names.add(name);
+  }
+  return Object.freeze(names);
+}
+
+/**
+ * IPv6 zone-id encoding: the wire (and `new URL`) spell `%` as `%25`
+ * inside a bracketed host literal, so the allowlist entry must carry the
+ * encoded form to meet the header's name.
+ */
+function encodeZoneId(bracketedLiteral: string): string {
+  return bracketedLiteral.replaceAll('%', '%25');
+}
+
+/** The port segment grammar of an authority: 1–5 digits (RFC 9110). */
+const PORT_SEGMENT_PATTERN = /^:[0-9]{1,5}$/;
+
+/**
+ * The name component of one wire authority — the segment a Host header or
+ * absolute-form target must reduce to before the allowlist lookup. Strict,
+ * structure-first, and fail closed (the review round's fix: the first
+ * draft pre-stripped a trailing default port, which let multi-port
+ * garbage like `localhost:8080:80` collapse onto `localhost` — structure
+ * is now validated before any port consideration): a bracketed IPv6
+ * literal runs through its `]` (an unterminated bracket is malformed),
+ * any remainder must be empty or a syntactically valid port (`:` + 1–5
+ * digits, value ≤ 65535 — a port the transport could never carry is a
+ * malformed value, not a name), and any other colon-bearing form is
+ * rejected rather than guessed: unbracketed IPv6 (`::1`), multi-colon
+ * shapes, and joined duplicate headers (`a, b`, `a:80, b:80`) are not
+ * names this grammar can establish, so `undefined` (→ rejection) comes
+ * back for all of them. Default-port equivalence is inherent — the port
+ * never reaches the verdict (D-120), so `localhost:80` and `localhost`
+ * are the same name by construction. Lowercased here: Host names are
+ * case-insensitive (reg-name comparison, RFC 9110 §4.1).
+ */
+function parseAuthorityName(authority: string): string | undefined {
+  const lowered = authority.trim().toLowerCase();
+  if (lowered.startsWith('[')) {
+    const close = lowered.indexOf(']');
+    if (close === -1) {
+      return undefined;
+    }
+    const remainder = lowered.slice(close + 1);
+    if (remainder !== '' && !PORT_SEGMENT_PATTERN.test(remainder)) {
+      return undefined;
+    }
+    const literal = lowered.slice(0, close + 1);
+    return literal === '[]' ? undefined : literal;
+  }
+  const colon = lowered.indexOf(':');
+  if (colon === -1) {
+    // An empty authority cannot reach here through the classifier (the
+    // empty Host is `missing-host` before parsing), and the builder
+    // never admits an empty name — so a bare '' flows on and fails the
+    // allowlist lookup: fail closed without a dead branch.
+    return lowered;
+  }
+  const name = lowered.slice(0, colon);
+  const port = lowered.slice(colon);
+  if (name === '' || !PORT_SEGMENT_PATTERN.test(port)) {
+    return undefined;
+  }
+  return Number(port.slice(1)) > 65_535 ? undefined : name;
+}
+
+/**
+ * Why a Host validation was rejected — the stable `details.reason`
+ * vocabulary on the wire (the D-115/D-117 discipline: names the failed
+ * check, never the attacker-controlled value, §15.4). `missing-host` is
+ * reachable on the wire through HTTP/1.0 (an HTTP/1.1 request without a
+ * Host is answered 400 by the HTTP parser before fastify — the documented
+ * transport boundary, verified on the pinned runtime); `duplicate-host`
+ * is the RFC 9112 §3.2.2 MUST-reject the runtime does not enforce (Node
+ * folds duplicates onto the first value — detected in the hook over
+ * `rawHeaders`, where every wire entry survives); the target family
+ * adjudicates absolute-form request targets, which the router matches by
+ * their extracted path while `request.url` keeps the full URL (verified
+ * live over a real socket — unguarded they would be an unchecked,
+ * attacker-controlled authority; `fastify.inject` cannot express the
+ * shape, its mock normalizes the URL to `pathname + search`).
+ */
+export type HostGuardReason =
+  'missing-host' | 'duplicate-host' | 'disallowed-host' | 'disallowed-target' | 'target-mismatch';
+
+/** The pure verdict of {@link classifyHostRequest}. */
+export type HostDecision =
+  { readonly allowed: true } | { readonly allowed: false; readonly reason: HostGuardReason };
+
+/** The request signals the Host-allowlist check decides over. */
+export interface HostRequestSignal {
+  /** Raw `Host` header value; `undefined` when absent (HTTP/1.0). */
+  readonly host?: string;
+  /** The request target exactly as routed (`request.url`). */
+  readonly url?: string;
+}
+
+/**
+ * The §15.3 Host-allowlist decision for one request signal — pure, total,
+ * and fail closed, in a fixed check order (Host header first, then the
+ * request target) so the reason is deterministic. The name-only
+ * comparison is D-120's resolution of "the configured host": §15.6
+ * recommends SSH tunneling as the access method, and a tunnel remaps
+ * ports freely (`ssh -L 9999:127.0.0.1:8787` sends `Host:
+ * localhost:9999`), so the port can never be pinned to the listening
+ * one — while the rebinding threat the check exists for is a NAME
+ * confusion (the attacker's DNS name rides the Host header or an
+ * absolute-form target), which name comparison fully defeats. A target
+ * in absolute form (`http://host[:port]/…`, case-insensitive scheme)
+ * must carry an allowlisted name AND the same name as the Host header
+ * (RFC 9112 §3.2.2: a client must send a Host identical to the target's
+ * authority) — on the real wire the router matches such a target by its
+ * extracted path while `request.url` keeps the full URL (verified live),
+ * so without this leg the target would be an unchecked second authority;
+ * origin-form and `*` targets carry no authority, and the Host header
+ * decides alone.
+ */
+export function classifyHostRequest(
+  signal: HostRequestSignal,
+  allowlist: ReadonlySet<string>,
+): HostDecision {
+  const host = signal.host;
+  if (host === undefined || host.trim() === '') {
+    return { allowed: false, reason: 'missing-host' };
+  }
+  const hostName = parseAuthorityName(host);
+  if (hostName === undefined || !allowlist.has(hostName)) {
+    return { allowed: false, reason: 'disallowed-host' };
+  }
+  const url = signal.url;
+  if (url !== undefined && /^https?:\/\//i.test(url)) {
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      return { allowed: false, reason: 'disallowed-target' };
+    }
+    const targetName = parseAuthorityName(target.host);
+    if (targetName === undefined || !allowlist.has(targetName)) {
+      return { allowed: false, reason: 'disallowed-target' };
+    }
+    if (targetName !== hostName) {
+      return { allowed: false, reason: 'target-mismatch' };
+    }
+  }
+  return { allowed: true };
+}
+
+/**
+ * Builds the §15.3 Host-allowlist `onRequest` hook (task 151): unlike the
+ * scope guards above, a factory — the allowlist depends on the configured
+ * host, injected at construction time (`../http.ts` passes the validated
+ * `server.host`; §6.4 pins it as restart-requiring, so the value cannot
+ * change under a running listener and no request-time lookup exists).
+ * Registered at ROOT scope, it runs for every route in every mode (API,
+ * static, SPA fallback, both static-serving states) and ahead of the
+ * `/api` scope's guards — fastify's hook chain runs outermost-first,
+ * making the layering structural rather than wired. Async for the same
+ * runtime reason as {@link originGuard}, and also ahead of body parsing.
+ * The duplicate-Host scan reads `rawHeaders` (every wire entry survives
+ * there; `headers.host` keeps only the first, verified live) before the
+ * classifier — a request the runtime folded is still the RFC's
+ * reject-shape, never a smuggle path: the fold loses information the
+ * scan refuses to trust.
+ */
+export function createHostGuard(
+  allowlist: ReadonlySet<string>,
+): (request: FastifyRequest) => Promise<void> {
+  return async function hostGuard(request: FastifyRequest): Promise<void> {
+    let hostEntries = 0;
+    const rawHeaders = request.raw.rawHeaders;
+    for (let index = 0; index < rawHeaders.length; index += 2) {
+      if (rawHeaders[index]!.toLowerCase() === 'host') {
+        hostEntries += 1;
+      }
+    }
+    if (hostEntries > 1) {
+      throw new ApiError('FORBIDDEN', {
+        message: 'Request host rejected',
+        details: { reason: 'duplicate-host' },
+      });
+    }
+    const decision = classifyHostRequest(
+      { host: readHeader(request.headers.host), url: request.url },
+      allowlist,
+    );
+    if (!decision.allowed) {
+      throw new ApiError('FORBIDDEN', {
+        message: 'Request host rejected',
+        details: { reason: decision.reason },
+      });
+    }
+  };
 }
