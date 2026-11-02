@@ -95,11 +95,18 @@ export default tseslint.config(
     },
   },
 
-  // I18n checks for browser-facing templates (task 036): user-facing strings
-  // must come from the English vue-i18n catalog instead of raw text in
-  // templates (spec §14.1). Only the no-raw-text rule is enabled: the rest of
-  // the preset requires the locale directory layout that arrives with the UI
-  // implementation stages.
+  // I18n checks for browser-facing templates (task 036; re-tightened by
+  // task 167): user-facing strings must come from the English vue-i18n
+  // catalog instead of raw text in templates (spec §14.1). The rule runs
+  // with NO text exemptions — the bootstrap strings moved into the catalog
+  // with the i18n task — and the `attributes` option extends it past its
+  // text-node-only default: a static literal in a user-facing attribute is
+  // raw text too (D-131's aria-label blind spot; bound forms
+  // `:attr="t('…')"` are expressions and stay legal). The attribute list
+  // is pinned against the completeness spec (no drift). Only the
+  // no-raw-text rule is enabled: the rest of the preset assumes the
+  // locale-directory layout this project replaces with the typed catalog
+  // module (decision D-132).
   {
     files: ['ui/**/*.vue'],
     plugins: {
@@ -109,22 +116,20 @@ export default tseslint.config(
       '@intlify/vue-i18n/no-raw-text': [
         'error',
         {
-          // Justified exception: until the i18n catalog exists (task 167),
-          // the shell and its routed placeholder pages carry a fixed set of
-          // strings — the application title, the bootstrap status line, the
-          // section labels, and the placeholder marker. Every other raw UI
-          // string is an error.
-          ignorePattern:
-            '^(Quotameter|Setup in progress — the interface is not implemented yet\\.|Overview|Accounts|Settings|Login|Not implemented yet\\.)$',
-          ignoreText: [
-            'Quotameter',
-            'Setup in progress — the interface is not implemented yet.',
-            'Overview',
-            'Accounts',
-            'Settings',
-            'Login',
-            'Not implemented yet.',
-          ],
+          attributes: {
+            '/.*/': [
+              'abbr',
+              'alt',
+              'aria-description',
+              'aria-label',
+              'aria-placeholder',
+              'aria-roledescription',
+              'aria-valuetext',
+              'label',
+              'placeholder',
+              'title',
+            ],
+          },
         },
       ],
     },

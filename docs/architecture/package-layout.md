@@ -120,7 +120,7 @@ The browser application is a separate project with its own tsconfig and build
 | `ui/src/router/`     | Vue Router route table and factory (task 166)               |
 | `ui/src/views/`      | route views: overview, accounts, settings, login (Stage 13) |
 | `ui/src/components/` | shared components — reserved                                |
-| `ui/src/locales/`    | `vue-i18n` `en` catalog (task 167) — reserved               |
+| `ui/src/i18n/`       | `vue-i18n` `en` catalog and `createAppI18n()` (task 167)    |
 | `ui/src/stores/`     | Pinia stores, only if they prove useful (§3) — reserved     |
 
 **Rule:** `ui/**` never imports `src/**` at runtime — the only sanctioned

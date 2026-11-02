@@ -1,22 +1,31 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router';
+import { useI18n } from 'vue-i18n';
 // Application shell (spec §14.1): the persistent layout around the routed
 // pages — the site header with the application title and the primary
 // navigation, and the single main landmark the router renders into.
 // The nav carries the three always-present sections; the login entry is
 // auth-state dependent (§14.6) and arrives with task 180 as a seam on
-// this layout. Strings stay raw until the i18n catalog (task 167).
+// this layout. Every string renders through the English catalog
+// (§14.1, D-132).
+const { t } = useI18n();
 </script>
 
 <template>
   <div class="shell">
     <header class="shell-header">
-      <h1>Quotameter</h1>
-      <nav aria-label="Primary">
+      <h1>{{ t('app.title') }}</h1>
+      <nav :aria-label="t('nav.ariaLabel')">
         <ul>
-          <li><RouterLink to="/">Overview</RouterLink></li>
-          <li><RouterLink to="/accounts">Accounts</RouterLink></li>
-          <li><RouterLink to="/settings">Settings</RouterLink></li>
+          <li>
+            <RouterLink to="/">{{ t('nav.overview') }}</RouterLink>
+          </li>
+          <li>
+            <RouterLink to="/accounts">{{ t('nav.accounts') }}</RouterLink>
+          </li>
+          <li>
+            <RouterLink to="/settings">{{ t('nav.settings') }}</RouterLink>
+          </li>
         </ul>
       </nav>
     </header>

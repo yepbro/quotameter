@@ -16,9 +16,10 @@ providers directly; all data flows through the HTTP API (spec §13, §14).
   relied upon at runtime.
 - **Vue Test Utils + happy-dom** for component tests (the Vitest
   `component` project, `test/component/`).
-- `vue-i18n` and theming arrive with the UI implementation stages
-  (tasks 167–168); `src/main.ts` is the single composition seam they
-  plug into.
+- **vue-i18n** for every user-facing string: the English catalog
+  (`src/i18n/en.ts`) installed through `createAppI18n()` in the
+  composition root (task 167); theming (task 168) plugs into the same
+  seam.
 
 ## Routes
 
@@ -85,6 +86,9 @@ URIs**. For this directory that means:
   deep link renders the right view on the first paint). Plugin seams for
   the later stages live here.
 - `src/router/index.ts` — route table and `createAppRouter` factory.
+- `src/i18n/` — the `en` message catalog (`en.ts`) and the
+  `createAppI18n()` factory; see [Strings and the i18n
+  catalog](#strings-and-the-i18n-catalog).
 - `src/App.vue` — application shell: site header (title + primary nav)
   and the single `main` landmark the router renders into.
 - `src/views/*.vue` — routed page components (placeholders until their
@@ -93,11 +97,46 @@ URIs**. For this directory that means:
   a `prefers-color-scheme` dark block) and document-level base styles;
   theme selection (task 168) builds on these names.
 
-## Strings and language
+## Strings and the i18n catalog
 
-Repository artifacts are English-only (spec §4.1). Every user-facing
-string must eventually live in the `vue-i18n` English catalog (spec
-§14.1, task 167); until the catalog exists, the fixed bootstrap strings
-(the title, the status lines, and the four section labels) are the
-documented ESLint exception (`@intlify/vue-i18n/no-raw-text` ignore list
-in `eslint.config.ts`).
+Repository artifacts are English-only (spec §4.1), and every user-facing
+UI string lives in the `vue-i18n` English catalog (spec §14.1): the
+typed module `src/i18n/en.ts`, installed by `createAppI18n()` and read
+through `t()` from `useI18n()`. Components never carry string literals.
+
+- **Structure** (decision D-132): nested by surface, flat dot paths at
+  the call sites. `app` and `nav` own the shell chrome; each route page
+  owns one namespace (`overview`, `accounts`, `settings`, `login`) — a
+  content task adds its keys under the page's namespace and replaces the
+  placeholder `status` entries there, touching no other surface.
+  Identical values in different namespaces stay distinct keys: the
+  contexts differ and may diverge (`nav.overview` labels a link,
+  `overview.title` a page heading).
+- **Completeness is executable, in both directions**
+  (`test/component/i18n-catalog.spec.ts`): a `t()` key missing from the
+  catalog fails; a catalog key referenced nowhere fails (dead keys die
+  with their pages — there are no reserved namespaces); a `t()` call
+  whose argument is not a static string literal fails (dynamic keys
+  would be invisible to both directions).
+- **The attribute blind spot is closed twice** (decision D-131 recorded
+  it, D-132 closes it): ESLint's `@intlify/vue-i18n/no-raw-text` reads
+  text nodes only, so it is configured with the rule's `attributes`
+  option — a static literal in a user-facing attribute (`aria-label`,
+  `title`, `alt`, `placeholder`, `label`, `abbr`, and the other
+  text-bearing ARIA attributes — a closed list) is a lint error, while
+  bound expressions (`:aria-label="t('nav.ariaLabel')"`) stay legal —
+  and `test/component/i18n-catalog.spec.ts` pins the same set over the
+  real components (no drift between the two lists) plus the disguise
+  lint cannot see: a bound attribute whose expression is exactly a
+  string literal (`:title="'Save'"`) fails the spec too.
+- **Lint has no exceptions** since task 167: the task-036 bootstrap
+  ignore list is gone, and `test/unit/vue-i18n-lint.spec.ts` pins that
+  even the former bootstrap spellings fail lint as raw text, and that
+  the attribute check fires (static `title` fails, the bound `t()` form
+  passes).
+- **Message syntax**: values are vue-i18n message format — `{`, `}`,
+  `@`, and `|` are special; write them as literal escapes (`{'@'}`) when
+  a string needs them verbatim.
+- The document `<title>` in `index.html` is the one deliberate
+  non-catalog string: the static document shell outside Vue, not a
+  component string.

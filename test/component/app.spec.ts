@@ -2,14 +2,17 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory } from 'vue-router';
 import { describe, expect, it } from 'vitest';
 import App from '../../ui/src/App.vue';
+import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
 
 /**
- * The application shell (spec §14.1; decision D-131): the layout the
- * router renders into — the site header with the application title and
- * the primary navigation, and the main landmark carrying the routed view.
- * Each test mounts a fresh router and starts it at the given path (direct
- * navigation), so no state leaks between cases.
+ * The application shell (spec §14.1; decisions D-131, D-132): the layout
+ * the router renders into — the site header with the application title
+ * and the primary navigation, and the main landmark carrying the routed
+ * view. Each test mounts a fresh router and i18n instance and starts it
+ * at the given path (direct navigation), so no state leaks between
+ * cases. The rendered-string assertions run the whole catalog → `t()`
+ * → render pipeline, not just static markup.
  */
 
 /**
@@ -31,7 +34,7 @@ async function mountShell(initial: string = '/') {
   // argument, so the initial route is pushed before mounting.
   await router.push(initial);
   await router.isReady();
-  const wrapper = mount(App, { global: { plugins: [router] } });
+  const wrapper = mount(App, { global: { plugins: [router, createAppI18n()] } });
   await settleNavigation();
   return wrapper;
 }

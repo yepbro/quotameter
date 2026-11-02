@@ -1,15 +1,18 @@
 import { createApp } from 'vue';
 import App from './App.vue';
+import { createAppI18n } from './i18n';
 import { createAppRouter } from './router';
 import './assets/base.css';
 
 // Composition root (spec §3): the application is assembled here so each
-// UI stage has a single seam — the vue-i18n English catalog plugs in with
-// 167, theme selection with 168. No component owns application wiring.
+// UI stage has a single seam — theme selection plugs in with 168. No
+// component owns application wiring.
 const router = createAppRouter();
+const i18n = createAppI18n();
 
 const app = createApp(App);
 app.use(router);
+app.use(i18n);
 
 function mountApp(): void {
   app.mount('#app');
