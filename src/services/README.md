@@ -44,6 +44,33 @@ minimum-length rule stays with the `config-validation` boundary
 verifier at the login endpoint — requests carry session cookies, not
 passwords, so the §15.1 seam is not a consumer.
 
+Landed: [`sessions.ts`](./sessions.ts) — the §15.2 session-creation half
+(task 154, decision D-123): the session twin of `password-hash.ts` inside
+the future `AuthService`, minting the cookie token and owning its
+storage-only-as-a-digest discipline. `generateSessionToken()` draws 256
+bits of `node:crypto` randomness into the **base64url** wire form (43
+unpadded URL-safe characters — D-056's recorded precondition: a hex wire
+form would be shape-identical to the digest, so the raw token stays
+structurally distinguishable from anything the `sessions` table can
+hold); `hashSessionToken(token)` reduces the wire string to the SHA-256
+hex digest — the lookup-key transform task 155's authenticator applies
+per request (`cookie value → digest → row`, no decode step);
+`effectiveSessionExpiry(createdAt, lastSeenAt)` is the single site of
+D-056's formula `min(last_seen + 7 d, created + 30 d)`, computed from the
+schema's own exported constants so writer and CHECKs cannot drift (task
+155's sighting refresh reuses it); `createSession({ repository, now })`
+mints, digests, and inserts the §11.2 row through the task-088 facade
+(`last_seen_at` born equal to `created_at` — login is the first sighting
+— expiry at the tighter 7-day bound) and returns `{ token, session }`:
+the raw token's **only** disclosure, exactly once, to the caller that
+sets the cookie (157 owns the flags). The module holds no logger (the
+§15.4 "never in logs" rule is by construction, executably pinned), is
+synchronous like the repository it writes through (D-058), takes its
+clock as an explicit `now` argument (D-021), propagates repository
+failures unchanged, and retries no mint — a 2^256 primary-key collision
+is an event retry ceremony cannot make more testable. The login
+endpoint, expiry enforcement, and revocation are tasks 155–156.
+
 **Rule:** may import `src/schemas/`, `src/util/`, `src/config/`, the provider
 core (`src/providers/` root, never a concrete adapter), and `src/storage/` —
 never `src/server/` or `src/cli/`.

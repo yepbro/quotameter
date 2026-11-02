@@ -4,7 +4,9 @@
  * This module decides, per request, WHETHER authentication is required —
  * never whether presented credentials are valid: password verification is
  * task 153 (scrypt, landed as the `verifyPassword` primitive the login
- * endpoint will consume), sessions 154/155, login rate-limiting 156. The split
+ * endpoint will consume), session creation task 154 (landed as the
+ * `createSession` primitive in `../../services/sessions`, D-123), the
+ * lookup/expiry rules over those sessions 155, login rate-limiting 156. The split
  * is the layer's contract: a pure verdict over four facts (mode, bind
  * loopback-ness, password presence, proxy indication), plus one injected
  * credential seam ({@link RequestAuthenticator}) the later tasks implement
@@ -197,12 +199,18 @@ export function classifyAuthMode(facts: AuthModeFacts): AuthModeVerdict {
 
 /**
  * Whether this request presents valid credentials — the seam the
- * session tasks implement: 154/155's session-cookie lookup and expiry
+ * session tasks implement: 155's session-cookie lookup and expiry
  * rules, composed behind one boolean. Password verification itself is
  * not a request fact: task 153 landed it as `verifyPassword` in
  * `../../services/password-hash` (D-122), consumed where the password
  * is actually presented — the login endpoint, which stays reachable
  * for credential-less clients through {@link PUBLIC_AUTH_ROUTE_CONFIG}.
+ * Session creation landed the same way (task 154, D-123):
+ * `createSession` in `../../services/sessions` is the primitive that
+ * endpoint calls after verification succeeds — it mints the token and
+ * stores only its SHA-256 digest, so this seam's request-side half
+ * (155) is purely a lookup: `hashSessionToken(cookieValue)` over the
+ * presented cookie, then the expiry verdict.
  * Async by nature (the session store is), so the seam allows promises;
  * the guard awaits it and never inspects HOW a request authenticated.
  * Until the session tasks land, the default answers `false` for every
