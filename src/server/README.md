@@ -100,7 +100,11 @@ answers §15.1's own 403-with-instructions; the two startup-refused
 shapes (`required`/non-loopback without a password, refused by the
 config layer) fail closed to 401 if ever constructed anyway. The
 `RequestAuthenticator` seam (default: nothing is authenticated, fail
-closed) is where 153–155 plug scrypt verification and sessions in;
+closed) is where the session tasks (154/155) plug request
+authentication in — requests carry session cookies, not passwords;
+task 153's scrypt verifier (`verifyPassword` in
+`services/password-hash.ts`, D-122) is consumed at the login endpoint
+that presents the password;
 `GET /api/health` opts out through its public route config
 (`PUBLIC_AUTH_ROUTE_CONFIG`, inherited by the HEAD twin) — the same
 contract the future login endpoint uses. The frontend shell stays

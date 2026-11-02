@@ -227,8 +227,10 @@ non-object `auth` section is a defect the probe never masks, and any
 further defect still refuses. Such a
 configuration is written and re-read as `passwordPending`, displayed with
 its remedy, and the service refuses to start on it until `passwd` completes
-it — exactly the §15.1 sentence. Password collection inside `init` lands
-with the scrypt tasks (§15.2, task 153).
+it — exactly the §15.1 sentence. Password collection inside `init` has
+not landed: task 153 delivered the §15.2 hashing/verification
+primitives, and `quotameter passwd` (task 144, D-118) is the completing
+command for this pending state.
 
 The handler's detection and persistence are injectable seams
 (`InitDeps.readExisting`/`persistConfig`) for unit tests; the real wiring —

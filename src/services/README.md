@@ -16,19 +16,33 @@ landed parser (`src/config/load.ts`), so invalid settings surface as
 field-specific English problems. A supplied plaintext password is validated
 against the §15.2 minimum and returned pending hashing (Stage 12).
 
-Landed: [`password-hash.ts`](./password-hash.ts) — the §15.2 hash encoding
-(task 144, decision D-118), the half of the future `AuthService` the
-configuration schema's `auth.passwordHash` docblock assigns it.
-`hashPassword(password)` derives through `node:crypto`'s async scrypt with
-a fresh random 16-byte salt per hash and the frozen, exported
+Landed: [`password-hash.ts`](./password-hash.ts) — the §15.2 credential
+encoding and its verification (task 144 / task 153, decisions D-118 /
+D-122), the halves of the future `AuthService` the configuration
+schema's `auth.passwordHash` docblock assigns the module.
+`hashPassword(password)` derives through `node:crypto`'s async scrypt
+with a fresh random 16-byte salt per hash and the frozen, exported
 `SCRYPT_PARAMETERS` (`N=2^16, r=8, p=1`, 64-byte key, explicit 128 MiB
 `maxmem`), and encodes self-describingly as
-`scrypt$N=…,r=…,p=…,keylen=…$<salt base64>$<hash base64>` — the parameters
-travel with the hash, so task 153's verifier parses them from the stored
-string and a future cost raise never invalidates stored hashes. Hashing is
-this module's whole contract: the §15.2 minimum belongs to the
-`config-validation` boundary (`MIN_PASSWORD_LENGTH`), and verification
-(constant-time comparison) is task 153's.
+`scrypt$N=…,r=…,p=…,keylen=…$<salt base64>$<hash base64>`;
+`verifyPassword(stored, candidate)` (task 153) takes the stored hash
+exactly as the configuration holds it (`string | undefined` — the
+optional `auth.passwordHash` passes straight through), parses the
+string strictly (four fields, the one algorithm id, the canonical
+parameter grammar, canonical base64, `keylen` consistent with the hash
+byte length, `p` inside the exported `VERIFICATION_MAX_PARALLELIZATION`
+CPU ceiling), re-derives under the parameters **the string carries** —
+never the module constants, so a future cost raise never invalidates
+stored hashes — inside the exported `VERIFICATION_MAXMEM_BYTES` memory
+ceiling (1 GiB), and compares the derived keys constant-time
+(`timingSafeEqual`, equal lengths guaranteed pre-derivation by the
+parse). Verification is fail-closed and never throws: an absent,
+malformed, or refused stored hash answers `false`, never an error and
+never an accept. The §15.2
+minimum-length rule stays with the `config-validation` boundary
+(`MIN_PASSWORD_LENGTH`); the login/session tasks (154+) consume the
+verifier at the login endpoint — requests carry session cookies, not
+passwords, so the §15.1 seam is not a consumer.
 
 **Rule:** may import `src/schemas/`, `src/util/`, `src/config/`, the provider
 core (`src/providers/` root, never a concrete adapter), and `src/storage/` —

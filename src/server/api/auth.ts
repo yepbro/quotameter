@@ -3,7 +3,8 @@
  *
  * This module decides, per request, WHETHER authentication is required —
  * never whether presented credentials are valid: password verification is
- * task 153 (scrypt), sessions 154/155, login rate-limiting 156. The split
+ * task 153 (scrypt, landed as the `verifyPassword` primitive the login
+ * endpoint will consume), sessions 154/155, login rate-limiting 156. The split
  * is the layer's contract: a pure verdict over four facts (mode, bind
  * loopback-ness, password presence, proxy indication), plus one injected
  * credential seam ({@link RequestAuthenticator}) the later tasks implement
@@ -48,7 +49,7 @@
  * task 147): it opts out through the route's `config` object
  * ({@link PUBLIC_AUTH_ROUTE_CONFIG}) rather than registration order —
  * explicit, method-scoped, and the same contract the future login route
- * (153) uses to stay reachable for the client that has no session yet.
+ * (154+) uses to stay reachable for the client that has no session yet.
  * The frontend (static assets, SPA shell) stays outside this layer
  * entirely: the scope of the hook is `/api`, because the login page of
  * §14.6 must load before any credential can be presented (D-121).
@@ -192,18 +193,21 @@ export function classifyAuthMode(facts: AuthModeFacts): AuthModeVerdict {
   return { authentication: 'not-required' };
 }
 
-/* ── The credential seam (tasks 153–156) ──────────────────────────────── */
+/* ── The credential seam (tasks 154–156) ──────────────────────────────── */
 
 /**
  * Whether this request presents valid credentials — the seam the
- * password/session tasks implement: 153's scrypt verification against
- * `auth.passwordHash`, 154/155's session-cookie lookup and expiry
- * rules, composed behind one boolean. Async by nature (scrypt and the
- * session store are), so the seam allows promises; the guard awaits it
- * and never inspects HOW a request authenticated. Until the tasks land,
- * the default answers `false` for every request — fail closed: a mode
- * that demands credentials and a seam that cannot verify them keeps the
- * surface shut, never open.
+ * session tasks implement: 154/155's session-cookie lookup and expiry
+ * rules, composed behind one boolean. Password verification itself is
+ * not a request fact: task 153 landed it as `verifyPassword` in
+ * `../../services/password-hash` (D-122), consumed where the password
+ * is actually presented — the login endpoint, which stays reachable
+ * for credential-less clients through {@link PUBLIC_AUTH_ROUTE_CONFIG}.
+ * Async by nature (the session store is), so the seam allows promises;
+ * the guard awaits it and never inspects HOW a request authenticated.
+ * Until the session tasks land, the default answers `false` for every
+ * request — fail closed: a mode that demands credentials and a seam
+ * that cannot verify them keeps the surface shut, never open.
  */
 export type RequestAuthenticator = (request: FastifyRequest) => boolean | Promise<boolean>;
 
@@ -264,7 +268,7 @@ export interface AuthModeGuardOptions {
   readonly passwordConfigured?: () => boolean;
   /**
    * The credential seam ({@link RequestAuthenticator}); defaults to the
-   * fail-closed "no request is authenticated" until 153–155 land.
+   * fail-closed "no request is authenticated" until 154/155 land.
    */
   readonly isAuthenticated?: RequestAuthenticator;
 }
