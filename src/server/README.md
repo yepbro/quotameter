@@ -137,3 +137,100 @@ bootstrap composition that fills the `ProviderRegistry` is unchanged by it
 **Rule:** as the composition root it may import every layer except
 `src/cli/`. Route handlers validate input through `src/schemas/api/` and
 delegate to services; they never touch providers or SQL directly.
+
+## The accounts endpoints (task 159, spec §13, §8.2; decision D-128)
+
+`src/server/api/accounts.ts` registers the five §13 accounts routes inside
+the `/api` scope — the first dependency-carrying endpoint plugin: the scope
+plugin (`./index.ts`) registers it only when the construction passes
+`ApiRoutesOptions.accounts` (the configuration-store seam, the
+`QuotaRepository` facade, the `ProviderRegistry`, and the clock), so the
+unwired task-146 construction keeps answering the scope catch-all's 404
+envelope for `/api/accounts*` instead of a half-wired surface. The scope's
+three guards (Origin, custom-header/content-type, §15.1 auth-mode) cover
+these routes like every other `/api` route; none is public.
+
+- **`GET /api/accounts`** — the management list: the union of the
+  configuration entries and the storage rows, id-ascending, merged into the
+  closed `AccountView` contract (`src/schemas/api/accounts.ts`). The
+  configuration wins for label/enabled/key state (§6.4's live truth), the
+  row for lifecycle and history facts; a configured-not-yet-mirrored
+  account reads `status: 'active'` with null history facts, and an archived
+  account (whose configuration entry the archive removed) stays listed with
+  `enabled: false`, `keySource: 'none'` (§8.2: archive retains identity and
+  history).
+- **`POST /api/accounts`** — create; the key is write-only. The id is
+  client-supplied (the §6.2 charset, shared with the API schema via the
+  now-exported `ID_PATTERN` — one pattern, two consumers, D-100's rule) or
+  generated (`acc-<16 hex>`, stable from creation). `apiKey` is optional
+  (§5.3's "skip the key, add it later"); `apiKeyEnv` is deliberately not a
+  request field — binding an account to an environment variable is a
+  configuration-file concern (§6.3). Write order: storage row first,
+  configuration entry second, with a compensating row delete when the
+  configuration write fails (a just-created row carries no history, so the
+  compensation is total).
+- **`PATCH /api/accounts/:id`** — §13's three mutable fields (label,
+  enabled, key; at least one required). An archived account is refused
+  (`FORBIDDEN`/`account-archived` — §8.2's archive is terminal, D-061); a
+  key change on an `apiKeyEnv`-sourced account is refused
+  (`environment-key-read-only`, §6.3's read-only rule). Label changes
+  mirror to the row's denormalized copy (best-effort: a configured account
+  not yet mirrored has no row to update).
+- **`DELETE /api/accounts/:id`** — §8.2's split: archive by default
+  (`retireAccount`, idempotent with `already-archived`), purge on exactly
+  `?purgeHistory=true` (`purgeAccount`, whose D-061 per-table evidence
+  counts ride the response — including the `raw_responses` row count, the
+  gate-sanctioned count-only surface, D-128). Both remove the
+  configuration entry so polling stops. "Unknown account" is a
+  **both-halves verdict** (the review round's P1): an entry without a row
+  (a hand-edited account the config-sync has not mirrored, or the residue
+  of a purge whose entry-removal failed) is still an account this API
+  lists — it archives by its entry removal alone and purges with the
+  honest zero-evidence report, so a failed cleanup is always retryable
+  through the API instead of stranding a ghost entry behind a 404.
+- **`POST /api/accounts/:id/test`** — the provider connection test: the
+  key is resolved through the store seam into the registry's branded
+  `AccountContext` (non-enumerable secret) and handed to
+  `validateCredentials`. The request answers `200` whenever the test RAN,
+  with D-052's outcome vocabulary — `ok`, `rejected` (the provider refused
+  the key), `unavailable` (inconclusive: transport, an unset environment
+  name, or a provider this build lacks) — and the sanitized provider
+  message on failure; an unclassifiable provider error escalates to the
+  `INTERNAL` envelope, logged server-side. Bounded by the transport's own
+  §7.2 deadline; a keyless account is refused
+  (`FORBIDDEN`/`no-key-configured`).
+
+**The configuration-side seam (`AccountConfigStore`, D-128):** keys and
+the enabled flag live in the configuration file (§6.3 — never the
+database), so the endpoints' configuration half is an injected interface —
+list/find/add/update/remove/`secretOf` — the D-121 `RequestAuthenticator`
+precedent: the routes are complete and fully tested against the seam, and
+the production implementation (atomic `writeConfigFile` read-modify-write
+plus §6.4's change application) belongs to the composition root that owns
+the configuration file and the database. `secretOf` is the only secret
+surface — resolved into `createAccountContext` for the connection test,
+never echoed, logged, or serialized.
+
+**Write-only keys (§13/§15.4):** every response serializes through closed
+TypeBox contracts — the compiled serializer emits exactly the declared keys
+and structurally drops any other, so the key cannot leak through a handler
+bug (the D-111 health guard, generalized); the mask is the constant
+`ACCOUNT_KEY_MASK` (`********`), content-free by construction (no prefix,
+suffix, or length derivation), beside §13's `hasKey` boolean. The suites
+pin the marker-secret discipline: a created account's key never appears in
+any response body across every flow, while the store positively receives
+it.
+
+**Strict body validation (D-128):** the plugin compiles its schemas through
+a scope-local Ajv with `removeAdditional: false` — fastify's shared default
+silently strips unknown body fields, but §13's boundary rejects them (a
+payload smuggling `apiKeyEnv` answers `VALIDATION`, not a silent ignore);
+`coerceTypes`/`useDefaults`/`allErrors` re-assert the framework's own
+defaults so only the stripping changes.
+
+**Error vocabulary:** no new registry codes (D-113 stays frozen for this
+task) — endpoint refusals ride the existing classes with stable
+`details.reason` values: `unknown-provider`/`duplicate-account-id`/
+`blank-api-key` (VALIDATION), `account-archived`/
+`environment-key-read-only`/`no-key-configured` (FORBIDDEN), and unknown
+ids as NOT_FOUND.

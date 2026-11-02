@@ -5,7 +5,11 @@ TypeBox schemas and validated types for every trust boundary
 configuration, API request/response payloads, and the provider-neutral
 snapshot/metric model (spec §8.4).
 
-**Rule:** this layer is a leaf — it imports nothing from other `src/` modules.
+**Rule:** this layer is a leaf — it imports nothing from outside itself;
+the one sanctioned intra-layer share is sibling contract constants inside
+`src/schemas/` (the configuration's exported `ID_PATTERN`, reused by
+`api/accounts.ts` so the API and the configuration file validate the same
+id charset — decision D-128, D-100's one-pattern rule).
 Everything else may import it; server, storage, API, and the UI (type-only)
 consume the same canonical contracts from here.
 
@@ -28,6 +32,11 @@ error envelope — the stable-code registry `API_ERROR_DEFINITIONS`
 default message, decision D-113) and the closed TypeBox body contract
 `ApiErrorBodySchema`, which the behavior module (`src/server/api/error.ts`)
 types its composition against and the suites byte-pin on the wire — task
-163 generates OpenAPI from it). The contract is published as a JSON Schema document (`CONFIG_SCHEMA_DOCUMENT`
+163 generates OpenAPI from it; `accounts.ts` (task 159, D-128) is the
+accounts surface — the closed `AccountView`/list/create/update/purge/test
+contracts whose compiled serializers are the structural write-only-key
+guard, the constant `ACCOUNT_KEY_MASK`, the zero-evidence purge constant
+`EMPTY_PURGED_HISTORY_COUNTS`, and the id charset shared with the
+configuration contract through the exported `ID_PATTERN`). The contract is published as a JSON Schema document (`CONFIG_SCHEMA_DOCUMENT`
 → the committed, generated [`schema/config.schema.json`](../../schema/config.schema.json);
 task 062, D-015 — see [docs/config-schema.md](../../docs/config-schema.md)).

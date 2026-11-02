@@ -74,10 +74,20 @@ function isSanctioned(relativeFile: string): boolean {
     // parse-failure branch — the one services file that hands the §7.4
     // payload to `persistCollectionCycle`, which requires naming the
     // classified-cycle field and its input type. It composes no read of
-    // the stored table; the exposure guarantee (reads confined to storage
+    // stored table; the exposure guarantee (reads confined to storage
     // and `doctor --raw`) is unchanged, which is why this entry sanctions
     // exactly one file, never the services layer.
-    relativeFile === path.join('src', 'services', 'polling-persist.ts')
+    relativeFile === path.join('src', 'services', 'polling-persist.ts') ||
+    // D-128 (task 159), the same one-file widening shape: the §13 purge
+    // response carries D-061's per-table evidence counts, and one §11.2
+    // history table is `raw_responses` — the API contract names the COUNT
+    // (an integer: how many rows the cascade deleted), never a payload:
+    // no stored body, captured header, or size crosses the boundary, and
+    // the number's producer is the storage-side `purgeAccount` (sanctioned
+    // above as part of `src/storage/`). This sanctions exactly the schemas
+    // file that declares the response — no read of the table joins the
+    // API, so §7.4's "never over HTTP" holds for every payload.
+    relativeFile === path.join('src', 'schemas', 'api', 'accounts.ts')
   );
 }
 

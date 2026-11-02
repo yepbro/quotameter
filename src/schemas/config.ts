@@ -75,9 +75,13 @@ const WeekDaySchema = Type.Union([
 
 /**
  * URL-safe identifier charset shared by account ids and provider record
- * keys — both surface in API paths and storage keys (spec §13).
+ * keys — both surface in API paths and storage keys (spec §13). Exported
+ * (task 159) so the §13 accounts API contract (`src/schemas/api/accounts.ts`)
+ * validates request-supplied ids against exactly the charset the
+ * configuration persists — one pattern, two consumers, no drift (the
+ * `API_KEY_ENV_NAME_PATTERN` precedent, decision D-100).
  */
-const ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
+export const ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
 
 /**
  * POSIX environment-variable name a `apiKeyEnv` secret source may point at

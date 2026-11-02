@@ -26,10 +26,15 @@
  * with the health route opting out via its public route config; tasks
  * 153–155 the auth/session endpoints, and tasks 159–162 the remaining API
  * endpoints; each registers inside this scope, so the server construction
- * itself never changes shape again.
+ * itself never changes shape again. Task 159 (D-128) landed the accounts
+ * endpoints (`./accounts`) as the first dependency-carrying plugin here —
+ * registered only when `ApiRoutesOptions.accounts` supplies the store
+ * seams, so the unwired construction keeps answering the catch-all 404.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import type { AccountsRouteOptions } from './accounts';
+import { accountRoutes } from './accounts';
 import { createAuthModeGuard, type AuthModeGuardOptions } from './auth';
 import { sendApiError, unmatchedApiClassification } from './error';
 import { healthRoutes } from './health';
@@ -45,6 +50,18 @@ import { customHeaderGuard, originGuard } from './security';
 export interface ApiRoutesOptions {
   /** The §15.1 auth-mode guard inputs (task 152, D-121). */
   readonly auth: AuthModeGuardOptions;
+  /**
+   * The accounts endpoints' dependencies (task 159, D-128) — the
+   * configuration-store seam, the storage facade, the provider registry,
+   * and the clock. Optional because the accounts routes are the first
+   * endpoints needing runtime dependencies the task-146 construction does
+   * not hold (the composition root that owns the configuration file and
+   * the database is future work): absent, the plugin does not register and
+   * `/api/accounts*` answers the scope catch-all's 404 envelope like every
+   * other unimplemented §13 route — the surface appears exactly when it is
+   * wired to real stores, never half-wired.
+   */
+  readonly accounts?: AccountsRouteOptions;
 }
 
 /**
@@ -80,6 +97,18 @@ export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, o
   // Task 147: the public health response (§13) — the one endpoint that
   // stays unauthenticated in every auth mode (§15.1).
   await fastify.register(healthRoutes);
+
+  // Task 159 (spec §13, §8.2; decision D-128): the accounts endpoints —
+  // list/create/update/archive/purge/test with write-only keys. Registered
+  // as an encapsulated child of this scope, so the three guards above run
+  // for these routes exactly like every other `/api` route (fastify's hook
+  // encapsulation cascades onRequest hooks to descendant plugins); the
+  // concrete routes outrank the catch-all below by router specificity, not
+  // registration order. Registered only when the construction supplies the
+  // dependencies — see `ApiRoutesOptions.accounts`.
+  if (options.accounts !== undefined) {
+    await fastify.register(accountRoutes, options.accounts);
+  }
 
   // Task 148 (D-113, post-verification fix): the scope's catch-all route,
   // last in priority (real routes always win) but ahead of any catch-all
