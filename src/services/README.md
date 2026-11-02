@@ -68,8 +68,40 @@ sets the cookie (157 owns the flags). The module holds no logger (the
 synchronous like the repository it writes through (D-058), takes its
 clock as an explicit `now` argument (D-021), propagates repository
 failures unchanged, and retries no mint — a 2^256 primary-key collision
-is an event retry ceremony cannot make more testable. The login
-endpoint, expiry enforcement, and revocation are tasks 155–156.
+is an event retry ceremony cannot make more testable.
+
+The task-155 request-side half (decision D-124) joins it in the same
+module: `authenticateSession({ repository, token, now })` is the
+per-request §15.2 verdict the future `RequestAuthenticator` composition
+consumes — digest the presented cookie, look the row up, judge
+`expires_at` on **half-open validity** (`[created_at, expires_at)`: a
+request at exactly the expiry instant is rejected, one ms before it is
+accepted — D-124's pinned reading, the one under which every accepted
+sighting refreshes to a strictly future expiry; the verdict's test is
+the interval's upper endpoint alone, and a regressed clock reading
+before `created_at` is accepted with its refresh shrinking the expiry —
+fail-closed, pinned by test), and on the valid arm
+record the sighting through `touchSession` +
+`effectiveSessionExpiry`, so the 7-day inactivity window slides to
+`now + 7 d` while the 30-day absolute cap never extends. The verdict
+variants carry the evidence: `expired` names which §15.2 bound fired
+(`inactivity` or `absolute`, read off the row's own expiry), `unknown`
+is the single fail-closed answer for every absent row (never minted,
+logout-revoked, password-revoked, cleaned up — storage cannot tell them
+apart and the 401 must not try), and a refresh that finds the row gone
+downgrades to `unknown` (a revocation beats an in-flight sighting — the
+passwd CLI's separate database connection makes the arm live
+cross-process, not defensive). The
+verdict never deletes — §11.3's cleanup (D-061) owns expired-row
+deletion. `revokeSession({ repository, token })` is the logout
+revocation: digest the token, delete the one row, answer whether one
+existed (idempotent); password-change revocation stays where task 144
+landed it (`revokeAllSessions` in `src/cli/passwd.ts` over the facade's
+`deleteAllSessions` — a service wrapper would only forward one facade
+call). Fake-clock tests pin both rules and both revocations over a
+behavioral stub (`test/unit/sessions.spec.ts`) and the canonical schema
+(`test/integration/sessions-authentication.spec.ts`); the login/logout
+endpoints and rate limiting are tasks 156–157.
 
 **Rule:** may import `src/schemas/`, `src/util/`, `src/config/`, the provider
 core (`src/providers/` root, never a concrete adapter), and `src/storage/` —

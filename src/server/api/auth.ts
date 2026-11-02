@@ -208,9 +208,15 @@ export function classifyAuthMode(facts: AuthModeFacts): AuthModeVerdict {
  * Session creation landed the same way (task 154, D-123):
  * `createSession` in `../../services/sessions` is the primitive that
  * endpoint calls after verification succeeds — it mints the token and
- * stores only its SHA-256 digest, so this seam's request-side half
- * (155) is purely a lookup: `hashSessionToken(cookieValue)` over the
- * presented cookie, then the expiry verdict.
+ * stores only its SHA-256 digest. The request-side half landed with it
+ * (task 155, D-124): `authenticateSession({ repository, token, now })`
+ * in the same module is the whole cookie→verdict composition this seam
+ * wraps — digest the presented cookie, judge `expires_at` (half-open:
+ * a request at exactly the expiry instant is rejected), refresh the
+ * sighting on the valid arm — so the future wiring is one lambda:
+ * `(request) => authenticateSession({ ..., token: cookieValue(request),
+ * now }).verdict === 'valid'`. `revokeSession` in the same module is
+ * the logout endpoint's primitive.
  * Async by nature (the session store is), so the seam allows promises;
  * the guard awaits it and never inspects HOW a request authenticated.
  * Until the session tasks land, the default answers `false` for every

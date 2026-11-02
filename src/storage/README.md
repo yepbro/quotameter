@@ -523,10 +523,13 @@ The seventh entry of the canonical `MIGRATIONS` list (schema version 7) —
 one migration for both tables (D-031's one-entry-per-task rule), completing
 §11.2's table list. The typed access is task 088's; the session writer is
 task 154's — `src/services/sessions.ts` (D-123) mints the base64url token
-and inserts these rows (creation), while the request-side lookup, expiry
-enforcement, and revocation are tasks 155–156. Exercised directly in
-`test/integration/sessions-meta.spec.ts` and
-`test/integration/sessions-creation.spec.ts`.
+and inserts these rows (creation), and task 155 (D-124) reads, refreshes,
+and revokes them through the facade below (`authenticateSession`'s sighting
+refresh is the `touchSession` writer this table's effective-expiry column
+was designed for). Exercised directly in
+`test/integration/sessions-meta.spec.ts`,
+`test/integration/sessions-creation.spec.ts`, and
+`test/integration/sessions-authentication.spec.ts`.
 
 ### `sessions`
 

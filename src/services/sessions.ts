@@ -13,12 +13,15 @@
  * `sessions` table (D-056: the hex-shape `token_hash` CHECK, the two
  * expiry CHECKs, the exported window constants) and task 088's repository
  * methods (`insertSession`, `getSession`, …, D-058). This module is the
- * writer those tasks deferred: it mints the token, reduces it to the
- * digest, and hands the repository the §11.2 row. Deliberately absent
- * here, each a later task's own scope: the login endpoint and the
- * request-side lookup/expiry enforcement (155), rate limiting (156), and
- * the cookie's wire attributes (157 — flags travel with the response, not
- * with the token the handler mints).
+ * writer those tasks deferred and, since task 155, the per-request judge
+ * over the same facade: it mints the token, reduces it to the digest,
+ * hands the repository the §11.2 row — and, through
+ * `authenticateSession`/`revokeSession` below, renders the §15.2 expiry
+ * verdict with its sighting refresh, and the logout revocation.
+ * Deliberately absent still, each a later task's own scope: the login
+ * and logout endpoints (the cookie's consumers), rate limiting (156),
+ * and the cookie's wire attributes (157 — flags travel with the
+ * response, not with the token the handler mints).
  *
  * Pinned interpretations (D-123):
  *
@@ -57,6 +60,47 @@
  *   failure propagates to the login attempt like any other write
  *   failure (D-058: the named CHECKs are the write gate, and neither
  *   the repository nor this service re-validates them).
+ *
+ * Pinned interpretations (D-124, task 155):
+ *
+ * - **The validity test is `now < expires_at` — the upper endpoint of
+ *   the half-open lifetime `[created_at, expires_at)`.** A request at
+ *   exactly `expires_at` is expired; at `expires_at - 1` it is valid.
+ *   "Expires at T" makes T the first dead instant (§15.2's "no later
+ *   than 30 days after creation" composes the same way: the expiry
+ *   lands at `created + 30 d` at the latest, and a session alive AT
+ *   that instant would be alive later than the rule allows), and it is
+ *   the reading under which every accepted sighting refreshes to a
+ *   strictly future expiry — an inclusive boundary would let a sighting
+ *   at exactly `created + 30 d` rewrite `expires_at = now`, a refresh
+ *   to an already-dead expiry. The interval's lower endpoint names the
+ *   canonical row's birth, not a second verdict input: a clock reading
+ *   before `created_at` is the regressed-clock case the refresh bullet
+ *   below pins. `deleteSessionsExpiredBefore` (strict `<`,
+ *   D-056/D-061) still deletes only rows dead before `now`, so a
+ *   boundary-dead row survives until the next §11.3 cleanup — storage
+ *   hygiene lag only; the verdict is the gate.
+ * - **Every valid sighting refreshes.** D-056's sighting seam
+ *   (`touchSession`) runs on every accepted request: `last_seen_at`
+ *   tracks the latest authenticated request exactly, with no threshold
+ *   or dedup. A regressed clock reading is trusted like every other
+ *   wall stamp in the codebase (D-021) — including one before
+ *   `created_at`, which the verdict accepts (the test is the upper
+ *   endpoint alone) and which can only shrink the expiry, the
+ *   fail-closed direction.
+ * - **The verdict never deletes.** An `expired` row is left for §11.3's
+ *   cleanup (task 091, D-061): the verdict is read-plus-refresh, the
+ *   cleanup owns expired-row deletion, and re-deleting here would be a
+ *   second writer for a job the scheduler already does.
+ * - **Revocation is deletion, `unknown` the only aftermath.** No
+ *   tombstones and no revoked-vs-unknown distinction: storage cannot
+ *   tell a never-existed digest from a deleted one, and the consumer's
+ *   401 is identical. `revokeSession` (logout) digests the token and
+ *   deletes the one row; password-change revocation stays where task
+ *   144 landed it (`revokeAllSessions` in `src/cli/passwd.ts` → the
+ *   facade's `deleteAllSessions`, over its own connection while the
+ *   server runs) — a service wrapper that only forwarded one facade
+ *   call would add a second name, no logic.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -188,4 +232,146 @@ export function createSession(options: CreateSessionOptions): SessionCreation {
       expiresAt,
     },
   };
+}
+
+/* ── The request-side verdict and revocation (task 155, D-124) ────────── */
+
+/** Which §15.2 bound a rejected session's own `expires_at` sits at. */
+export type SessionExpiryRule =
+  /** `expires_at = last_seen_at + 7 d` — the inactivity bound. */
+  | 'inactivity'
+  /** `expires_at = created_at + 30 d` — the absolute age bound. */
+  | 'absolute';
+
+/**
+ * The verdict on one presented cookie token — the discriminated-union
+ * shape of `classifyAuthMode`'s `AuthModeVerdict` (`src/server/api/auth.ts`),
+ * the layer that will compose this behind its `RequestAuthenticator`
+ * seam:
+ *
+ * - `valid` — the digest named a row whose `expires_at` is still
+ *   ahead of `now` (D-124's half-open reading); the sighting was
+ *   recorded, and `session` carries the refreshed record.
+ * - `expired` — the row exists but `now >= expires_at`: §15.2 rejected
+ *   it. `rule` names which bound the row's own `expires_at` equals —
+ *   `'absolute'` when it sits at `created_at + 30 d`, `'inactivity'`
+ *   otherwise — diagnostic vocabulary for the consumer's 401 shape;
+ *   the canonical writers (creation, refresh) always produce exactly
+ *   one of the two bounds, and when both coincide (a last sighting
+ *   exactly 23 days in) the absolute rule is the name.
+ * - `unknown` — no row carries the digest: the token was never minted,
+ *   or the row is gone (logout revocation, password-change revocation,
+ *   §11.3 cleanup). Storage cannot distinguish these, and the
+ *   consumer's 401 must not try (fail closed on absence).
+ */
+export type SessionVerdict =
+  | { readonly verdict: 'valid'; readonly session: SessionRecord }
+  | {
+      readonly verdict: 'expired';
+      readonly session: SessionRecord;
+      readonly rule: SessionExpiryRule;
+    }
+  | { readonly verdict: 'unknown' };
+
+/** Options for {@link authenticateSession}. */
+export interface AuthenticateSessionOptions {
+  /** The storage facade — reads through `getSession`, refreshes through `touchSession`. */
+  readonly repository: QuotaRepository;
+  /**
+   * The cookie token exactly as the request presented it — the wire
+   * string, digested here and never passed to storage raw (the module's
+   * whole discipline; an empty or garbage cookie value simply digests to
+   * a digest no row carries and answers `unknown`).
+   */
+  readonly token: string;
+  /**
+   * The request instant as UTC epoch milliseconds — the D-021 clock
+   * seam, the same explicit-`now` contract as
+   * {@link CreateSessionOptions.now}. Both the expiry comparison and
+   * the refresh stamp read it.
+   */
+  readonly now: number;
+}
+
+/**
+ * The per-request §15.2 judgement — the composition D-123 recorded for
+ * this task: digest the presented token
+ * ({@link hashSessionToken} — no decode step), look the row up
+ * (`getSession`), render the verdict on `expires_at` (D-124's
+ * half-open reading: `now < expires_at` is the whole validity test —
+ * the row's single effective-expiry column already folds both §15.2
+ * bounds, whichever is tighter), and, on the valid arm only, record the
+ * sighting: `touchSession` writes `last_seen_at = now` and
+ * `expires_at = effectiveSessionExpiry(created_at, now)`, so the
+ * inactivity window slides to `now + 7 d` while the absolute cap never
+ * extends past `created_at + 30 d` — the same single-sited formula the
+ * shipped CHECKs enforce (D-056), which is why the write can never
+ * violate them.
+ *
+ * An `expired` verdict performs no write (§11.3's cleanup owns
+ * expired-row deletion, D-061). A `touchSession` that reports the row
+ * gone downgrades the verdict to `unknown`: a revocation must beat an
+ * in-flight sighting, never lose to it. Nothing can interleave between
+ * two calls on the server's own synchronous connection, but the
+ * `quotameter passwd` CLI revokes every session over its own separate
+ * connection while the server runs (task 144's flow), so the row can
+ * genuinely be gone at the write — the arm is live, not defensive.
+ * Synchronous (D-058), logger-free (§15.4/§16), and a non-integer `now`
+ * fails fast before any storage call, naming the field.
+ */
+export function authenticateSession(options: AuthenticateSessionOptions): SessionVerdict {
+  requireEpochMilliseconds(options.now, 'now');
+  const now = options.now;
+  const session = options.repository.getSession(hashSessionToken(options.token));
+  if (session === null) {
+    return { verdict: 'unknown' };
+  }
+  if (now >= session.expiresAt) {
+    return { verdict: 'expired', session, rule: sessionExpiryRule(session) };
+  }
+  const expiresAt = effectiveSessionExpiry(session.createdAt, now);
+  const recorded = options.repository.touchSession(session.tokenHash, {
+    lastSeenAt: now,
+    expiresAt,
+  });
+  if (!recorded) {
+    return { verdict: 'unknown' };
+  }
+  return { verdict: 'valid', session: { ...session, lastSeenAt: now, expiresAt } };
+}
+
+/**
+ * Which §15.2 bound an expired row's `expires_at` sits at — `absolute`
+ * at `created_at + SESSION_MAX_AGE_MS`, `inactivity` otherwise. The
+ * canonical writers produce exactly one of the two bounds (the `min` of
+ * D-056's formula), so this reads the binding rule off the row without
+ * recomputing the formula against a `now` the row never saw.
+ */
+function sessionExpiryRule(session: SessionRecord): SessionExpiryRule {
+  return session.expiresAt === session.createdAt + SESSION_MAX_AGE_MS ? 'absolute' : 'inactivity';
+}
+
+/** Options for {@link revokeSession}. */
+export interface RevokeSessionOptions {
+  /** The storage facade — the delete runs through `deleteSession`. */
+  readonly repository: QuotaRepository;
+  /** The cookie token exactly as the request presented it; digested here, never stored raw. */
+  readonly token: string;
+}
+
+/**
+ * Revokes one session — the logout half of §15.2's revocation: digest
+ * the presented token ({@link hashSessionToken}) and delete the row
+ * through the facade's `deleteSession`. Returns whether a session was
+ * revoked; a token naming no row (already logged out, never minted,
+ * cleaned up) returns `false` — logout is idempotent, and the cookie
+ * clearing (157's endpoint) makes the client forget the token either
+ * way. No timestamp is written, so there is no `now` to pass; the
+ * password-change half ("changing the password revokes all sessions")
+ * stays where task 144 landed it — `revokeAllSessions` in
+ * `src/cli/passwd.ts` over the facade's `deleteAllSessions` — and the
+ * future UI password-change endpoint composes the same facade call.
+ */
+export function revokeSession(options: RevokeSessionOptions): boolean {
+  return options.repository.deleteSession(hashSessionToken(options.token));
 }
