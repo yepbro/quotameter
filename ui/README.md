@@ -23,6 +23,10 @@ providers directly; all data flows through the HTTP API (spec §13, §14).
   the `system`/`light`/`dark` preference, its browser-storage
   persistence, and the live `data-theme` application — see
   [Theming](#theming).
+- **API client** (`src/api/`, task 169): the typed same-origin data
+  layer over the §13 HTTP API, with the shared error taxonomy and the
+  `ApiErrorNotice` presentation — see [The API client and error
+  presentation](#the-api-client-and-error-presentation).
 
 ## Routes
 
@@ -80,6 +84,104 @@ URIs**. For this directory that means:
 - Keep fonts and assets local (spec §14.1): no third-party domains, no
   CDN links in `index.html`.
 
+## The API client and error presentation
+
+Task 169 (decision D-134) added the UI's data layer: one typed client over
+the same-origin §13 HTTP API, one error taxonomy, and one presentation
+component every page shares.
+
+### Architecture
+
+| Module                              | Owns                                                                                                                                                                          |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/api/client.ts`                 | `createApiClient({fetchImpl?, baseUrl?, timeoutMs?})` and the endpoint families (`health`, `status`, `quota`, `providers`, `accounts`, `settings`) — pure TypeScript, no Vue. |
+| `src/api/error.ts`                  | the `ApiClientError` taxonomy and the loose §13-envelope recognizer.                                                                                                          |
+| `src/api/index.ts`                  | the Vue half: `createApiClientPlugin()` (provide) / `useApi()` (inject), `useApiCall()` (the per-request composable), and the re-exports pages import.                        |
+| `src/components/ApiErrorNotice.vue` | the one presentation surface: an inline `role="alert"` region (`data-testid="api-error"`) rendering catalog sentences per taxonomy class.                                     |
+
+Request and response types come from the server's own TypeBox contracts
+(`src/schemas/api/*`) through **type-only imports** — erased at build time,
+so the browser bundle carries no schema/TypeBox/Fastify code. Success
+bodies are trusted casts (the same-origin server serializes through the
+same closed schemas; a non-JSON body is caught as an error). The one
+runtime string that matters — the §15.3 mutation header
+`X-Quotameter-Request` — is a UI-local constant (`API_MUTATION_HEADER`)
+pinned against the server's `API_MUTATION_HEADER_NAME` by
+`test/component/api-client.spec.ts`.
+
+Every state-changing method (POST/PUT/PATCH/DELETE) attaches the mutation
+header, and `Content-Type: application/json` exactly when it sends a body
+(the server's content-type leg is body-bound, decision D-117); GETs carry
+neither. Every call runs under a deadline (default 15 s, overridable) and
+accepts an `AbortSignal`; the client composes both onto one controller and
+keeps them armed through the whole exchange — the headers phase **and**
+the body read — so a stalled body is bounded and a mid-body cancellation
+is honored, with a deliberate cancellation (`aborted`) staying
+distinguishable from the client's own `timeout`.
+
+### The error taxonomy
+
+| Kind         | Means                                                                   | Carries                       |
+| ------------ | ----------------------------------------------------------------------- | ----------------------------- |
+| `network`    | `fetch` rejected — service unreachable                                  | —                             |
+| `timeout`    | the client's deadline fired                                             | —                             |
+| `aborted`    | the caller's signal fired (deliberate cancellation)                     | —                             |
+| `unexpected` | a response arrived whose body is not the §13 envelope / not usable JSON | `status`                      |
+| `rejected`   | the §13 envelope answered                                               | `status`, `code`, the payload |
+
+**The presentation rule:** only catalog sentences render. `ApiErrorNotice`
+maps `kind` (and, for `rejected`, the envelope's `code` — with a fallback
+for unknown codes) onto `errors.*` keys in the i18n catalog. The envelope's
+own `message` and `details` are kept on the error object as
+`serverMessage`/`serverDetails` for programmatic use but **never reach the
+DOM**: the client cannot vouch for what actually answered, so a hostile or
+misrouted responder gets no text channel into the page (the marker test in
+`test/component/api-error-notice.spec.ts` pins this executably).
+`Error.message` is likewise a fixed per-kind sentence.
+
+### The page contract (tasks 170+)
+
+```vue
+<script setup lang="ts">
+import ApiErrorNotice from "../components/ApiErrorNotice.vue";
+import { useApi, useApiCall } from "../api";
+
+const api = useApi();
+const { data, error, pending, execute } = useApiCall(() => api.accounts.list());
+void execute();
+</script>
+
+<template>
+  <ApiErrorNotice v-if="error" :error="error" />
+</template>
+```
+
+One `useApiCall` per request; `execute()` re-runs it (retry, changed
+arguments). The call resolves the data on success and `null` on a taxonomy
+failure (the error is in `error`); anything the call throws that is not an
+`ApiClientError` rethrows — programming errors stay loud. Two deliberate
+non-failures also resolve `null` without touching `error`: a caller
+cancellation (`aborted` — not a failure to present; previously loaded
+data survives) and a superseded run (only the newest `execute()` writes
+state, so overlapping calls cannot race). Until their
+content tasks land, the four placeholder views carry exactly this wiring
+against the public health probe, which is the task-169 done-condition:
+errors are handled consistently across pages, through the one surface.
+
+Future families join as methods on the client: `history`/`events`
+(task 161), `peakHours` (162), and `auth` (180). **The task-180 seam:**
+`ApiErrorNotice`'s `UNAUTHENTICATED` branch is where the login redirect
+(the named `login` route) hooks in; the error object's `code` field is the
+programmatic signal, so the guard can intercept `code === 'UNAUTHENTICATED'`
+before presentation.
+
+### `vite preview` note
+
+The e2e suite serves the built UI statically (`vite preview`) with no API
+behind it: `/api/*` answers the SPA-fallback HTML, so every page honestly
+renders the `unexpected` notice there. Against the application server
+(Fastify serving both), the health probe succeeds and no notice renders.
+
 ## Layout
 
 - `index.html` — document shell (language, viewport, color-scheme, mount
@@ -89,6 +191,11 @@ URIs**. For this directory that means:
   the initial navigation resolved (a direct deep link renders the right
   view on the first paint).
 - `src/router/index.ts` — route table and `createAppRouter` factory.
+- `src/api/` — the typed API client, its error taxonomy, and the
+  provide/inject + composable glue (see [The API client and error
+  presentation](#the-api-client-and-error-presentation)).
+- `src/components/ApiErrorNotice.vue` — the shared inline error region
+  every page presents API failures through.
 - `src/i18n/` — the `en` message catalog (`en.ts`) and the
   `createAppI18n()` factory; see [Strings and the i18n
   catalog](#strings-and-the-i18n-catalog).
@@ -98,7 +205,8 @@ URIs**. For this directory that means:
 - `src/App.vue` — application shell: site header (title, primary nav,
   theme control) and the single `main` landmark the router renders into.
 - `src/views/*.vue` — routed page components (placeholders until their
-  content tasks land).
+  content tasks land; each already carries the shared error wiring of
+  task 169).
 - `src/assets/base.css` — design tokens (`--qm-*` custom properties; the
   single color source) and document-level base styles; the theme blocks
   are described under [Theming](#theming).

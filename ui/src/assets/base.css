@@ -35,6 +35,11 @@
   --qm-color-background: #ffffff;
   --qm-color-foreground: #1b1b1f;
   --qm-color-muted: #5a5a64;
+  /* The error surface's tokens (task 169, D-134): the ApiErrorNotice
+   * border/text and its tinted background; values keep WCAG AA in both
+   * modes, and the notice's text carries the meaning beside the color. */
+  --qm-color-danger: #b3261e;
+  --qm-color-danger-background: #fdf0ef;
   --qm-font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
@@ -44,6 +49,8 @@
     --qm-color-background: #17171b;
     --qm-color-foreground: #ececf1;
     --qm-color-muted: #a9a9b3;
+    --qm-color-danger: #f2b8b5;
+    --qm-color-danger-background: #2a1d1e;
   }
 }
 
@@ -52,6 +59,8 @@
   --qm-color-background: #17171b;
   --qm-color-foreground: #ececf1;
   --qm-color-muted: #a9a9b3;
+  --qm-color-danger: #f2b8b5;
+  --qm-color-danger-background: #2a1d1e;
 }
 
 body {

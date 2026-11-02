@@ -2,20 +2,24 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory } from 'vue-router';
 import { describe, expect, it } from 'vitest';
 import App from '../../ui/src/App.vue';
+import { createApiClientPlugin } from '../../ui/src/api';
 import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
 import { createAppTheme } from '../../ui/src/theme';
 import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
+import { FakeFetch, jsonResponse } from '../helpers/api';
 
 /**
  * The application shell (spec §14.1; decisions D-131, D-132, D-133): the
  * layout the router renders into — the site header with the application
  * title, the primary navigation, and the theme control, and the main
  * landmark carrying the routed view. Each test mounts a fresh router,
- * i18n, and theme instance and starts it at the given path (direct
- * navigation), so no state leaks between cases. The rendered-string
- * assertions run the whole catalog → `t()` → render pipeline, not just
- * static markup.
+ * i18n, theme, and API-client instance (a fake fetch answering a healthy
+ * §13 health response, so the views' shared error wiring stays silent —
+ * its failure presentation is pinned by `api-error-wiring.spec.ts`) and
+ * starts it at the given path (direct navigation), so no state leaks
+ * between cases. The rendered-string assertions run the whole catalog →
+ * `t()` → render pipeline, not just static markup.
  */
 
 /**
@@ -41,7 +45,10 @@ async function mountShell(initial: string = '/') {
     storage: new MemoryThemeStorage(),
     media: new FakeThemeMedia(),
   });
-  const wrapper = mount(App, { global: { plugins: [router, createAppI18n(), theme] } });
+  const api = createApiClientPlugin({
+    fetchImpl: new FakeFetch(() => Promise.resolve(jsonResponse(200, { status: 'ok' }))).impl,
+  });
+  const wrapper = mount(App, { global: { plugins: [router, createAppI18n(), theme, api] } });
   await settleNavigation();
   return wrapper;
 }
