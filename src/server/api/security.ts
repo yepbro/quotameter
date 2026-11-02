@@ -7,8 +7,9 @@
  * before any handler or body parser runs. The check is deliberately total
  * over three request signals — `Origin`, `Sec-Fetch-Site`, and the
  * request's own `Host` authority — and never over server state: not the
- * auth mode (152 selects credentials; the guard runs identically in
- * `off`/`auto`/`required`), not static serving, not configuration. That
+ * auth mode (the §15.1 auth-mode selection of task 152 lives in `./auth`;
+ * the guard runs identically in `auto`/`required`), not static serving,
+ * not configuration. That
  * mode-blindness is structural (D-113's hardening lesson: router-level
  * and static-mode classes must stay mode-independent — a security verdict
  * must not depend on whether the UI build happens to be deployed).

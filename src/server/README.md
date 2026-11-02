@@ -84,9 +84,30 @@ rejects the runtime does not enforce itself; the configured host
 normalizes into the bracketed wire name (IPv6 binds, both spellings),
 a wildcard bind logs one construction-time `warn` beside admitting
 only its literal name, and rejections are the envelope's FORBIDDEN
-class over a closed five-value reason vocabulary.
+class over a closed five-value reason vocabulary. `auth.ts` (task
+152, D-121) is the §15.1 auth-mode selection layer, registered as the
+`/api` scope's third hook (after the two §15.3 guards, under the
+root-scope Host guard): per request it decides whether authentication
+is required over four facts — the configured `auth.mode`
+(restart-requiring, captured at construction), the bind's
+loopback-ness (`isLoopbackHost`, the single owner), password presence
+(read per request: §6.4 classifies `auth.passwordHash` live), and the
+§15.1 proxy indicators (`Forwarded`, `X-Real-IP`, any `X-Forwarded-*`,
+presence-only and value-blind). `auto` + loopback + no indicator is
+passwordless; every other cell with a password demands credentials
+through the envelope's 401 class; the proxied passwordless shape
+answers §15.1's own 403-with-instructions; the two startup-refused
+shapes (`required`/non-loopback without a password, refused by the
+config layer) fail closed to 401 if ever constructed anyway. The
+`RequestAuthenticator` seam (default: nothing is authenticated, fail
+closed) is where 153–155 plug scrypt verification and sessions in;
+`GET /api/health` opts out through its public route config
+(`PUBLIC_AUTH_ROUTE_CONFIG`, inherited by the HEAD twin) — the same
+contract the future login endpoint uses. The frontend shell stays
+outside the layer: the §14.6 login page must load before credentials
+can be presented.
 Later: the remaining HTTP API routes and auth/session endpoints
-(152–163), and the security middleware (152, 156–158). It is the only
+(153–163), and the security middleware (156–158). It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3

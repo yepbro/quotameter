@@ -8,10 +8,10 @@
  * (`src/schemas/api/error.ts`). Three pieces:
  *
  * - **`ApiError`** — the throw-side extension point. Later tasks plug their
- *   rejections in by throwing it (auth modes 152, Origin/header checks
- *   149/150, rate limiting 156, endpoint handlers 159+); the class carries
- *   the registry's status and default message, so a thrown error is already
- *   the envelope's classification.
+ *   rejections in by throwing it (auth-mode selection 152, Origin/header
+ *   checks 149/150, rate limiting 156, endpoint handlers 159+); the class
+ *   carries the registry's status and default message, so a thrown error
+ *   is already the envelope's classification.
  * - **`classifyApiError`** — the trust boundary between "anything thrown" and
  *   the wire. Recognized shapes: `ApiError`, fastify's schema-validation
  *   errors (`error.validation`, projected to client-derived `where`/`path`/

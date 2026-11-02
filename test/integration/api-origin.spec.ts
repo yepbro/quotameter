@@ -2,7 +2,11 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { buildHttpServer, HTTP_BODY_LIMIT_BYTES } from '../../src/server/http';
+import {
+  buildHttpServer,
+  HTTP_BODY_LIMIT_BYTES,
+  type HttpAuthOptions,
+} from '../../src/server/http';
 import { createLogger, type Logger } from '../../src/util/logger';
 import { createMemoryLogSink, type MemoryLogSink } from '../helpers/logSink';
 import { createTempDir, type TempDir } from '../helpers/isolation';
@@ -32,6 +36,7 @@ const openServers: FastifyInstance[] = [];
 function buildServer(
   staticRoot?: string,
   host = '127.0.0.1',
+  auth?: HttpAuthOptions,
 ): {
   server: FastifyInstance;
   sink: MemoryLogSink;
@@ -43,6 +48,7 @@ function buildServer(
     port: 0,
     logger,
     ...(staticRoot === undefined ? {} : { staticRoot }),
+    ...(auth === undefined ? {} : { auth }),
   });
   openServers.push(server);
   return { server, sink };
@@ -298,7 +304,17 @@ describe('legitimate mutations and safe requests — pass-through (§15.3)', () 
       headers: { origin: 'http://localhost', host: 'localhost:80', ...MUTATION_HEADERS },
     });
     expect(localhost.statusCode).toBe(404);
-    const { server: proxiedServer } = buildServer(undefined, 'quotameter.example');
+    const { server: proxiedServer } = buildServer(undefined, 'quotameter.example', {
+      // Since task 152 (§15.1, D-121) this hosts-file-pin shape is a
+      // passworded deployment: `quotameter.example` is not a loopback
+      // bind to `isLoopbackHost` (the config layer's own §15.1 rule
+      // refuses the start without a password), so the pass-through
+      // evidence needs the logged-in proxied client — a password set
+      // and a session presented. The arm's subject is unchanged: the
+      // Origin authority comparison across default ports and case.
+      passwordConfigured: () => true,
+      isAuthenticated: () => true,
+    });
     const proxied = await proxiedServer.inject({
       method: 'POST',
       url: '/api/settings',

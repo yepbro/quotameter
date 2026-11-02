@@ -18,24 +18,41 @@
  * scope, at root scope in the construction (`../http.ts`) — it must bind
  * frontend routes too, and fastify's hook chain runs it ahead of both
  * guards here (outermost-first), so a hostile-Host request answers the
- * Host verdict before any Origin/header class; task 152 adds the remaining
- * request-security check (auth-mode selection), tasks
+ * Host verdict before any Origin/header class; task 152 the §15.1
+ * auth-mode selection (`./auth`, D-121) as the scope's THIRD hook, after
+ * the two §15.3 guards — per request it decides whether authentication
+ * is required (mode × bind × password presence × proxy indication) and
+ * rejects through the envelope's 403-with-instructions and 401 classes,
+ * with the health route opting out via its public route config; tasks
  * 153–155 the auth/session endpoints, and tasks 159–162 the remaining API
  * endpoints; each registers inside this scope, so the server construction
  * itself never changes shape again.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import { createAuthModeGuard, type AuthModeGuardOptions } from './auth';
 import { sendApiError, unmatchedApiClassification } from './error';
 import { healthRoutes } from './health';
 import { customHeaderGuard, originGuard } from './security';
+
+/**
+ * What the construction passes beside the prefix when registering this
+ * scope. `auth` is required — a security layer whose facts (mode, bind)
+ * default silently would mis-derive for exactly the remote deployments
+ * it exists to protect, so the construction (`../http.ts`) always
+ * derives and passes them explicitly.
+ */
+export interface ApiRoutesOptions {
+  /** The §15.1 auth-mode guard inputs (task 152, D-121). */
+  readonly auth: AuthModeGuardOptions;
+}
 
 /**
  * The `/api` route scope. Each endpoint plugin registers here in its own
  * task, so requests under `/api` resolve inside this scope and reach the
  * shared 404 shape, never the static-file fallback.
  */
-export const apiRoutes: FastifyPluginAsync = async (fastify) => {
+export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, options) => {
   // Task 149 (spec §15.3, decision D-115): the Origin/Fetch-Metadata
   // guard, first in the scope's lifecycle so a rejected mutation never
   // reaches a handler or its body. Scope registration IS the path
@@ -50,6 +67,16 @@ export const apiRoutes: FastifyPluginAsync = async (fastify) => {
   // classes.
   fastify.addHook('onRequest', originGuard);
   fastify.addHook('onRequest', customHeaderGuard);
+  // Task 152 (spec §15.1, decision D-121): the auth-mode selection, third
+  // and last of the scope's hooks — a request an earlier guard rejected
+  // never reaches the auth question, and the auth guard itself is
+  // method-blind (reading is protected like writing: §15.1 speaks of the
+  // web interface, not its mutations). Like the guards above it runs for
+  // every route here including the catch-all, so an unmatched `/api` path
+  // under a demanding verdict answers 401/403 instead of leaking the
+  // route table's shape; `GET /api/health` opts out through its public
+  // route config (`./auth`, task 147's §13 pin).
+  fastify.addHook('onRequest', createAuthModeGuard(options.auth));
   // Task 147: the public health response (§13) — the one endpoint that
   // stays unauthenticated in every auth mode (§15.1).
   await fastify.register(healthRoutes);

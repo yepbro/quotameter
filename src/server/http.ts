@@ -8,11 +8,12 @@
  * timeouts, static file serving with the SPA fallback, and the `/api` route
  * seam (`./api`) — and a second factory wraps it as a `LifecycleComponent`
  * the application shell (task 060) can start and stop. The remaining
- * routes (153+) and request-security layers (152, 156, 158) are later
- * Stage-12 tasks; tasks 149/150's guards register inside the `/api`
- * scope itself (`./api`), while task 151's Host allowlist — the one
+ * routes (153+) and request-security layers (156, 158) are later
+ * Stage-12 tasks; tasks 149/150's guards and task 152's §15.1 auth-mode
+ * selection register inside the `/api` scope itself (`./api`), while
+ * task 151's Host allowlist — the one
  * §15.3 check that must bind frontend routes too — registers here at
- * root scope (D-120); apart from that hook nothing in this module
+ * root scope (D-120); apart from those hooks nothing in this module
  * implements an endpoint or a security check. The §13 error envelope
  * (task 148, D-113) is the one error surface: the root-scope
  * `apiErrorHandler` from `./api/error` behind every thrown error, and the
@@ -67,7 +68,9 @@ import {
   staticServingErrorHandler,
 } from './api/error';
 import { apiRoutes } from './api';
+import type { RequestAuthenticator } from './api/auth';
 import { createHostAllowlist, createHostGuard } from './api/security';
+import { CONFIG_DEFAULTS, type AuthMode } from '../schemas/config';
 import { MAX_DRAIN_TIMEOUT_MS } from './shutdown';
 import type { Logger } from '../util/logger';
 
@@ -104,7 +107,38 @@ export function resolveUiDistDir(): string {
   return fileURLToPath(new URL('../../ui/dist', import.meta.url));
 }
 
-/** What `buildHttpServer` and `createHttpServerComponent` accept. */
+/**
+ * The §15.1 authentication inputs `HttpServerOptions.auth` accepts (task
+ * 152, decision D-121) — deliberately a projection of the config, not
+ * the config itself: the listener takes exactly the facts the auth-mode
+ * guard decides over, so the future composition root (which reads
+ * `auth.mode` and `auth.passwordHash` from validated configuration)
+ * maps them 1:1.
+ */
+export interface HttpAuthOptions {
+  /**
+   * The `auth.mode` of §15.1; §6.4 pins it restart-requiring, so
+   * construction-time capture is the value's own lifecycle. Defaults to
+   * the config layer's own default (`auto`, single-sited in
+   * `CONFIG_DEFAULTS`).
+   */
+  readonly mode?: AuthMode;
+  /**
+   * Whether `auth.passwordHash` is present, read per request — §6.4/D-026
+   * classify the hash live (a password set by `quotameter passwd` while
+   * the server runs takes effect on the next request, no restart).
+   * Defaults to "not configured".
+   */
+  readonly passwordConfigured?: () => boolean;
+  /**
+   * The credential seam tasks 153–155 implement (scrypt verification,
+   * session lookup); defaults to fail-closed "no request is
+   * authenticated" until they land.
+   */
+  readonly isAuthenticated?: RequestAuthenticator;
+}
+
+/** HTTP listener settings (spec §5.3, §15.1). */
 export interface HttpServerOptions {
   /**
    * Bind address; §15.1's loopback default is the config layer's call.
@@ -116,6 +150,15 @@ export interface HttpServerOptions {
   readonly host: string;
   /** TCP port; `0` binds an ephemeral port (tests). */
   readonly port: number;
+  /**
+   * The §15.1 authentication inputs the `/api` scope's auth-mode guard
+   * needs (task 152, D-121): the mode (restart-requiring per §6.4,
+   * captured here at construction — the D-120 precedent) beside the
+   * per-request facts. The bind half of §15.1's address fact is
+   * {@link HttpServerOptions.host} itself; defaults are the config
+   * layer's own (`auto`, no password).
+   */
+  readonly auth?: HttpAuthOptions;
   /**
    * The redacting logger whose Pino instance Fastify logs through (spec §3,
    * §16) — the Layer-A-protected `Logger.pino` of D-025, so Fastify's
@@ -303,7 +346,21 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
   server.setErrorHandler(apiErrorHandler);
 
   // The §13 route scope (task 147 landed the health route; 148+ join here).
-  server.register(apiRoutes, { prefix: '/api' });
+  // The auth inputs of the scope's third hook (task 152, D-121) are
+  // derived here — the only place that holds both §15.1 address facts:
+  // the bind host above and the mode/password projection of
+  // `options.auth` (defaults: the config layer's own `auto` and "no
+  // password"), with the bind's loopback-ness decided inside the guard
+  // through `isLoopbackHost` (the single owner of that semantics).
+  server.register(apiRoutes, {
+    prefix: '/api',
+    auth: {
+      mode: options.auth?.mode ?? CONFIG_DEFAULTS.auth.mode,
+      bindHost: options.host,
+      passwordConfigured: options.auth?.passwordConfigured,
+      isAuthenticated: options.auth?.isAuthenticated,
+    },
+  });
 
   return server;
 }

@@ -2,7 +2,13 @@
  * The public health route (task 147, spec §13, §15.1, §15.5; decision D-111).
  *
  * `GET /api/health` is the one §13 endpoint that answers without
- * authentication in every auth mode (§15.1): nothing here consults
+ * authentication in every auth mode (§15.1): since task 152 the route
+ * declares that through its `config` object
+ * ({@link PUBLIC_AUTH_ROUTE_CONFIG} from `./auth`) — the auth-mode
+ * guard's opt-out contract, read from `request.routeOptions` before the
+ * verdict — so the exemption is the route's own, explicit and
+ * method-scoped (the auto-generated HEAD twin inherits it), never an
+ * accident of hook registration order. Nothing here consults
  * credentials, and §13's "except the public health response" binds the
  * request-security tasks (149–152) to keep the route reachable unauthenticated.
  * The response is the literal `{"status":"ok"}` — pinned byte-exactly by the
@@ -12,6 +18,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import { PUBLIC_AUTH_ROUTE_CONFIG } from './auth';
 import { HealthResponseSchema, type HealthResponse } from '../../schemas/api/health';
 
 /**
@@ -35,6 +42,10 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
       // key (`additionalProperties: false` in the schema) — the
       // done-condition enforced at serialization, not by handler discipline.
       schema: { response: { 200: HealthResponseSchema } },
+      // §13/§15.1 (task 152, D-121): the auth-mode guard's public opt-out
+      // — the one §13 endpoint that answers unauthenticated in every
+      // auth mode and every proxy/password state.
+      config: PUBLIC_AUTH_ROUTE_CONFIG,
     },
     async (_request, reply) => {
       // §15.5: `Cache-Control: no-store` for API responses — applied
