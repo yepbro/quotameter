@@ -1,0 +1,36 @@
+/*
+ * Document-level styles and design tokens (spec §14.1; decision D-129).
+ *
+ * Tokens are CSS custom properties on `:root`; the `prefers-color-scheme`
+ * media block below carries the `system` half of the theme seam, and
+ * task 168 adds the explicit light/dark override hook plus persistence
+ * on top of these names — components must consume the tokens, never raw
+ * colors, so both shipped themes keep working.
+ *
+ * Fonts and assets are local by construction (spec §14.1): the system
+ * font stack performs no third-party fetch, and every referenced asset
+ * is bundled and served same-origin.
+ */
+
+:root {
+  --qm-color-background: #ffffff;
+  --qm-color-foreground: #1b1b1f;
+  --qm-color-muted: #5a5a64;
+  --qm-font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --qm-color-background: #17171b;
+    --qm-color-foreground: #ececf1;
+    --qm-color-muted: #a9a9b3;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--qm-color-background);
+  color: var(--qm-color-foreground);
+  font-family: var(--qm-font-family);
+  line-height: 1.5;
+}

@@ -221,7 +221,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 
 ## Stage 13 — Build the Vue web interface
 
-- [ ] **165. Set up Vue 3 and Vite** — **Status: [new]** — Create the frontend app and production build that is served by Fastify. **Done when:** the app builds into the expected `dist/` directory. **Spec:** [§3, §14.1](SPECIFICATION.md#14-web-interface).
+- [x] **165. Set up Vue 3 and Vite** — **Status: [done]** — Create the frontend app and production build that is served by Fastify. **Done when:** the app builds into the expected `dist/` directory. **Spec:** [§3, §14.1](SPECIFICATION.md#14-web-interface).
 - [ ] **166. Configure Vue Router and app shell** — **Status: [new]** — Add routes/layout for overview, account management, settings, and login. **Done when:** direct navigation and SPA fallback work. **Spec:** [§14](SPECIFICATION.md#14-web-interface).
 - [ ] **167. Configure `vue-i18n` English catalog** — **Status: [new]** — Put every user-facing string in the `en` catalog from the start. **Done when:** a test checks catalogue completeness and lint catches direct strings. **Spec:** [§14.1](SPECIFICATION.md#141-general-ui-requirements).
 - [ ] **168. Implement theme selection** — **Status: [new]** — Add `system`, `light`, and `dark` modes and persist the user's choice in browser storage. **Done when:** theme changes apply to UI and charts. **Spec:** [§14.1](SPECIFICATION.md#141-general-ui-requirements).

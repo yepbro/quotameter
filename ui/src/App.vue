@@ -1,7 +1,10 @@
 <script setup lang="ts">
-// Placeholder application shell. The real interface (accounts, charts,
-// history) arrives with the UI implementation stages; this component exists
-// so that the component-test and E2E foundations exercise a real mount.
+// Application shell root (spec §14.1): the mount-level document
+// structure — main landmark, heading, status line. The routed layout
+// (overview, accounts, settings, login) arrives with task 166, the
+// string catalog with 167, the theme controls with 168; until the
+// catalog exists the two strings below remain the documented lint
+// exception (task 036's eslint ignore list).
 </script>
 
 <template>
@@ -13,7 +16,10 @@
 
 <style scoped>
 .app {
-  font-family: system-ui, sans-serif;
   margin: 2rem;
+}
+
+.app p {
+  color: var(--qm-color-muted);
 }
 </style>
