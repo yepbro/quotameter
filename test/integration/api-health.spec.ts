@@ -77,8 +77,10 @@ describe('GET /api/health — the minimal public response (§13)', () => {
     // The framework's default JSON content type — the spec prescribes no
     // exact value (§13/§15.5); pinned so a Fastify default change is seen.
     expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
-    // §15.5: `Cache-Control: no-store` for API responses — route-scoped
-    // here until task 158's global security-header pass.
+    // §15.5: `Cache-Control: no-store` for API responses — the
+    // construction's root-scope rule since task 158 (D-127); the
+    // route-scoped header this suite pinned between tasks 147 and 158
+    // is gone, generalized.
     expect(response.headers['cache-control']).toBe('no-store');
   });
 

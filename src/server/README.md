@@ -24,13 +24,19 @@ schedulers, reverse-order teardown yields exactly the §5.6 sequence: stop
 scheduling, bounded wait for in-flight work, close storage/checkpoint WAL,
 release the lock. Its `onEvent` stream is the seam for the structured logger
 (task 072); its timeout clock is injectable for deterministic tests
-(decision D-020). `http.ts` (task 146) is the Fastify construction: the §3
-plugin set construction owns (`@fastify/static` with the §14.1 SPA fallback,
-`@fastify/cookie`; `@fastify/helmet` stays with its configuring task 158 —
-D-109 — and `@fastify/rate-limit` is declared but unregistered, superseded by
+(decision D-020). `http.ts` (tasks 146/158) is the Fastify construction: the §3
+plugin set (`@fastify/static` with the §14.1 SPA fallback, `@fastify/cookie`;
+`@fastify/helmet` registered by task 158 with the §15.5 list — D-127 — and
+`@fastify/rate-limit` declared but unregistered, superseded by
 the services-layer primitive `src/services/login-rate-limit.ts` (156, D-125)),
 the §15.5 body limit and
-connection/request timeouts, §16's level-gated request logging through the
+connection/request timeouts, the §15.5 security headers (the strict CSP,
+nosniff, and no-referrer on every response — the router-level rejection arm
+excepted, D-127 — `Cache-Control: no-store` on API responses via a root-scope
+hook on the §13 `/api` boundary, percent-decoded so `/%61pi/health` is an API
+path on the wire; every helmet
+default the spec does not list is disabled — D-127), §16's level-gated request
+logging through the
 redacting logger's Pino instance, and the `/api` route seam; the cookie's
 §15.2 write-side flags are the services-layer primitive
 `src/services/session-cookie.ts` (157, D-126), which the future login/logout
@@ -117,7 +123,7 @@ contract the future login endpoint uses. The frontend shell stays
 outside the layer: the §14.6 login page must load before credentials
 can be presented.
 Later: the remaining HTTP API routes and auth/session endpoints
-(153–163) and the security-header pass (158) — §15.2's login rate
+(159–163) — §15.2's login rate
 limiting is not middleware here: it lives in
 `src/services/login-rate-limit.ts` (156, D-125), composed by the future
 login endpoint. It is the only

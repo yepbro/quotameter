@@ -171,13 +171,14 @@ describe('buildHttpServer — construction pins (§3, §15.5)', () => {
     expect(overLimitResponse.statusCode).toBe(413);
   });
 
-  it('registers the cookie plugin and leaves helmet/rate-limit to their tasks', async () => {
-    // Decision D-109: construction owns @fastify/static + @fastify/cookie;
-    // @fastify/helmet (158) is declared but deliberately unregistered —
-    // pinned so an accidental early registration cannot silently pre-empt
-    // that task's configuration. @fastify/rate-limit stays unregistered
-    // with no owning task left: §15.2's budget counts *failed* attempts
-    // and answers with increasing delays, which a generic per-request 429
+  it('registers cookie and helmet; rate-limit stays unregistered', async () => {
+    // Decision D-109's split, landed: construction owns @fastify/static +
+    // @fastify/cookie; @fastify/helmet is configuration-owning and task
+    // 158 registers it with the §15.5 list (D-127 — the exact header
+    // values are pinned in security-headers.spec.ts; this pin is the
+    // registration itself). @fastify/rate-limit stays unregistered with
+    // no owning task left: §15.2's budget counts *failed* attempts and
+    // answers with increasing delays, which a generic per-request 429
     // limiter cannot express — task 156 landed the primitive in
     // src/services/login-rate-limit.ts (D-125) instead, so whether the
     // dependency stays at all is an open maintenance question.
@@ -185,7 +186,7 @@ describe('buildHttpServer — construction pins (§3, §15.5)', () => {
     // Plugin registration completes during boot.
     await server.ready();
     expect(server.hasPlugin('@fastify/cookie')).toBe(true);
-    expect(server.hasPlugin('@fastify/helmet')).toBe(false);
+    expect(server.hasPlugin('@fastify/helmet')).toBe(true);
     expect(server.hasPlugin('@fastify/rate-limit')).toBe(false);
   });
   it('resolves the default static root to the package ui/dist directory', () => {

@@ -1,6 +1,6 @@
 /**
- * Fastify server construction (task 146, spec §3, §13, §15.5, §16; decision
- * D-109).
+ * Fastify server construction (tasks 146/158, spec §3, §13, §15.5, §16;
+ * decisions D-109, D-127).
  *
  * The server shell: one factory builds the Fastify instance with everything
  * §13/§15.5 prescribe at construction time — the §3 plugin set that
@@ -8,12 +8,13 @@
  * timeouts, static file serving with the SPA fallback, and the `/api` route
  * seam (`./api`) — and a second factory wraps it as a `LifecycleComponent`
  * the application shell (task 060) can start and stop. The remaining
- * routes (153+) and the security-header layer (158) are later
- * Stage-12 tasks; tasks 149/150's guards and task 152's §15.1 auth-mode
- * selection register inside the `/api` scope itself (`./api`), while
- * task 151's Host allowlist — the one
- * §15.3 check that must bind frontend routes too — registers here at
- * root scope (D-120); apart from those hooks nothing in this module
+ * routes (159+) are later Stage-12 tasks; tasks 149/150's guards and
+ * task 152's §15.1 auth-mode selection register inside the `/api` scope
+ * itself (`./api`), while task 151's Host allowlist — the one
+ * §15.3 check that must bind frontend routes too — and task 158's
+ * §15.5 security-header layer (D-127: helmet plus the API `no-store`
+ * hook — response-shaping, it rejects nothing) register here at root
+ * scope (D-120); apart from those hooks nothing in this module
  * implements an endpoint or a security check. The §13 error envelope
  * (task 148, D-113) is the one error surface: the root-scope
  * `apiErrorHandler` from `./api/error` behind every thrown error, and the
@@ -21,14 +22,39 @@
  *
  * Split of §3's plugin list (decision D-109): `@fastify/static` and
  * `@fastify/cookie` are construction — serving the built UI and parsing
- * cookies have no configuration of their own. `@fastify/helmet` is a
- * declared dependency registered by its owning task (158: security
- * headers/CSP — registering it with defaults here would pre-empt that
- * deliverable). `@fastify/rate-limit` stays declared but unregistered
+ * cookies have no configuration of their own. `@fastify/helmet` is
+ * configuration-owning: task 158 (§15.5, D-127) registers it here with
+ * exactly the security-header list the spec prescribes.
+ * `@fastify/rate-limit` stays declared but unregistered
  * with no owning task left: §15.2's budget counts *failed* attempts
  * and answers with increasing delays — landed as the services-layer
  * primitive `src/services/login-rate-limit.ts` (156, D-125), which the
  * generic per-request 429 limiter cannot express.
+ *
+ * Security headers (§15.5, task 158, decision D-127): helmet answers the
+ * spec's exact list — the strict CSP, nosniff, no-referrer — on every
+ * route, and every helmet default the spec does not list is disabled
+ * (HSTS is the §15.6 reverse proxy's layer, framing policy lives once
+ * inside the spec'd CSP as `frame-ancestors 'none'`, and the cross-origin
+ * isolation / agent-cluster / prefetch / legacy-IE headers are unlisted).
+ * `Cache-Control: no-store` is §15.5's API-only rule and rides its own
+ * root-scope hook ahead of the Host guard: helmet has no such option,
+ * and the §13 `/api` path boundary (percent-decoded — the router matches
+ * the decoded path, not `request.url`'s raw wire form) must not touch
+ * static responses
+ * (those keep @fastify/static's own `public, max-age=0` — revalidate
+ * always, with send's ETags — which §15.5's wording permits and which
+ * cannot serve a stale app shell after an upgrade).
+ * Layering (verified on the pinned runtime): helmet's onRequest hooks
+ * are added by a plugin registered AHEAD of the construction's addHook
+ * calls, so they run FIRST in the root chain — every response carries
+ * the helmet set, the Host guard's thrown 403s included, except the one
+ * rejection class that never reaches any hook (the router-level
+ * `frameworkErrors`, rejected during routing itself), which still
+ * answers the §13 envelope whose `sendApiError` keeps error responses
+ * uncacheable wherever they appear (the error-path `no-store`
+ * guarantee; the route-scoped health header the D-111 pass carried is
+ * gone, generalized by this hook).
  *
  * Timeouts (§15.5): three explicit bounds. `connectionTimeout` is the
  * socket-inactivity bound (Fastify applies it through `server.setTimeout`,
@@ -59,6 +85,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
+import type { FastifyHelmetOptions } from '@fastify/helmet';
 import fastifyStatic from '@fastify/static';
 import Fastify, { LogController } from 'fastify';
 import type { FastifyBaseLogger, FastifyInstance, FastifyPluginAsync } from 'fastify';
@@ -98,6 +126,102 @@ export const HTTP_REQUEST_TIMEOUT_MS = 60_000;
 
 /** Spec §15.5: an idle keep-alive socket is closed after this long. */
 export const HTTP_KEEP_ALIVE_TIMEOUT_MS = 72_000;
+
+/**
+ * Spec §15.5 (task 158, decision D-127): the security-header configuration
+ * — exactly the headers the spec lists, nothing more.
+ *
+ * **The CSP** is the strict reading of "a strict Content Security Policy
+ * without inline scripts or external sources": `default-src 'none'` fails
+ * closed (every fetch type without an explicit allowance is blocked), and
+ * the allowances are exactly the §14.1 reality of the built UI — a
+ * hashed-asset bundle from the same origin. Same-origin module scripts and
+ * hashed styles (`script-src`/`style-src 'self'` — no `'unsafe-inline'`,
+ * no `'unsafe-eval'`: Vite emits referenced files, never inline code, and
+ * the runtime-only Vue build needs no `eval`), same-origin images and
+ * bundled fonts (§14.1 "bundle fonts and assets locally"), and the
+ * same-origin API (`connect-src 'self'`). No nonce machinery: §15.5
+ * demands no inline scripts at all, so there is nothing for a nonce to
+ * whitelist. The directives §15.5's "strict" implies beside them:
+ * navigation/embedding types CSP does not fold into `default-src` are
+ * pinned `'none'` (`base-uri`, `form-action`, `frame-ancestors`), and
+ * `object-src 'none'` is explicit though `default-src` already covers it
+ * — plugins are the classic fallback mistake. Insertion order is wire
+ * order (helmet serializes the object deterministically); the integration
+ * suite pins the exact byte string.
+ *
+ * **Beyond the CSP** the spec lists two more headers; every other helmet
+ * default is disabled — §15.5's list is exhaustive, and the unlisted
+ * defaults each have a reason not to reach the wire: HSTS belongs to the
+ * §15.6 reverse proxy (the service never speaks TLS itself; an app-set
+ * `max-age`/`includeSubDomains` would reach through a passing proxy into
+ * subdomains the operator never delegated to this app), framing policy
+ * lives once, inside the spec'd CSP (`frame-ancestors 'none'`), not again
+ * in the legacy `X-Frame-Options`, and the cross-origin isolation,
+ * agent-cluster, DNS-prefetch, Adobe-cross-domain, and IE-era headers
+ * (download-options, the XSS auditor's disabling `0`) are unlisted and
+ * unneeded by a same-origin SPA.
+ */
+const SECURITY_HEADERS_CONFIGURATION: FastifyHelmetOptions = {
+  contentSecurityPolicy: {
+    // `useDefaults: false` — the emitted policy is exactly the directive
+    // set below, not helmet's default policy merged over it.
+    useDefaults: false,
+    directives: {
+      'default-src': ["'none'"],
+      'script-src': ["'self'"],
+      'style-src': ["'self'"],
+      'img-src': ["'self'"],
+      'font-src': ["'self'"],
+      'connect-src': ["'self'"],
+      'base-uri': ["'none'"],
+      'form-action': ["'none'"],
+      'frame-ancestors': ["'none'"],
+      'object-src': ["'none'"],
+    },
+  },
+  // §15.5's literal value, stated here so it is single-sited in this
+  // module rather than inherited from helmet's default.
+  referrerPolicy: { policy: ['no-referrer'] },
+  // `xContentTypeOptions` stays at helmet's `nosniff` default (helmet
+  // rejects the boolean `true` as an option value) — pinned by the
+  // integration suite like the CSP string.
+  strictTransportSecurity: false,
+  xFrameOptions: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: false,
+  crossOriginResourcePolicy: false,
+  originAgentCluster: false,
+  xDnsPrefetchControl: false,
+  xPermittedCrossDomainPolicies: false,
+  xDownloadOptions: false,
+  xXssProtection: false,
+};
+
+/**
+ * Whether a request URL addresses the API: the §13 `/api` prefix boundary —
+ * the bare `/api` and every `/api/…` path, query stripped and
+ * percent-decoded. The single site of that boundary, shared by the §15.5
+ * no-store hook (task 158) and the not-found handler's SPA-vs-envelope
+ * split (a lookalike like `/apiary` is a UI deep link, never an API path).
+ * Decoding is required because fastify's `request.url` is the RAW wire path
+ * while the router matches the decoded one (review round P2-1, reproduced:
+ * `/%61pi/health` reaches the real `/api/health` handler) — a malformed
+ * escape keeps the raw path, and those requests the router itself rejects
+ * through `frameworkErrors` before any hook or handler runs.
+ */
+function isApiRequestPath(url: string): boolean {
+  // `split` never returns an empty array — the first element always exists.
+  const rawPath = url.split('?')[0]!;
+  let path = rawPath;
+  try {
+    path = decodeURIComponent(rawPath);
+  } catch {
+    // Malformed percent-escape: fall through with the raw path — the
+    // router-level frameworkErrors arm owns the rejection.
+  }
+  return path === '/api' || path.startsWith('/api/');
+}
 
 /**
  * The served frontend output (spec §14.1, §3): `ui/dist` under the package
@@ -254,6 +378,35 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
     frameworkErrors: apiErrorHandler,
   });
 
+  // Task 158 (spec §15.5, decision D-127): the security-header layer —
+  // the strict CSP, nosniff, and no-referrer of the spec's list, applied
+  // to every route the server answers. The plugin is fp-wrapped (root
+  // scope, no encapsulation), so the static scope's assets, the SPA
+  // fallback, the `/api` routes, and the not-found arm all pass through
+  // its hooks. Registered AHEAD of the addHook calls below, its hooks run
+  // first in the root chain (verified on the pinned runtime) — even the
+  // Host guard's thrown 403s carry the set. The only responses without it
+  // are the router-level `frameworkErrors`, rejected during routing
+  // before any hook runs; those still answer the §13 envelope with its
+  // own no-store.
+  server.register(helmet, SECURITY_HEADERS_CONFIGURATION);
+
+  // Task 158 (spec §15.5, decision D-127): `Cache-Control: no-store` for
+  // API responses — §15.5's one cache rule, and deliberately NOT part of
+  // the helmet configuration: helmet has no such option, and the rule is
+  // the §13 path boundary above, so static responses keep @fastify/static's
+  // own caching default (`public, max-age=0` — the spec fixes no static
+  // caching directive). The hook sits ahead of the Host guard so a
+  // gate-rejected `/api` request carries no-store even without the
+  // envelope — which sets it anyway; the two sites cannot disagree, they
+  // share the one literal.
+  server.addHook('onRequest', function apiCacheControlHook(request, reply, done) {
+    if (isApiRequestPath(request.url)) {
+      reply.header('cache-control', 'no-store');
+    }
+    done();
+  });
+
   // Task 151 (spec §15.3, decision D-120): the Host-allowlist guard, the
   // one §15.3 layer registered here at ROOT scope instead of inside the
   // `/api` scope — validating `Host` against `localhost`, `127.0.0.1`,
@@ -333,14 +486,11 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
   // unmatched route is not an error in fastify, so the 404 class lives in
   // route/not-found handlers, not in the error handler.
   server.setNotFoundHandler((request, reply) => {
-    // `split` never returns an empty array — the first element always exists.
-    const path = request.url.split('?')[0]!;
-    const isApiPath = path === '/api' || path.startsWith('/api/');
-    if (spaIndexAvailable && request.method === 'GET' && !isApiPath) {
+    if (spaIndexAvailable && request.method === 'GET' && !isApiRequestPath(request.url)) {
       reply.sendFile('index.html');
       return;
     }
-    sendApiError(reply, notFoundClassification(request.method, path));
+    sendApiError(reply, notFoundClassification(request.method, request.url.split('?')[0]!));
   });
 
   // The §13 error envelope behind every thrown error (task 148, D-113):

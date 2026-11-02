@@ -228,8 +228,12 @@ export function classifyApiError(error: unknown): ApiErrorClassification {
  * Sends one classification as the §13 envelope — the single site composing
  * the body (key order = the spec's: code, message, details; typed against
  * the schema contract so the composition cannot drift from it), the status,
- * and §15.5's `no-store` (an error response is an API response; task 158's
- * global header pass generalizes later, the D-111 route-scoped precedent).
+ * and §15.5's `no-store` (an error response is an API response, and the
+ * envelope is the error surface wherever it appears — including the
+ * non-API 404/403 arms and the router-level `frameworkErrors` that never
+ * run the request hooks; since task 158 the construction's root-scope
+ * hook owns the `/api` success side, D-127 — this remains the error-path
+ * guarantee, the D-111 precedent generalized, not removed).
  */
 export function sendApiError(reply: FastifyReply, classification: ApiErrorClassification): void {
   const body: ApiErrorBody = {

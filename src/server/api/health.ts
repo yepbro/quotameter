@@ -47,10 +47,11 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
       // auth mode and every proxy/password state.
       config: PUBLIC_AUTH_ROUTE_CONFIG,
     },
-    async (_request, reply) => {
-      // §15.5: `Cache-Control: no-store` for API responses — applied
-      // route-scoped here until task 158's global security-header pass.
-      reply.header('cache-control', 'no-store');
+    async () => {
+      // §15.5's `Cache-Control: no-store` for API responses is the
+      // construction's root-scope rule since task 158 (D-127) — the
+      // route-scoped header this handler carried between tasks 147 and
+      // 158 is gone, generalized.
       return HEALTH_RESPONSE;
     },
   );
