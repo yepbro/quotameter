@@ -22,7 +22,7 @@ Lessons already paid for — do not repeat them.
 ## Tooling quirks
 
 - **ESLint flat presets**: `@intlify/eslint-plugin-vue-i18n`'s `flat/recommended` is an **array**, not an object — spreading it into a config object breaks with `Unexpected key "0"`. Register the plugin manually and enable the single rule instead.
-- **Prettier vs `eslint-plugin-vue`** disagree about line breaks in short `<p>` elements: the residual warnings in `ui/src/App.vue` are expected; do not "fix" them (the two formatters will ping-pong).
+- **Prettier vs `eslint-plugin-vue`** disagree about line breaks in short `<p>` elements: the residual warnings in the UI's short `<p>` lines (`ui/src/views/*.vue` today) are expected; do not "fix" them (the two formatters will ping-pong).
 - **Vitest project `sequence.sort`** does not exist — use `sequence.shuffle: false` for determinism.
 - **`node:sqlite`** imports fine on 22.13.0+ but prints an `ExperimentalWarning` — expected, not an error.
 - **`npm pack`** silently skips allowlisted-but-missing files (`LICENSE`/`NOTICE` were reserved before they existed) — the allowlist check only fails on _unexpected_ entries.

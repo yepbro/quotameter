@@ -109,12 +109,22 @@ export default tseslint.config(
       '@intlify/vue-i18n/no-raw-text': [
         'error',
         {
-          // Justified exception: the bootstrap placeholder shell carries two
-          // fixed strings until the i18n catalog exists (UI implementation
-          // stages). Every other raw UI string is an error.
+          // Justified exception: until the i18n catalog exists (task 167),
+          // the shell and its routed placeholder pages carry a fixed set of
+          // strings — the application title, the bootstrap status line, the
+          // section labels, and the placeholder marker. Every other raw UI
+          // string is an error.
           ignorePattern:
-            '^(Quotameter|Setup in progress — the interface is not implemented yet\\.)$',
-          ignoreText: ['Quotameter', 'Setup in progress — the interface is not implemented yet.'],
+            '^(Quotameter|Setup in progress — the interface is not implemented yet\\.|Overview|Accounts|Settings|Login|Not implemented yet\\.)$',
+          ignoreText: [
+            'Quotameter',
+            'Setup in progress — the interface is not implemented yet.',
+            'Overview',
+            'Accounts',
+            'Settings',
+            'Login',
+            'Not implemented yet.',
+          ],
         },
       ],
     },

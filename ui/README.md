@@ -9,13 +9,35 @@ providers directly; all data flows through the HTTP API (spec §13, §14).
 
 - **Vue 3** single-file components (`<script setup lang="ts">`, strict
   TypeScript — `ui/tsconfig.json` extends the root config).
+- **Vue Router** (`createWebHistory`) for the shell's pages, wired in the
+  composition root; route components are lazy-loaded so each view is its
+  own external chunk (see the route table below).
 - **Vite** for the production bundle; no dev-server-specific behavior is
   relied upon at runtime.
 - **Vue Test Utils + happy-dom** for component tests (the Vitest
   `component` project, `test/component/`).
-- Vue Router, `vue-i18n`, and theming arrive with the UI implementation
-  stages (tasks 166–168); `src/main.ts` is the single composition seam
-  they plug into.
+- `vue-i18n` and theming arrive with the UI implementation stages
+  (tasks 167–168); `src/main.ts` is the single composition seam they
+  plug into.
+
+## Routes
+
+The server serves `index.html` for every non-`/api` path (spec §14.1 SPA
+fallback), and the router resolves the URL client-side — deep links work
+without server-side route tables.
+
+| Path        | Name       | View                             | Content task |
+| ----------- | ---------- | -------------------------------- | ------------ |
+| `/`         | `overview` | `src/views/OverviewView.vue`     | 172–174      |
+| `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170+         |
+| `/settings` | `settings` | `src/views/SettingsView.vue`     | 179          |
+| `/login`    | `login`    | `src/views/LoginView.vue`        | 180          |
+| any other   | —          | redirect to `/` (decision D-131) | —            |
+
+The route table and the `createAppRouter(history)` factory (memory-history
+seam for component tests) live in `src/router/index.ts`. The `/login`
+route has no navigation guard yet — task 180 adds the auth-state
+handling, and the login nav entry with it.
 
 ## Building
 
@@ -58,9 +80,15 @@ URIs**. For this directory that means:
 
 - `index.html` — document shell (language, viewport, color-scheme, mount
   point, entry module).
-- `src/main.ts` — composition root: creates and mounts the app; plugin
-  seams for the later stages live here.
-- `src/App.vue` — application shell root (mount-level structure).
+- `src/main.ts` — composition root: creates the app, installs the
+  router, and mounts after the initial navigation resolved (a direct
+  deep link renders the right view on the first paint). Plugin seams for
+  the later stages live here.
+- `src/router/index.ts` — route table and `createAppRouter` factory.
+- `src/App.vue` — application shell: site header (title + primary nav)
+  and the single `main` landmark the router renders into.
+- `src/views/*.vue` — routed page components (placeholders until their
+  content tasks land).
 - `src/assets/base.css` — design tokens (`--qm-*` custom properties with
   a `prefers-color-scheme` dark block) and document-level base styles;
   theme selection (task 168) builds on these names.
@@ -69,6 +97,7 @@ URIs**. For this directory that means:
 
 Repository artifacts are English-only (spec §4.1). Every user-facing
 string must eventually live in the `vue-i18n` English catalog (spec
-§14.1, task 167); until the catalog exists, the two placeholder strings
-in `src/App.vue` are the documented ESLint exception
-(`@intlify/vue-i18n/no-raw-text` ignore list in `eslint.config.ts`).
+§14.1, task 167); until the catalog exists, the fixed bootstrap strings
+(the title, the status lines, and the four section labels) are the
+documented ESLint exception (`@intlify/vue-i18n/no-raw-text` ignore list
+in `eslint.config.ts`).
