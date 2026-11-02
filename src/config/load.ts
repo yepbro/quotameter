@@ -19,7 +19,7 @@
  * right seams.
  */
 
-import Ajv2020 from 'ajv/dist/2020';
+import Ajv2020 from 'ajv/dist/2020.js';
 import type { ErrorObject } from 'ajv/dist/2020';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
