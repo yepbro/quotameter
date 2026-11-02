@@ -101,7 +101,62 @@ landed it (`revokeAllSessions` in `src/cli/passwd.ts` over the facade's
 call). Fake-clock tests pin both rules and both revocations over a
 behavioral stub (`test/unit/sessions.spec.ts`) and the canonical schema
 (`test/integration/sessions-authentication.spec.ts`); the login/logout
-endpoints and rate limiting are tasks 156–157.
+endpoints and the cookie's wire attributes stay later tasks' scope (no
+plan task owns the login endpoint yet — a plan gap recorded in D-125).
+
+Landed: [`login-rate-limit.ts`](./login-rate-limit.ts) — the §15.2 login
+rate budget (task 156, decision D-125), the third §15.2 primitive of the
+future `AuthService` beside the credential and session modules:
+`createLoginRateLimiter()` holds one in-process map from an **opaque
+source key** (never parsed — the endpoint decides what "source address"
+means on the wire) to that source's retained failure history, and answers
+the two questions the future login endpoint asks per attempt.
+`delayBeforeAttempt(source, now)` — read-only — is `0` while fewer than
+five failures sit inside the **sliding** 15-minute window (half-open: a
+failure exactly window-old is out, D-124's boundary discipline; a fixed
+bucket would let five failures straddle an edge as neighbors), otherwise
+the increasing §15.2 delay `1 s × 2^(n−5)` capped at the window length —
+**delays, never rejections** (§15.2's own word: the endpoint sleeps, then
+processes, so a legitimate user who mistypes five times still logs in,
+later, while a serially attacking source's guessing collapses to the
+delay cadence — the endpoint holds the cadence under concurrency by
+serializing per source, D-125's consequence for that task).
+`recordAttempt(source, 'failure' | 'success', now)` reports the outcome:
+a failure appends its stamp (pruning what the window expired), a success
+**deletes the history** — a verified password ends the guessing, the
+budget resets. The delay is computed from history, before verification
+(§15.2 budgets _failed_ attempts), so the endpoint's
+check-then-record ordering is the honest one. **Memory is bounded with
+behaviorally exact counting**: per source only the newest
+saturation-count stamps are retained, and the retention trim sorts by
+stamp value first, so the retained set is always the largest stamps by
+value whatever the clock did (in-window-ness is monotone in stamp
+value, the bounded count is exactly `min(k, bound)` of the unbounded
+history's `k`, and both sides of that `min` answer the capped delay at
+and above saturation — so truncation is invisible for every count and
+every clock reading, pinned against the raw formula including a
+regressed-clock trim case), and a sweep at most once per window drops
+fully-expired
+sources (the map never exceeds the sources active in roughly the last
+two windows; the deletion side is behaviorally invisible under a
+non-regressing clock by the same argument, the keep side is pinned). The module owns **no timers**
+(delays are returned numbers; the sleep is the endpoint's), **no
+logger** (§15.2's "log failed attempts at `warn` without logging
+passwords" is the endpoint layer's contract: one `warn` record per
+failed attempt carrying source and outcome only — never the candidate
+password, the stored hash, or any session token), and **no clock of its
+own**: `now` is an explicit argument (D-021), fails fast on non-integer
+readings before any state change (the D-090 family), and a regressed
+reading is trusted — it can only widen the counted window, the
+fail-closed direction. Restart clears every budget (in-memory state by
+design). Fake-clock tables in `test/unit/login-rate-limit.spec.ts`
+(23 tests) pin the five-failure budget with undelayed attempts 1–5, the
+exact doubling sequence and cap, the ±1 ms window edge, per-source
+isolation, the success reset, the retention exactness, the sweep, the
+clock discipline, and the zero-console pin; the login endpoint that
+composes this primitive is a later task (the `@fastify/rate-limit`
+dependency stays unregistered — the generic per-request 429 limiter
+cannot express a failed-attempt budget with increasing delays).
 
 **Rule:** may import `src/schemas/`, `src/util/`, `src/config/`, the provider
 core (`src/providers/` root, never a concrete adapter), and `src/storage/` —

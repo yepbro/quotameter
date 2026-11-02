@@ -19,9 +19,10 @@
  * `authenticateSession`/`revokeSession` below, renders the §15.2 expiry
  * verdict with its sighting refresh, and the logout revocation.
  * Deliberately absent still, each a later task's own scope: the login
- * and logout endpoints (the cookie's consumers), rate limiting (156),
- * and the cookie's wire attributes (157 — flags travel with the
- * response, not with the token the handler mints).
+ * and logout endpoints (the cookie's consumers) and the cookie's wire
+ * attributes (157 — flags travel with the response, not with the token
+ * the handler mints); the §15.2 login rate budget landed as its own
+ * module, `src/services/login-rate-limit.ts` (156, D-125).
  *
  * Pinned interpretations (D-123):
  *

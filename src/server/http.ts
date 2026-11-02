@@ -8,7 +8,7 @@
  * timeouts, static file serving with the SPA fallback, and the `/api` route
  * seam (`./api`) — and a second factory wraps it as a `LifecycleComponent`
  * the application shell (task 060) can start and stop. The remaining
- * routes (153+) and request-security layers (156, 158) are later
+ * routes (153+) and the security-header layer (158) are later
  * Stage-12 tasks; tasks 149/150's guards and task 152's §15.1 auth-mode
  * selection register inside the `/api` scope itself (`./api`), while
  * task 151's Host allowlist — the one
@@ -21,11 +21,14 @@
  *
  * Split of §3's plugin list (decision D-109): `@fastify/static` and
  * `@fastify/cookie` are construction — serving the built UI and parsing
- * cookies have no configuration of their own. `@fastify/helmet` and
- * `@fastify/rate-limit` are declared dependencies but are registered by
- * their owning tasks (158: security headers/CSP; 156: login rate limiting),
- * because their §15.5/§15.2 behavior IS that task's deliverable —
- * registering them with defaults here would pre-empt it.
+ * cookies have no configuration of their own. `@fastify/helmet` is a
+ * declared dependency registered by its owning task (158: security
+ * headers/CSP — registering it with defaults here would pre-empt that
+ * deliverable). `@fastify/rate-limit` stays declared but unregistered
+ * with no owning task left: §15.2's budget counts *failed* attempts
+ * and answers with increasing delays — landed as the services-layer
+ * primitive `src/services/login-rate-limit.ts` (156, D-125), which the
+ * generic per-request 429 limiter cannot express.
  *
  * Timeouts (§15.5): three explicit bounds. `connectionTimeout` is the
  * socket-inactivity bound (Fastify applies it through `server.setTimeout`,

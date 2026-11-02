@@ -9,7 +9,9 @@
  *
  * - **`ApiError`** — the throw-side extension point. Later tasks plug their
  *   rejections in by throwing it (auth-mode selection 152, Origin/header
- *   checks 149/150, rate limiting 156, endpoint handlers 159+); the class
+ *   checks 149/150, endpoint handlers 159+; §15.2's rate limiting never
+ *   joins this list — D-125 pins increasing delays, not rejections, so
+ *   it throws nothing); the class
  *   carries the registry's status and default message, so a thrown error
  *   is already the envelope's classification.
  * - **`classifyApiError`** — the trust boundary between "anything thrown" and

@@ -6,7 +6,9 @@
  * task 153 (scrypt, landed as the `verifyPassword` primitive the login
  * endpoint will consume), session creation task 154 (landed as the
  * `createSession` primitive in `../../services/sessions`, D-123), the
- * lookup/expiry rules over those sessions 155, login rate-limiting 156. The split
+ * lookup/expiry rules over those sessions 155, login rate-limiting 156
+ * (landed as the `createLoginRateLimiter` primitive in
+ * `../../services/login-rate-limit`, D-125). The split
  * is the layer's contract: a pure verdict over four facts (mode, bind
  * loopback-ness, password presence, proxy indication), plus one injected
  * credential seam ({@link RequestAuthenticator}) the later tasks implement
@@ -216,7 +218,13 @@ export function classifyAuthMode(facts: AuthModeFacts): AuthModeVerdict {
  * sighting on the valid arm — so the future wiring is one lambda:
  * `(request) => authenticateSession({ ..., token: cookieValue(request),
  * now }).verdict === 'valid'`. `revokeSession` in the same module is
- * the logout endpoint's primitive.
+ * the logout endpoint's primitive. Task 156's rate budget landed the
+ * same way: `createLoginRateLimiter()` in
+ * `../../services/login-rate-limit` (D-125) owns the §15.2
+ * five-failures/15-minutes per-source delays the login endpoint
+ * composes ahead of its verify-then-establish flow
+ * (`delayBeforeAttempt` → sleep → verify → `recordAttempt`), never
+ * inside this mode layer — D-121's consequences pin.
  * Async by nature (the session store is), so the seam allows promises;
  * the guard awaits it and never inspects HOW a request authenticated.
  * Until the session tasks land, the default answers `false` for every

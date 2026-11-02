@@ -26,8 +26,10 @@ release the lock. Its `onEvent` stream is the seam for the structured logger
 (task 072); its timeout clock is injectable for deterministic tests
 (decision D-020). `http.ts` (task 146) is the Fastify construction: the §3
 plugin set construction owns (`@fastify/static` with the §14.1 SPA fallback,
-`@fastify/cookie`; `@fastify/helmet`/`@fastify/rate-limit` stay with their
-configuring tasks 158/156 — D-109), the §15.5 body limit and
+`@fastify/cookie`; `@fastify/helmet` stays with its configuring task 158 —
+D-109 — and `@fastify/rate-limit` is declared but unregistered, superseded by
+the services-layer primitive `src/services/login-rate-limit.ts` (156, D-125)),
+the §15.5 body limit and
 connection/request timeouts, §16's level-gated request logging through the
 redacting logger's Pino instance, and the `/api` route seam; the same
 factory wraps it as the `http-listener` lifecycle component the application
@@ -111,7 +113,10 @@ contract the future login endpoint uses. The frontend shell stays
 outside the layer: the §14.6 login page must load before credentials
 can be presented.
 Later: the remaining HTTP API routes and auth/session endpoints
-(153–163), and the security middleware (156–158). It is the only
+(153–163) and the security-header pass (158) — §15.2's login rate
+limiting is not middleware here: it lives in
+`src/services/login-rate-limit.ts` (156, D-125), composed by the future
+login endpoint. It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3

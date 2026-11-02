@@ -173,9 +173,14 @@ describe('buildHttpServer — construction pins (§3, §15.5)', () => {
 
   it('registers the cookie plugin and leaves helmet/rate-limit to their tasks', async () => {
     // Decision D-109: construction owns @fastify/static + @fastify/cookie;
-    // @fastify/helmet (158) and @fastify/rate-limit (156) are declared but
-    // deliberately unregistered — pinned so an accidental early
-    // registration cannot silently pre-empt those tasks' configuration.
+    // @fastify/helmet (158) is declared but deliberately unregistered —
+    // pinned so an accidental early registration cannot silently pre-empt
+    // that task's configuration. @fastify/rate-limit stays unregistered
+    // with no owning task left: §15.2's budget counts *failed* attempts
+    // and answers with increasing delays, which a generic per-request 429
+    // limiter cannot express — task 156 landed the primitive in
+    // src/services/login-rate-limit.ts (D-125) instead, so whether the
+    // dependency stays at all is an open maintenance question.
     const { server } = buildServer();
     // Plugin registration completes during boot.
     await server.ready();
