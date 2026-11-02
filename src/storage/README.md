@@ -1086,3 +1086,16 @@ pre-migration state survive a failing migration; a corrected re-run
 completes). The primitive's runtime contract is pinned there too:
 committed-but-uncheckpointed WAL content lands in the standalone image,
 and the in-transaction refusal.
+
+## `sqlite-availability.ts` — the `node:sqlite` availability probe (task 145, spec §5.5; decision D-119)
+
+Spec §5.5 has `doctor` check "Node version and `node:sqlite`", and the
+package layout's storage gate keeps every form of the `node:sqlite` import
+inside this layer — so the probe lives here, in the layer that owns the
+built-in: `probeNodeSqlite()` answers availability by dynamically trying
+the import (nothing loads when the module is merely imported itself), and
+`doctor.ts` reaches it dynamically, keeping the CLI dispatch graph free of
+storage and its ExperimentalWarning except where SQLite is genuinely
+touched (the D-116 discipline). The probe emits the runtime's
+`ExperimentalWarning` on every doctor invocation — intrinsic to §5.5's
+check, which can only answer availability by importing the built-in.

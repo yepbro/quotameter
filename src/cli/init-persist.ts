@@ -169,8 +169,13 @@ const PLACEHOLDER_PASSWORD = 'quotameter-init-probe';
  * so the probe re-fails and the file classifies as invalid (review finding
  * on the first version, which replaced whatever it found and thereby
  * "repaired" corrupt auth data into the pending state).
+ *
+ * Additively exported for `doctor`'s §15.1 consistency check (task 145,
+ * D-119): an invalid configuration is probed through this same absent-only
+ * substitution so the password-pending state gets its `passwd` remedy —
+ * the `ownerUnitDirectories` additive-export precedent.
  */
-function withPlaceholderHash(input: unknown): unknown {
+export function withPlaceholderHash(input: unknown): unknown {
   if (!isPlainObject(input)) return input;
   if (input.auth === undefined) {
     return { ...input, auth: { passwordHash: PLACEHOLDER_HASH } };

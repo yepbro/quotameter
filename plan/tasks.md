@@ -195,7 +195,7 @@ Do not mark a task done merely because code was written; its stated acceptance c
 - [x] **142. Implement `status`** — **Status: [done]** — Report service status, last collection time, account status, and last error without exposing secrets. **Done when:** output is useful for both system and user units. **Spec:** [§5.2, §7.3](SPECIFICATION.md#5-installation-cli-and-service-lifecycle).
 - [x] **143. Implement the `logs` wrapper** — **Status: [done]** — Wrap `journalctl` with the correct service scope and useful default options. **Done when:** logs work for supported system/user installation modes. **Spec:** [§5.2, §16](SPECIFICATION.md#5-installation-cli-and-service-lifecycle).
 - [x] **144. Implement `passwd`** — **Status: [done]** — Set/change the password, validate its minimum length, store only a scrypt hash, and revoke sessions. **Done when:** no raw password is written to config/logs or shown after input. **Spec:** [§5.2, §15.2](SPECIFICATION.md#15-security).
-- [ ] **145. Implement `doctor` checks** — **Status: [new]** — Implement version, SQLite, config, permissions, timezone, DB integrity, provider connectivity, service/unit, port, proxy/auth, and NTP diagnostics. **Done when:** checks return actionable messages and a stable exit status. **Spec:** [§5.5](SPECIFICATION.md#55-doctor).
+- [x] **145. Implement `doctor` checks** — **Status: [done]** — Implement version, SQLite, config, permissions, timezone, DB integrity, provider connectivity, service/unit, port, proxy/auth, and NTP diagnostics. **Done when:** checks return actionable messages and a stable exit status. **Spec:** [§5.5](SPECIFICATION.md#55-doctor).
 
 ## Stage 12 — Implement the HTTP API and server security
 

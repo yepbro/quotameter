@@ -11,27 +11,28 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 
 ## Dispatch skeleton (task 128, decision D-044)
 
-| File                   | Owns                                                                                                                                           |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                                          |
-| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                                          |
-| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                                      |
-| `help.ts`              | pure help renderers (general, command, group)                                                                                                  |
-| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                                       |
-| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                            |
-| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                                  |
-| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                              |
-| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                                 |
-| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                            |
-| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                                          |
-| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                                       |
-| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                                                          |
-| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                                                          |
-| `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136)             |
-| `service-setup.ts`     | the §5.3 step-7 branch layer: capability probes, the route matrix, the no-sudo user-unit install, the manual-steps fallbacks (task 137)        |
-| `service-linger.ts`    | the §5.3 linger detection + guidance layer: flag-file tri-state probe, the enable-linger command with the logout/reboot consequence (task 138) |
-| `service-install.ts`   | the §5.2 `service install`/`uninstall` handlers: idempotent unit lifecycle on both unit kinds, through the 136/137 seams (task 139)            |
-| `passwd.ts`            | the §5.2 `passwd` handler: the §15.2 password pair, scrypt-hash-only persistence, session revocation (task 144)                                |
+| File                   | Owns                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                                            |
+| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                                            |
+| `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                                        |
+| `help.ts`              | pure help renderers (general, command, group)                                                                                                    |
+| `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                                         |
+| `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                              |
+| `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                                    |
+| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                                |
+| `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                                   |
+| `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                              |
+| `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                                            |
+| `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                                         |
+| `systemd-unit.ts`      | the §5.4 system unit generator, unit-file parser, and structural validator (task 134)                                                            |
+| `systemd-user-unit.ts` | the §5.3/§5.4 user unit generator and structural validator (task 135)                                                                            |
+| `service-owner.ts`     | the §5.3 ownership/privilege decision layer: invocation context, service-owner resolution, privileged-operation routing (task 136)               |
+| `service-setup.ts`     | the §5.3 step-7 branch layer: capability probes, the route matrix, the no-sudo user-unit install, the manual-steps fallbacks (task 137)          |
+| `service-linger.ts`    | the §5.3 linger detection + guidance layer: flag-file tri-state probe, the enable-linger command with the logout/reboot consequence (task 138)   |
+| `service-install.ts`   | the §5.2 `service install`/`uninstall` handlers: idempotent unit lifecycle on both unit kinds, through the 136/137 seams (task 139)              |
+| `passwd.ts`            | the §5.2 `passwd` handler: the §15.2 password pair, scrypt-hash-only persistence, session revocation (task 144)                                  |
+| `doctor.ts`            | the §5.5 `doctor` handler: the check-result contract, the eleven §5.5 checks through the landed seams, `--raw` over the 103 read path (task 145) |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -923,3 +924,116 @@ stdin, no configuration, and `--help` — are pinned in
 `test/integration/cli-passwd.spec.ts`; the encoding itself (format, salt
 randomness, the known-answer recomputation from the exported constants) in
 `test/unit/password-hash.spec.ts`.
+
+## The `doctor` command (task 145, spec §5.5, decision D-119)
+
+`doctor.ts` holds the §5.5 `quotameter doctor` handler — the diagnostics
+command — whose product is the **check-result contract** the
+done-condition names ("checks return actionable messages and a stable
+exit status"). Every check yields one row with a closed status vocabulary
+(**D-119**): `pass` (the fact it established), `fail` (a problem needing
+operator attention — the summary plus indented detail lines name the next
+step, a quotameter command or a system remedy), `unavailable` (the check
+could not run; honest, and never failing the exit code — a non-diagnosis
+is not a diagnosis, D-114's `unknown` stance applied to exit semantics),
+and `skip` (a precondition was not met; the failing row carries the
+remedy). **Exit code: 1 exactly when at least one check is `fail`** (or
+the pre-flight owner/directory resolution failed, which renders the
+standard failure lines and no report); otherwise 0 — doctor is the
+attention-flagging command (the flutter/brew-doctor convention), so a
+stopped service or an occupied port is a `fail` here, exactly the states
+`status` (D-114) deliberately never fails on: different command, different
+job. Each check composes the layer that owns its fact, never re-derived:
+
+- **Runtime** — the found `process.versions.node` against
+  `MINIMUM_NODE_VERSION` (imported lazily from `src/server/main.ts`, the
+  D-098 mirror of `engines.node`, so the dispatch graph stays light),
+  failing closed on an unparseable version; and `node:sqlite`
+  availability through the storage layer's new probe
+  (`src/storage/sqlite-availability.ts` — the layout gate keeps the
+  `node:sqlite` import inside `src/storage/`, and the dynamic hop keeps
+  the CLI graph free of it; the probe's ExperimentalWarning on every
+  doctor run is intrinsic to §5.5's check).
+- **Configuration** — the service's own `loadConfigWithEnv` pipeline (the
+  D-112 precedent): valid (file or env-only, provenance stated), absent
+  (fail with `quotameter init` — a machine doctor runs on should be
+  configured), or invalid (the pipeline's field-addressed problems).
+- **Permissions** — a **diagnostic-only** stat of the §6.3 objects (mode
+  `0700`/`0600`, owner uid = the service owner's, no symlink, right
+  type): doctor never chmods (`enforceConfigPermissions` is the fixing
+  half; a diagnostic that mutates its subject lies about what it found) —
+  the fail rows carry the `chmod`/`chown` remedy.
+- **Time zone** — the configured display zone through the clock module's
+  IANA gate (defense-in-depth total: the parser pre-validates).
+- **Database** — the read-only storage sibling over an existing file plus
+  `PRAGMA quick_check` (§5.5's own probe; absent = skip "not created
+  yet", a refused open fails with D-114's hot-journal hint, problems
+  quote the first rows). The same handle feeds `--raw`.
+- **Accounts** — per-account `validateCredentials` through the §8.1
+  contract (`createInitialAccountProvider` default), classified by
+  init-account's secret-scrubbing `classifyTestFailure`: rejected → fail
+  with the replacement remedy, inconclusive → unavailable (D-052's own
+  distinction), disabled → skip, an `apiKeyEnv` missing from this shell →
+  the D-112 residual (unavailable, never a verdict). Totality guards (the
+  review round's P2s): a schema-valid-but-blank label or key is a fail
+  row (whitespace is never a credential or label, D-011 — never a thrown
+  `AccountContext` TypeError losing the report), and an account naming a
+  provider this build does not carry is never probed with the bundled
+  adapter (§15.4: a key must not travel to a provider its configuration
+  never named).
+- **Service** — two rows: the installed scope from D-110's disk probe
+  (both units = the 139 mistake; unit content read through the §5.4
+  parser, `ExecStart` compared against `serviceExecPaths()` — §5.4's
+  stale-path detection with `service install` as the regeneration remedy
+  — and the unit-kind structural validator, the system unit against the
+  owner-scoped `ReadWritePaths` pair), and the state row (the exported
+  D-114 `planManagerProbe`/`describeManagerState` for an installed unit —
+  not active is a fail with the `quotameter start` next step, sudo-prefixed
+  for a regular user facing a system unit; a unit-less machine through
+  D-112's lock read — a live holder passes as the foreground run, absent
+  or stale fails with the install/run steps).
+- **Port** — a real ephemeral bind of the configured `host:port` (no
+  `ss`/`lsof` subprocess, the D-107 well-known-path reasoning): free
+  passes, in-use passes only when the running service holds it (the lock
+  fact), a refusal fails with the unprivileged-port advice — and a
+  privileged run binding a port below 1024 proves nothing about the
+  unprivileged owner, so that combination fails too (the review round's
+  caveat), as do the unbindable address errors (`EADDRNOTAVAIL` et al.).
+- **Network/authentication** — §15.1's consistency verdict: valid
+  configurations render the loopback/remote × auto/required × password
+  classification (the parser already refuses the inconsistent ones);
+  invalid ones get the D-101 placeholder-hash probe (via the additively
+  exported `withPlaceholderHash`) through `parseConfigWithEnv`, so the
+  password-pending state fails with its precise `quotameter passwd`
+  remedy while any further defect stays the Configuration row's list.
+- **Clock** — `timedatectl show --property=NTPSynchronized --property=NTP`
+  parsed as `Key=value` (never the locale-dependent human table;
+  `spawnServiceCommand` cannot serve — it ignores stdout, which is this
+  check's product — so a local bounded-capture runner with a kill-timeout
+  a wedged D-Bus cannot outwait): unsynchronized or synced-but-NTP-inactive
+  fails with `sudo timedatectl set-ntp true`, an absent timedatectl (the
+  systemd-less container) is unavailable.
+
+`--raw <account>` (§7.4, D-067): after the checks, the report appends the
+account's retained sanitized payloads through the 103 read path
+(`readRawDiagnostics` + `renderRawDiagnostics`) over the same read-only
+handle — the CLI-only exposure the raw-response gate enforces
+structurally. The section is informational (never changes the exit code);
+a blank account id is a handler failure naming the correct spelling; a
+missing database or an unknown account renders its honest sentence (the
+database is the source — payloads may outlive a removed account's config
+entry); a read that fails over an open handle renders its failure
+sentence instead of aborting the report; and the handle is released in a
+`finally` on every path (the review round's P1 — an appendix must not be
+able to lose the report).
+
+Branch coverage: the full matrix is seam-driven in
+`test/unit/cli-doctor.spec.ts` (every check × every D-119 status, the
+renderer byte-pinned, the parser/classifier tables, the production opener
+against real directories — kernel-genuine absent, real migrated
+quick_check pass, corrupt refusal — and the real-socket bind probe);
+`test/integration/cli-doctor.spec.ts` pins the real-launcher routes — the
+bare machine (exit 1, the init and install/run next steps), the healthy
+machine over a real migrated database with a real §5.6 lock naming a live
+child (exit 0, foreground pid in the report), the env-key residual, the
+seeded `--raw` payload, the invalid configuration, and `--help`.

@@ -983,8 +983,17 @@ describe('runJournalctlPassthrough (real children)', () => {
       }
       const resolved = await outcome!;
       expect(resolved).toEqual({ ok: true, interrupted: false });
-      // Ungated forwarding resumed and delivered the rest of the flood.
-      expect(writeSpy.mock.calls.length).toBeGreaterThan(2);
+      // Ungated forwarding resumed and delivered the whole flood. The
+      // invariant is content, not a write count: under load the OS pipe
+      // coalesces the 1.6 KB flood into as few as two chunks (the second
+      // consumed by the re-pause read at the listener-replacement wait
+      // above), so "more than two writes happened" is a chunking
+      // assumption, not a resumption fact — joining the forwarded calls
+      // and requiring both ends of the flood holds under any chunking
+      // (a split mid-line still joins).
+      const delivered = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+      expect(delivered).toContain('flood0');
+      expect(delivered).toContain('flood199');
       writeSpy.mockRestore();
     },
   );

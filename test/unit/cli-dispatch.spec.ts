@@ -249,10 +249,10 @@ describe('command help', () => {
 
 describe('stub dispatch (tasks 129–145 replace these)', () => {
   it('reports a top-level command as not implemented and exits 1', async () => {
-    const result = await cli(['doctor']);
+    const result = await cli(['run']);
     expect(result.code).toBe(1);
     expect(result.out).toBe('');
-    expect(result.err).toBe('quotameter doctor: not implemented yet\n');
+    expect(result.err).toBe('quotameter run: not implemented yet\n');
   });
 });
 
@@ -422,12 +422,13 @@ describe('dispatch-table pinning (U-006 mutation triage)', () => {
     // this table would touch the test runner's own stdin); `service
     // install`/`uninstall` are real since task 139, `start`/`stop`/
     // `restart` since task 140, `reload` since task 141, `status`
-    // since task 142, `logs` since task 143, and `passwd` since task 144
-    // (they probe the machine, read the user database or the filesystem,
-    // prompt, or may query the service manager or spawn journalctl —
+    // since task 142, `logs` since task 143, `passwd` since task 144,
+    // and `doctor` since task 145 (they probe the machine, read the user
+    // database or the filesystem, prompt, or may query the service
+    // manager, spawn journalctl or timedatectl, or run real sockets —
     // likewise covered by the dedicated suites, which inject every seam or
     // run the real launcher). Both behaviors are covered elsewhere.
-    for (const path of [['run'], ['doctor']] as const) {
+    for (const path of [['run']] as const) {
       const result = await cli([...path]);
       expect(result.code, `exit 1 for ${path.join(' ')}`).toBe(1);
       expect(result.err).toBe(`quotameter ${path.join(' ')}: not implemented yet\n`);

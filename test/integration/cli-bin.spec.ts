@@ -87,9 +87,10 @@ describe('bin/quotameter.mjs (child process, jiti)', () => {
   }, 20_000);
 
   it('a not-yet-implemented command exits 1 with the stub message', async () => {
-    const result = await runBin(['doctor']);
+    // `run` is the last stub (task 146's); `doctor` is real since task 145.
+    const result = await runBin(['run']);
     expect(result.code).toBe(1);
-    expect(result.stderr).toBe('quotameter doctor: not implemented yet\n');
+    expect(result.stderr).toBe('quotameter run: not implemented yet\n');
     expect(result.stdout).toBe('');
   }, 20_000);
 });

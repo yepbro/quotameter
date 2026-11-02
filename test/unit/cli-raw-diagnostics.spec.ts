@@ -111,7 +111,7 @@ describe('renderRawDiagnostics (the doctor --raw text)', () => {
   });
 });
 
-describe('doctor --raw dispatch surface (spec §5.5, until task 145)', () => {
+describe("doctor --raw dispatch surface (spec §5.5; the handler is task 145's)", () => {
   it('declares the option with its description in doctor help', async () => {
     const result = await cli(['doctor', '--help']);
     expect(result.code).toBe(0);
@@ -121,10 +121,15 @@ describe('doctor --raw dispatch surface (spec §5.5, until task 145)', () => {
     );
   });
 
-  it('parses doctor --raw <account> (still a stub: exit 1, not a usage error)', async () => {
-    const result = await cli(['doctor', '--raw', 'work']);
-    expect(result.code).toBe(1);
-    expect(result.err).toBe('quotameter doctor: not implemented yet\n');
+  it("parses doctor --raw <account> (a value coexists with flag parsing; the handler is task 145's)", async () => {
+    // The doctor suites own the handler's output and exit semantics; this
+    // suite owns the option surface. A value that parses is proved by the
+    // strict parser accepting the next flag after it — a malformed
+    // `--raw`-time invocation would be a usage error naming the offender.
+    const result = await cli(['doctor', '--raw', 'work', '--bogus']);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("unknown option '--bogus'");
+    expect(result.err).toContain("Try 'quotameter doctor --help'");
   });
 
   it('rejects a valueless --raw as a usage error (exit 2)', async () => {

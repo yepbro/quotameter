@@ -22,6 +22,7 @@ import { runLogsCommand, LOGS_DEFAULT_LINES, LOGS_DEFAULT_OUTPUT } from './servi
 import { runPasswdCommand } from './passwd';
 import { runReloadCommand } from './service-reload';
 import { runStatusCommand } from './service-status';
+import { runDoctorCommand } from './doctor';
 import { INIT_RESTART_SEC_SECONDS } from './service-setup';
 
 /** Everything a command handler receives; injected by the dispatcher. */
@@ -261,10 +262,9 @@ export function buildCommandTable(): Command[] {
       maxPositionals: 0,
       run: runPasswdCommand(),
     },
-    // Doctor's option surface is declared now because spec §5.5/§7.4 fix it
-    // (`quotameter doctor --raw <account>` — the CLI-only raw-payload
-    // diagnostic, fed by `src/cli/raw-diagnostics.ts`, task 103); the
-    // handler itself stays a stub until task 145 implements the checks.
+    // Task 145 (spec §5.5; decision D-119): the diagnostics command — the
+    // §5.5 check set through the landed seams, `doctor --raw <account>`
+    // composed from the task-103 read/render path (D-067).
     {
       kind: 'leaf',
       name: 'doctor',
@@ -277,7 +277,7 @@ export function buildCommandTable(): Command[] {
         },
       },
       maxPositionals: 0,
-      run: notImplemented(['doctor']),
+      run: runDoctorCommand(),
     },
   ];
 }
