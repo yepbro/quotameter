@@ -234,3 +234,128 @@ task) — endpoint refusals ride the existing classes with stable
 `blank-api-key` (VALIDATION), `account-archived`/
 `environment-key-read-only`/`no-key-configured` (FORBIDDEN), and unknown
 ids as NOT_FOUND.
+
+## The §13 status, providers, quota, and settings endpoints (task 160, decision D-130)
+
+Task 160 lands the four read-heavy §13 route families as three endpoint
+plugins on the D-128 registration rule — each registers inside the `/api`
+scope only when the construction passes its options block, and absent
+dependencies leave the paths to the scope catch-all's 404 envelope (the
+no-half-wired-surface pin, one test per family).
+
+- **`src/server/api/status.ts`** (spec §13, §7.2, §7.3, §8.4) registers
+  `GET /api/status` and `GET /api/quota?accountId=` — the §7.3-facts
+  family over one options object. Both routes are read-only composition:
+  the status token is task 111's `deriveAccountStatus` over
+  `readPollingRunEvidence`, never re-derived here; the quota metrics are
+  task 122's `getLatestValidMetricValues` (D-077 — the last **valid**
+  value per metric key, per-row collection stamps, an invalid newer row
+  never erasing a metric) beside `getLatestSnapshot`'s header facts; the
+  account set is the D-128 union of configuration entries and storage
+  rows, so an archived account stays visible (`disabled`, its §8.2-retained
+  history still served by `/api/quota`). §7.2's "most recent error" is the
+  newest non-success run found by six bounded, indexed outcome-filtered
+  probes (the D-114 CLI method — no unbounded scan, no facade change), and
+  the stored message passes an exact-occurrence redaction of the account's
+  resolved secret (§7.4's rule, D-114 made server-side; a marker seeded
+  into a stored error renders `[REDACTED]`). Two per-request seams exist
+  because their inputs are §6.4-live: `pollingIntervalSeconds` (a reader,
+  not a startup constant — the freshness window follows a reload; pinned
+  on the wire) and `suspensionOf` (the D-064 suspension the scheduler
+  holds; a composition without one passes the unsuspended constant, D-070's
+  recorded restart view). `configured` resolves through 159's
+  `AccountConfigStore.secretOf` — the same source of truth the connection
+  test uses; the resolved value feeds the comparison and the redaction,
+  never the response (the closed contracts drop it anyway).
+- **`src/server/api/providers.ts`** (spec §13, §9.2) registers
+  `GET /api/providers`: the registry listing (available types in
+  registration order) joined with the live configuration's peak-hours
+  schedules through a per-request `schedules()` reader (§6.4-live again).
+  `peakHours` is `null` when nothing is configured (§9.2's "not
+  configured" state, never an invented schedule), the response nests the
+  configuration contract's own `PeakHoursConfigSchema` (one schedule
+  contract, two consumers — the `ID_PATTERN` sharing precedent applied to
+  a whole node), config-only providers are not listed (they are not
+  available types — the D-119 doctor case owns reporting them), and
+  `requestTimeoutSeconds` stays a file fact (§13 names types and
+  schedules).
+- **`src/server/api/settings.ts`** (spec §13, §6.2–§6.4, §14.5, §15.2)
+  registers `GET`/`PUT /api/settings` — the §6.4 seam. The GET view
+  annotates every scalar `{ value, source, restartRequired }`: the
+  restart flags are §6.4's closed trio (pinned against D-026's
+  `RESTART_REQUIRED_FIELDS` — the done-condition's identification half),
+  `source: 'environment'` is the §6.3 read-only marking, `passwordConfigured`
+  is the mask-and-boolean for the hash, and the view can structurally
+  express no secret (no view object declares one; the closed-contract
+  suite pins it). The PUT updates the §6.4 live-applicable vocabulary
+  through the D-022 boundary (`validateSettings` over the effective
+  configuration → `parseConfig`: the loader's own ranges, enums, and
+  cross-field rules with its field-addressed, value-free problems as the
+  400 details — the body schema stays deliberately structural so the
+  messages stay single-sourced) and refuses three shapes with stable
+  FORBIDDEN reasons: `environment-overridden-read-only` (§6.3, checked
+  first — the environment wins over the file, the twin of 159's
+  `environment-key-read-only`), `restart-required-field` (D-130's literal
+  reading of §13's "Update settings allowed for runtime modification":
+  `server.host`/`server.port`/`auth.mode` change through the file plus
+  `quotameter restart` — §6.4's own remedy — and are _identified_, not
+  silently ignored), and `password-hash-not-settable` (D-022: the
+  plaintext `auth.password` is the one channel; a client-settable hash is
+  a lockout footgun). The configuration half is the third D-121
+  consumer-owned seam: `SettingsStore` (`read`/`apply`) is defined here
+  and implemented by the composition root over the reloader, the atomic
+  `writeConfigFile`, and §6.4's change application — `apply` receives the
+  validated merged configuration (omitted sections keep their values, so
+  stored account secrets and provider schedules survive a settings PUT;
+  D-022's GET-then-PUT warning is structural here: the body cannot even
+  name `accounts` or `providers`) plus the pending password to hash. The
+  PUT response is D-026's `applied`/`restartRequired` — the latter
+  non-empty exactly when a hand-edited pending change (carried by this
+  update's reload) differs from the startup configuration, never this
+  request's doing. §15.5's "settings must not be writable without
+  authentication" rides the §15.1 guard's method-blind rule (D-121) — the
+  PUT is exactly as guarded as the GET, and the §15.3 mutation guards bind
+  it (missing-header and form-type pins included).
+
+**Error vocabulary:** still no new registry codes (D-113 frozen) —
+`NOT_FOUND` for an account unknown to both halves, VALIDATION for schema
+and boundary problems (`details.reason: 'invalid-settings'` with the
+parser's `problems`), and the three PUT refusals above as FORBIDDEN with
+stable reasons; a store failure escalates to the generic INTERNAL
+envelope, logged server-side.
+
+**Tests:** `test/unit/api-status-schema.spec.ts` (closed tables, the
+§7.3-token and failure-outcome no-drift rows),
+`test/unit/api-providers-schema.spec.ts`,
+`test/unit/api-settings-schema.spec.ts` (the no-secret closed guard, the
+body grammar, D-026 vocabulary drift rows against `RELOAD_FIELDS`),
+`test/unit/api-status-view.spec.ts` and `test/unit/api-settings-view.spec.ts`
+(the pure compositions), and the three integration suites through the
+real `/api` scope over real migrated disposable SQLite databases —
+contract shapes, §15.1 authorization paths, error classes, the
+done-condition pins, and the §15.4 marker discipline (key, rotated key,
+password, and hash never in any response body).
+
+### Review-round folds (still task 160, decision D-130)
+
+One synchronous review round (deepseek-v4.1-flash, APPROVE with 4 P2 / 5
+P3) ran before landing; every finding was folded into the same commit. The
+shape-changing ones: a supplied-but-**blank-after-trim** field now answers
+`VALIDATION`/`blank-value` before any policy refusal (D-022's blank-means-
+not-supplied stays the right semantics for interactive prompts, but through
+a request body a blank password "change" would otherwise answer success
+while changing nothing); `SettingsStore.apply` carries **`sources`** on its
+payload — the write-side obligation that the composition's file write skip
+the environment-merged fields, or a `QUOTAMETER_*` value would be baked
+into `config.json` and silently outlive its variable; the D-128 strict
+validator construction lives once in **`src/server/api/validation.ts`**
+(`strictValidatorCompiler`; scope-local installation unchanged — 159's
+accounts module keeps its frozen copy until its next owning change); and
+`/api/quota`'s **plan name** passes the same §7.4 exact-occurrence
+redaction as the last-error message (provider-controlled data fields and
+transport messages get one rule; the accounts surface's `planName` shares
+the exposure and carries the same standing note as its validator copy).
+Smaller folds: one clock reading per status response (no account row is
+derived against a different instant than its siblings), the compile-time
+exhaustive `RunOutcome` no-drift pin, and the attempted-fields ≡
+`ENV_OVERRIDES` no-drift row.

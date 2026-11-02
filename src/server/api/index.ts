@@ -29,7 +29,10 @@
  * itself never changes shape again. Task 159 (D-128) landed the accounts
  * endpoints (`./accounts`) as the first dependency-carrying plugin here —
  * registered only when `ApiRoutesOptions.accounts` supplies the store
- * seams, so the unwired construction keeps answering the catch-all 404.
+ * seams, so the unwired construction keeps answering the catch-all 404;
+ * task 160 (D-130) added the status, providers, quota, and settings
+ * endpoints (`./status`, `./providers`, `./settings`) behind the same
+ * optional-options rule.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
@@ -38,7 +41,13 @@ import { accountRoutes } from './accounts';
 import { createAuthModeGuard, type AuthModeGuardOptions } from './auth';
 import { sendApiError, unmatchedApiClassification } from './error';
 import { healthRoutes } from './health';
+import type { ProvidersRouteOptions } from './providers';
+import { providersRoutes } from './providers';
 import { customHeaderGuard, originGuard } from './security';
+import type { SettingsRouteOptions } from './settings';
+import { settingsRoutes } from './settings';
+import type { StatusRouteOptions } from './status';
+import { statusRoutes } from './status';
 
 /**
  * What the construction passes beside the prefix when registering this
@@ -62,6 +71,29 @@ export interface ApiRoutesOptions {
    * wired to real stores, never half-wired.
    */
   readonly accounts?: AccountsRouteOptions;
+  /**
+   * The status-family endpoints' dependencies (task 160, D-130) — the
+   * configuration-store seam (159's own), the storage facade, the per-
+   * request interval reader, the D-064 suspension holder, and the clock;
+   * registers `GET /api/status` and `GET /api/quota`. Optional for the
+   * same reason as `accounts`: absent, both paths answer the scope
+   * catch-all's 404 envelope until the composition wires real stores.
+   */
+  readonly status?: StatusRouteOptions;
+  /**
+   * The providers endpoint's dependencies (task 160, D-130) — the registry
+   * and the live schedule reader; registers `GET /api/providers`. Absent,
+   * the path answers the scope catch-all's 404 envelope.
+   */
+  readonly providers?: ProvidersRouteOptions;
+  /**
+   * The settings endpoints' dependencies (task 160, D-130) — the
+   * configuration read/write-reload seam (`SettingsStore`, the D-121/D-128
+   * pattern at its third consumer); registers `GET /api/settings` and
+   * `PUT /api/settings`. Absent, both paths answer the scope catch-all's
+   * 404 envelope.
+   */
+  readonly settings?: SettingsRouteOptions;
 }
 
 /**
@@ -108,6 +140,24 @@ export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, o
   // dependencies — see `ApiRoutesOptions.accounts`.
   if (options.accounts !== undefined) {
     await fastify.register(accountRoutes, options.accounts);
+  }
+
+  // Task 160 (spec §13, §7.3, §8.4, §9.2, §6.4; decision D-130): the
+  // status, providers, quota, and settings endpoints — read-only §7.3
+  // composition over the polling-status derivation and the repository, the
+  // registry listing with read-only schedules, and the safe settings
+  // view/update behind the injected `SettingsStore` seam. Each registers as
+  // an encapsulated child of this scope (the three guards above cascade),
+  // and only when the construction supplies its dependencies — the
+  // no-half-wired-surface rule of `accounts` above.
+  if (options.status !== undefined) {
+    await fastify.register(statusRoutes, options.status);
+  }
+  if (options.providers !== undefined) {
+    await fastify.register(providersRoutes, options.providers);
+  }
+  if (options.settings !== undefined) {
+    await fastify.register(settingsRoutes, options.settings);
   }
 
   // Task 148 (D-113, post-verification fix): the scope's catch-all route,
