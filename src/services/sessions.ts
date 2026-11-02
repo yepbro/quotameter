@@ -19,10 +19,12 @@
  * `authenticateSession`/`revokeSession` below, renders the §15.2 expiry
  * verdict with its sighting refresh, and the logout revocation.
  * Deliberately absent still, each a later task's own scope: the login
- * and logout endpoints (the cookie's consumers) and the cookie's wire
- * attributes (157 — flags travel with the response, not with the token
- * the handler mints); the §15.2 login rate budget landed as its own
- * module, `src/services/login-rate-limit.ts` (156, D-125).
+ * and logout endpoints (the cookie's consumers; no plan task owns them —
+ * the gap D-125 recorded) — the cookie's wire attributes landed as their
+ * own primitive, `src/services/session-cookie.ts` (157, D-126: flags
+ * travel with the response, not with the token the handler mints); the
+ * §15.2 login rate budget landed as its own module,
+ * `src/services/login-rate-limit.ts` (156, D-125).
  *
  * Pinned interpretations (D-123):
  *
@@ -174,8 +176,9 @@ function requireEpochMilliseconds(value: number, field: string): void {
 export interface SessionCreation {
   /**
    * The raw §15.2 cookie token in its base64url wire form. This field is
-   * the token's **only** disclosure: set the cookie (task 157 owns the
-   * flags), then let the value go — nothing else stores, logs, or echoes
+   * the token's **only** disclosure: set the cookie with the attribute
+   * object `src/services/session-cookie.ts` computes (task 157, D-126),
+   * then let the value go — nothing else stores, logs, or echoes
    * it, and the row below carries only its digest.
    */
   readonly token: string;
@@ -366,7 +369,9 @@ export interface RevokeSessionOptions {
  * through the facade's `deleteSession`. Returns whether a session was
  * revoked; a token naming no row (already logged out, never minted,
  * cleaned up) returns `false` — logout is idempotent, and the cookie
- * clearing (157's endpoint) makes the client forget the token either
+ * clearing (the `clearSessionCookieAttributes` primitive of
+ * `src/services/session-cookie.ts`, 157/D-126, spread by the logout
+ * endpoint) makes the client forget the token either
  * way. No timestamp is written, so there is no `now` to pass; the
  * password-change half ("changing the password revokes all sessions")
  * stays where task 144 landed it — `revokeAllSessions` in

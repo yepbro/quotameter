@@ -287,7 +287,10 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
   server.addHook('onRequest', createHostGuard(createHostAllowlist(options.host)));
 
   // Spec §3's enabling plugin for the §13 auth endpoints: cookie parsing
-  // only — session cookie flags are per-response behavior (task 157).
+  // here, cookie *writing* through the services-layer attribute primitive
+  // `src/services/session-cookie.ts` (task 157, D-126) — the flags are
+  // per-response behavior, computed by the login/logout endpoint from the
+  // request's transport facts and spread into `reply.setCookie`.
   server.register(cookie);
 
   const staticRoot = options.staticRoot ?? resolveUiDistDir();

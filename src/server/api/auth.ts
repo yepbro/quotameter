@@ -224,7 +224,12 @@ export function classifyAuthMode(facts: AuthModeFacts): AuthModeVerdict {
  * five-failures/15-minutes per-source delays the login endpoint
  * composes ahead of its verify-then-establish flow
  * (`delayBeforeAttempt` → sleep → verify → `recordAttempt`), never
- * inside this mode layer — D-121's consequences pin.
+ * inside this mode layer — D-121's consequences pin. Task 157's cookie
+ * attribute layer landed the same way: `sessionCookieAttributes` /
+ * `clearSessionCookieAttributes` in `src/services/session-cookie.ts`
+ * (D-126) compute the §15.2 `Set-Cookie` attribute object — including the
+ * `Secure` verdict over this same transport-fact shape — for those
+ * endpoints to spread into `reply.setCookie`.
  * Async by nature (the session store is), so the seam allows promises;
  * the guard awaits it and never inspects HOW a request authenticated.
  * Until the session tasks land, the default answers `false` for every

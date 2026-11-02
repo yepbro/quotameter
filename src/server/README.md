@@ -31,7 +31,11 @@ D-109 — and `@fastify/rate-limit` is declared but unregistered, superseded by
 the services-layer primitive `src/services/login-rate-limit.ts` (156, D-125)),
 the §15.5 body limit and
 connection/request timeouts, §16's level-gated request logging through the
-redacting logger's Pino instance, and the `/api` route seam; the same
+redacting logger's Pino instance, and the `/api` route seam; the cookie's
+§15.2 write-side flags are the services-layer primitive
+`src/services/session-cookie.ts` (157, D-126), which the future login/logout
+endpoints spread into `reply.setCookie` — the registered cookie plugin stays
+parsing-only; the same
 factory wraps it as the `http-listener` lifecycle component the application
 shell starts and stops, and tests drive through `fastify.inject` without
 sockets. The routes live in `src/server/api/` (147–163): `index.ts` is the

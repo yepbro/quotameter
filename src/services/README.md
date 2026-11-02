@@ -158,6 +158,50 @@ composes this primitive is a later task (the `@fastify/rate-limit`
 dependency stays unregistered — the generic per-request 429 limiter
 cannot express a failed-attempt budget with increasing delays).
 
+Landed: [`session-cookie.ts`](./session-cookie.ts) — the §15.2
+session-cookie attribute layer (task 157, decision D-126), the fourth
+§15.2 primitive of the future `AuthService` beside the credential,
+session, and rate-budget modules: everything the future login/logout
+endpoint needs to serialize the `Set-Cookie` header, as one frozen
+attribute object spread into `@fastify/cookie`'s `reply.setCookie`
+(the plugin task 146 registered for parsing). `SESSION_COOKIE_NAME`
+(`quotameter_session`) and `SESSION_COOKIE_PATH` (`/api` — §13's prefix;
+the cookie never rides a static-asset request) pin the cookie's identity;
+`HttpOnly` and `SameSite=Strict` are unconditional (§15.2's own words,
+no exception cells); **`Secure` mirrors exactly one question — is the
+client-facing leg of the request HTTPS?** (`isClientFacingHttps` over
+`SessionCookieTransportFacts`): the request's own TLS socket, else the
+leftmost `X-Forwarded-Proto` element, else the leftmost RFC 7239
+`Forwarded` entry's `proto` parameter, else HTTP — the leg the server
+itself saw, because §15.6 terminates TLS at the reverse proxy and no
+certificate configuration exists. The configuration contract defines no
+public-URL or proxy field, so the spec's "public URL/reverse-proxy
+configuration" resolves from the request itself (D-126), and the bind
+host has no vote: a non-loopback bind is still plain HTTP, and `Secure`
+on an HTTP cookie protects nothing while breaking the session bootstrap.
+A forged `X-Forwarded-Proto: https` on a direct plain-HTTP request can
+only make the attacker's own cookie unusable (§15.1/D-121 already force
+the password on every proxied request). `sessionCookieAttributes({
+transport, expiresAtMs, nowMs })` maps the row's effective expiry to
+`Max-Age = ceil((expiresAt − now)/1000)` — rounded up so the client
+cookie never dies before the row D-124's verdict judges; the server-side
+verdict stays the gate, and re-issuing the cookie on a refreshed sighting
+is the endpoint's documented composition (without it the cookie merely
+caps at 7 days — a re-login, never an out-of-bounds session). Fail-fast:
+a non-integer epoch-ms input throws a `TypeError` naming the field (the
+D-090/D-123 family), and `nowMs >= expiresAtMs` throws — an
+already-expired session gets its cookie **cleared** (`clearSessionCookieAttributes`,
+`Max-Age=0` with identical attributes, so the deletion addresses the
+cookie that was set), never set. The module owns **no endpoint** (the
+login/logout routes are the plan gap D-125 recorded — every composition
+above is documented, not wired) and **no logger** (nothing here can log a
+token; the zero-console pin holds executably). The pure tables live in
+`test/unit/session-cookie.spec.ts`; the wire half — the attribute set
+serialized through the real `@fastify/cookie` on the task-146
+construction, under the plain-HTTP, proxied-HTTP, proxied-HTTPS,
+`Forwarded`-proto, and direct-TLS setups, plus the value's verbatim
+round-trip — lives in `test/integration/session-cookie.spec.ts`.
+
 **Rule:** may import `src/schemas/`, `src/util/`, `src/config/`, the provider
 core (`src/providers/` root, never a concrete adapter), and `src/storage/` —
 never `src/server/` or `src/cli/`.
