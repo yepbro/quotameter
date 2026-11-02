@@ -18,6 +18,13 @@
 export const en = {
   app: {
     title: 'Quotameter',
+    // The shell-level theme control (§14.1; D-133).
+    theme: {
+      label: 'Theme',
+      system: 'System',
+      light: 'Light',
+      dark: 'Dark',
+    },
   },
   nav: {
     ariaLabel: 'Primary',

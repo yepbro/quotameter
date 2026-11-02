@@ -4,15 +4,18 @@ import { describe, expect, it } from 'vitest';
 import App from '../../ui/src/App.vue';
 import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
+import { createAppTheme } from '../../ui/src/theme';
+import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
 
 /**
- * The application shell (spec §14.1; decisions D-131, D-132): the layout
- * the router renders into — the site header with the application title
- * and the primary navigation, and the main landmark carrying the routed
- * view. Each test mounts a fresh router and i18n instance and starts it
- * at the given path (direct navigation), so no state leaks between
- * cases. The rendered-string assertions run the whole catalog → `t()`
- * → render pipeline, not just static markup.
+ * The application shell (spec §14.1; decisions D-131, D-132, D-133): the
+ * layout the router renders into — the site header with the application
+ * title, the primary navigation, and the theme control, and the main
+ * landmark carrying the routed view. Each test mounts a fresh router,
+ * i18n, and theme instance and starts it at the given path (direct
+ * navigation), so no state leaks between cases. The rendered-string
+ * assertions run the whole catalog → `t()` → render pipeline, not just
+ * static markup.
  */
 
 /**
@@ -34,7 +37,11 @@ async function mountShell(initial: string = '/') {
   // argument, so the initial route is pushed before mounting.
   await router.push(initial);
   await router.isReady();
-  const wrapper = mount(App, { global: { plugins: [router, createAppI18n()] } });
+  const theme = createAppTheme({
+    storage: new MemoryThemeStorage(),
+    media: new FakeThemeMedia(),
+  });
+  const wrapper = mount(App, { global: { plugins: [router, createAppI18n(), theme] } });
   await settleNavigation();
   return wrapper;
 }
@@ -77,5 +84,33 @@ describe('App shell', () => {
     expect(wrapper.find('h2').text()).toBe('Accounts');
     const active = wrapper.find('nav a[aria-current="page"]');
     expect(active.text()).toBe('Accounts');
+  });
+
+  it('renders the theme control with the three modes, system by default', async () => {
+    const wrapper = await mountShell();
+    const select = wrapper.find('[data-testid="theme-select"]');
+    expect(select.exists()).toBe(true);
+    // The label is the select's accessible name (label[for] pairing).
+    expect(wrapper.find('label[for="theme-select"]').text()).toBe('Theme');
+    expect(select.element.value).toBe('system');
+    expect(wrapper.findAll('option').map((option) => option.text())).toEqual([
+      'System',
+      'Light',
+      'Dark',
+    ]);
+  });
+
+  it('selecting a mode applies it live through the data-theme attribute', async () => {
+    const wrapper = await mountShell();
+    const select = wrapper.find('[data-testid="theme-select"]');
+
+    await select.setValue('dark');
+    await settleNavigation();
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(select.element.value).toBe('dark');
+
+    await select.setValue('system');
+    await settleNavigation();
+    expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
   });
 });

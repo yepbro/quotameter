@@ -1,18 +1,37 @@
 /*
- * Document-level styles and design tokens (spec §14.1; decision D-129).
+ * Document-level styles and design tokens (spec §14.1; decisions D-129,
+ * D-133).
  *
- * Tokens are CSS custom properties on `:root`; the `prefers-color-scheme`
- * media block below carries the `system` half of the theme seam, and
- * task 168 adds the explicit light/dark override hook plus persistence
- * on top of these names — components must consume the tokens, never raw
- * colors, so both shipped themes keep working.
+ * Tokens are CSS custom properties on `:root` and the ONLY color source:
+ * components — and the charts of tasks 175/176 — must consume them
+ * (never raw colors) so every theme keeps working. The three §14.1
+ * modes resolve through the `data-theme` attribute the theme controller
+ * sets on the document element:
+ *
+ *   attribute absent  → `system`: the `prefers-color-scheme` media
+ *                       block below decides (the `:not([data-theme])`
+ *                       guard keeps it out of explicit modes' way);
+ *   data-theme=light  → light tokens, overriding an OS dark preference
+ *                       (the attribute selector outspecifies `:root`);
+ *   data-theme=dark   → dark tokens regardless of the OS preference.
+ *
+ * `color-scheme` rides the same blocks so UA widgets (form controls,
+ * scrollbars) follow the mode; the `<meta name="color-scheme">` in
+ * index.html stays as the pre-stylesheet system default. The dark token
+ * values appear twice (media block and explicit block) by design: CSS
+ * cannot share one declaration list between a media query and a
+ * selector, and the `light-dark()` function is unusable here because
+ * `getComputedStyle` would hand charts the unresolved wrapper instead
+ * of a color.
  *
  * Fonts and assets are local by construction (spec §14.1): the system
  * font stack performs no third-party fetch, and every referenced asset
  * is bundled and served same-origin.
  */
 
-:root {
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
   --qm-color-background: #ffffff;
   --qm-color-foreground: #1b1b1f;
   --qm-color-muted: #5a5a64;
@@ -20,11 +39,19 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
+    color-scheme: dark;
     --qm-color-background: #17171b;
     --qm-color-foreground: #ececf1;
     --qm-color-muted: #a9a9b3;
   }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --qm-color-background: #17171b;
+  --qm-color-foreground: #ececf1;
+  --qm-color-muted: #a9a9b3;
 }
 
 body {
