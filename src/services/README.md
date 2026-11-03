@@ -278,6 +278,22 @@ run writer (110) persists each probe cycle and the status derivation (111)
 consumes the `Auth rejected` contribution 105 already attaches. Time is an
 argument (D-021); the caller holds the (frozen) state object.
 
+Landed: [`account-suspensions.ts`](./account-suspensions.ts) — the
+composition-level D-064 holder (task U-040, decision D-140): a per-account
+map over the landed transitions that the composition wires into the status
+routes' `suspensionOf` seam, the manual-test flow, and the key-observation
+flow — `manualTestRequested` applies the unconditional
+release-on-request, `manualTestRejected` feeds the outcome seam (re-entry
+with a fresh 60-minute window), and `reportKeyIdentity` feeds the
+key-change release on every configuration observation (idempotent by
+D-064's design), so a successful manual test lifts an `Auth rejected`
+pause, a refused one keeps it, and a key rotation releases it without a
+test. `keyIdentityOfSecret` is the single identity vocabulary (sha256 of
+the resolved secret) both observations share. The polling engine becomes
+the holding side for polled cycles when its composition task lands; this
+holder stays the composition's seam so the two cannot disagree. Unit-pinned
+in `test/unit/account-suspensions.spec.ts`.
+
 Landed: [`polling-status.ts`](./polling-status.ts) — the account status
 derivation (task 111, decision D-070): `deriveAccountStatus(input,
 nowEpochMs)` computes the primary displayed status of §7.3/§14.6 — the six

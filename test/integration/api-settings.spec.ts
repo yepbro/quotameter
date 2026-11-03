@@ -68,6 +68,7 @@ class MemorySettingsStore implements SettingsStore {
         config: Config;
         pendingPassword: string | undefined;
         sources: EnvironmentSources;
+        attempted: readonly EnvOverrideField[];
       }
     | undefined;
   failNextApply = false;
@@ -95,6 +96,7 @@ class MemorySettingsStore implements SettingsStore {
     config: Config;
     pendingPassword: string | undefined;
     sources: EnvironmentSources;
+    attempted: readonly EnvOverrideField[];
   }): Promise<SettingsApplyOutcome> {
     if (this.failNextApply) {
       this.failNextApply = false;
@@ -104,6 +106,7 @@ class MemorySettingsStore implements SettingsStore {
       config: change.config,
       pendingPassword: change.pendingPassword,
       sources: change.sources,
+      attempted: change.attempted,
     };
     // The composition's own steps: hash the pending password (D-022's
     // boundary — the endpoint never saw a hash), classify with the
@@ -386,6 +389,25 @@ describe('PUT /api/settings — the runtime-modifiable update (§13/§6.4)', () 
       },
       { sources: ['app.timezone'] },
     );
+  });
+
+  it('carries the attempted fields to the apply payload — the write candidates (D-140)', async () => {
+    await withSettingsApi(async ({ app, store }) => {
+      const response = await putSettings(app, {
+        app: { pollingIntervalSeconds: 600, historyRetentionDays: 30 },
+        logging: { level: 'info' },
+      });
+      expect(response.statusCode).toBe(200);
+      // Only the body-supplied fields are write candidates: a change
+      // validated against an older snapshot must not revert fields a
+      // concurrent request already applied (the `sources` payload's
+      // write-side twin, D-140).
+      expect(store.lastApply?.attempted).toEqual([
+        'app.pollingIntervalSeconds',
+        'app.historyRetentionDays',
+        'logging.level',
+      ]);
+    });
   });
 
   it('reports pending restart changes the reload carries — never this request’s doing', async () => {

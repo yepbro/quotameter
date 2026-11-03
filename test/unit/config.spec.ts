@@ -404,7 +404,7 @@ describe('account secret sources (spec §6.3)', () => {
     expect(findConfigProblems(withEnv)).toEqual([]);
   });
 
-  it('rejects both sources at once and neither source at all', () => {
+  it('rejects both sources at once and accepts the keyless skip path', () => {
     const both: Config = {
       app: { timezone: 'UTC' },
       accounts: [{ ...base, apiKey: 'synthetic-key', apiKeyEnv: 'QUOTAMETER_TEST_KEY' }],
@@ -413,9 +413,10 @@ describe('account secret sources (spec §6.3)', () => {
     expect(findConfigProblems(both)).toEqual([
       "accounts[0] 'a1': apiKey and apiKeyEnv are mutually exclusive (spec §6.3)",
     ]);
-    expect(findConfigProblems(neither)).toEqual([
-      "accounts[0] 'a1': exactly one of apiKey or apiKeyEnv must be set (spec §6.3)",
-    ]);
+    // §5.3 step 3's skip path: a keyless account is created in the UI and
+    // keyed later (§13), displayed as §7.3's `Not configured` meanwhile —
+    // valid configuration since D-140.
+    expect(findConfigProblems(neither)).toEqual([]);
   });
 
   it('rejects duplicate account ids', () => {

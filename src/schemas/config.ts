@@ -282,9 +282,10 @@ export const ProvidersConfigSchema = Type.Record(
 
 /**
  * One monitored account (spec §6.2, §6.3, §8.2). The secret source is either
- * `apiKey` or `apiKeyEnv` — exactly one, enforced by the invariants below
- * (spec §6.3); the schema keeps both optional so the derived type stays
- * ergonomic for consumers.
+ * `apiKey` or `apiKeyEnv` — at most one, enforced by the invariants below
+ * (spec §6.3); a sourceless account is the §5.3 skip path (created keyless
+ * in the UI, keyed later — D-140), and the schema keeps both optional so
+ * the derived type stays ergonomic for consumers.
  */
 export const AccountConfigSchema = Type.Object(
   {
@@ -354,7 +355,7 @@ export const ConfigSchema = Type.Object(
  * identical to it as JSON data.
  *
  * Structural rules only. The cross-field invariants of `findConfigProblems`
- * (exactly one secret source per account, unique ids, IANA time zones, peak
+ * (at most one secret source per account, unique ids, IANA time zones, peak
  * window ordering and overlap, the password rules of §15.1) are deliberately
  * absent — JSON Schema cannot express them readably (decision D-014) — so a
  * file that passes this schema may still be rejected by the application at
@@ -483,9 +484,11 @@ export function findConfigProblems(config: Config): string[] {
     if (account.apiKey !== undefined && account.apiKeyEnv !== undefined) {
       problems.push(`${at}: apiKey and apiKeyEnv are mutually exclusive (spec §6.3)`);
     }
-    if (account.apiKey === undefined && account.apiKeyEnv === undefined) {
-      problems.push(`${at}: exactly one of apiKey or apiKeyEnv must be set (spec §6.3)`);
-    }
+    // A sourceless account is valid configuration (D-140, relaxing D-014's
+    // strict reading): §5.3 step 3's skip path lands in the web UI — the
+    // account is created keyless and keyed later through §13 — and §7.3's
+    // `Not configured` is its display state. §6.3's "exactly one may be
+    // set" governs the alternative (never both), not a presence duty.
     if (seenAccountIds.has(account.id)) {
       problems.push(`accounts[${index}]: duplicate account id '${account.id}'`);
     }

@@ -14,6 +14,7 @@
  */
 
 import { type LifecycleComponent, QuotameterApp } from './app';
+import { composeApplication } from './composition';
 import { satisfiesMinimum } from '../util/version';
 
 /** The declared minimum runtime (spec §5.1); mirrors `engines.node`. */
@@ -65,18 +66,30 @@ export function verifyRuntime(facts: RuntimeFacts): void {
 /**
  * Assembles the application's components in startup dependency order.
  *
- * Bootstrap stage (task 060): the skeleton runs with no components at all,
+ * Bootstrap stage (task 060): the skeleton ran with no components at all,
  * which is exactly the milestone "starts and stops cleanly without collecting
- * provider data". Later construction tasks register theirs here, in the order
- * spec §5.6 shutdown semantics require:
+ * provider data". The composition root (task U-040, decision D-140) now
+ * assembles the real service — configuration, storage, the wired API —
+ * through `composeApplication`, in the order spec §5.6 shutdown semantics
+ * require:
  *
  * 1. single-instance lock (074) — before anything touches the data directory;
  * 2. storage connection (078+) — database handle, WAL checkpoint on shutdown;
  * 3. polling service (093+) — first collection right after startup (§7.1);
  * 4. HTTP listener (146) — last, so it serves a fully assembled application.
+ *
+ * The polling component registers when its construction task lands; until
+ * then the composed service serves the API over the landed stores with the
+ * §7.2 suspension holder as the polling-side seam.
+ *
+ * The function is async because the composition loads and validates the
+ * configuration before any component exists (§6.2: an invalid startup
+ * configuration refuses to start — `runServer` reports the problems and
+ * returns exit code 1).
  */
-export function buildComponents(): LifecycleComponent[] {
-  return [];
+export async function buildComponents(): Promise<readonly LifecycleComponent[]> {
+  const { components } = await composeApplication();
+  return components;
 }
 
 /** Handles installed by {@link installShutdownSignals}. */
@@ -154,7 +167,9 @@ export async function runServer(options: RunServerOptions = {}): Promise<number>
 
   let app: QuotameterApp | undefined;
   try {
-    app = new QuotameterApp({ components: options.components ?? buildComponents() });
+    app = new QuotameterApp({
+      components: options.components ?? (await buildComponents()),
+    });
     await app.start();
   } catch (error) {
     // The startup error is reported first — it stays the process's diagnosis
@@ -215,9 +230,9 @@ function describeError(error: unknown): string {
  * settles first; a rejecting retry is reported through the fatal-diagnostics
  * seam and swallowed — the startup error printed above stays the diagnosis,
  * and the exit code is unchanged. `app` is `undefined` only when assembly
- * threw before the constructor completed, leaving nothing to stop (no route
- * there today: `buildComponents()` assembles nothing yet — the §5.6
- * construction tasks add the throwing constructions).
+ * threw before the constructor completed, leaving nothing to stop — today
+ * the composition's own refusals (invalid configuration, §6.2) land there;
+ * component-start failures reach the rollback below instead.
  */
 async function stopAfterFailedStart(app: QuotameterApp | undefined): Promise<void> {
   if (!app) return;

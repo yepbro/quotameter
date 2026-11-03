@@ -81,8 +81,12 @@ export interface ManagedAccountConfig {
   readonly enabled: boolean;
   /** Whether exactly one secret source is configured (§6.3). */
   readonly keyConfigured: boolean;
-  /** `'environment'` when the source is `apiKeyEnv` (read-only, §6.3), else `'file'`. */
-  readonly keySource: 'file' | 'environment';
+  /**
+   * `'environment'` when the source is `apiKeyEnv` (read-only, §6.3),
+   * `'file'` for a stored `apiKey`, `'none'` for the §5.3 keyless skip
+   * path (D-140: a configured account may be sourceless until it is keyed).
+   */
+  readonly keySource: 'file' | 'environment' | 'none';
 }
 
 /**
@@ -363,7 +367,10 @@ export const accountRoutes: FastifyPluginAsync<AccountsRouteOptions> = async (fa
         label: body.label,
         enabled,
         keyConfigured: body.apiKey !== undefined,
-        keySource: 'file',
+        // 'file' only when a key rides this create; the §5.3 keyless skip
+        // path (D-140) reads 'none' — the configuration cannot carry an
+        // environment source through this endpoint.
+        keySource: body.apiKey !== undefined ? 'file' : 'none',
       };
       reply.header('cache-control', 'no-store').code(201);
       return accountView(managed, repository.getAccount(id));

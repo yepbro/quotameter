@@ -162,7 +162,7 @@ would either violate the container invariant or move the guarantee out of
 `make check`.
 
 **Structure in schemas, invariants in one checker.** JSON Schema cannot express the
-cross-field rules (exactly one secret source per account, unique ids, IANA validity,
+cross-field rules (at most one secret source per account, unique ids, IANA validity,
 `start < end`, window overlap, the password rule for non-loopback binds) without
 unreadable `oneOf`/`if-then` constructs, so they live in one `findConfigProblems`
 checker beside the schemas (D-014). Defaults are annotated in the schemas and

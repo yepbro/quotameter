@@ -99,6 +99,7 @@ import {
   staticServingErrorHandler,
 } from './api/error';
 import { apiRoutes } from './api';
+import type { ApiRoutesOptions } from './api';
 import type { RequestAuthenticator } from './api/auth';
 import { createHostAllowlist, createHostGuard } from './api/security';
 import { CONFIG_DEFAULTS, type AuthMode } from '../schemas/config';
@@ -292,6 +293,17 @@ export interface HttpServerOptions {
    * records flow through the same redaction as every other log line.
    */
   readonly logger: Logger;
+  /**
+   * The route-family dependencies the composition root supplies (tasks
+   * 159–161, decisions D-128/D-130/D-139): the five optional
+   * `ApiRoutesOptions` members beside `auth`, which the construction
+   * derives above. Absent — the bare task-146 construction — the families
+   * stay unregistered and their paths answer the scope catch-all's 404 (the
+   * no-half-wired rule); passing a member wires exactly that family to the
+   * stores the composition owns. The composition root
+   * (`./composition.ts`, task U-040) is the production caller.
+   */
+  readonly routes?: Omit<ApiRoutesOptions, 'auth'>;
   /**
    * Directory of the built UI served as static files. Defaults to
    * {@link resolveUiDistDir}; absent directories degrade to an API-only
@@ -507,7 +519,10 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
   // the bind host above and the mode/password projection of
   // `options.auth` (defaults: the config layer's own `auto` and "no
   // password"), with the bind's loopback-ness decided inside the guard
-  // through `isLoopbackHost` (the single owner of that semantics).
+  // through `isLoopbackHost` (the single owner of that semantics). The
+  // route-family dependencies (task U-040, D-140) ride beside them: absent
+  // members stay unregistered, so the construction's default surface is
+  // exactly what it was before the composition existed.
   server.register(apiRoutes, {
     prefix: '/api',
     auth: {
@@ -516,6 +531,7 @@ export function buildHttpServer(options: HttpServerOptions): FastifyInstance {
       passwordConfigured: options.auth?.passwordConfigured,
       isAuthenticated: options.auth?.isAuthenticated,
     },
+    ...(options.routes ?? {}),
   });
 
   return server;

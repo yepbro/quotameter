@@ -128,12 +128,19 @@ export interface SettingsStore {
    * Persists and applies a validated change; resolves the §6.4 outcome. A
    * rejected promise means the write or reload failed — the incumbent
    * configuration stays effective (§6.2) and the endpoint answers INTERNAL.
+   *
+   * `attempted` carries the fields the request body actually supplied (the
+   * write-side twin of `sources`, D-140): the implementation persists only
+   * what a PUT attempted, so a change validated against an older snapshot
+   * cannot silently revert a field a concurrent request already applied.
    */
   apply(change: {
     readonly config: Config;
     readonly pendingPassword: string | undefined;
     /** Which effective fields the environment supplies — never file-written. */
     readonly sources: EnvironmentSources;
+    /** Which fields the request body supplied — the only file-write candidates. */
+    readonly attempted: readonly EnvOverrideField[];
   }): Promise<SettingsApplyOutcome>;
 }
 
@@ -376,8 +383,12 @@ export const settingsRoutes: FastifyPluginAsync<SettingsRouteOptions> = async (
         config: result.config,
         pendingPassword: result.pendingPassword,
         // The write-side obligation rides the payload (see the seam): the
-        // environment-merged fields are marked for the file write to skip.
+        // environment-merged fields are marked for the file write to skip,
+        // and the attempted fields are the only write candidates — a change
+        // validated against an older snapshot cannot revert fields a
+        // concurrent request already applied (D-140).
         sources: snapshot.sources,
+        attempted,
       });
       reply.header('cache-control', 'no-store');
       return outcome;

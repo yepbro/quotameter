@@ -58,7 +58,9 @@ validation engines reject as a type violation with a field-level error
 (`multiplier: expected a number, got a non-finite number` — decision D-071).
 
 Some rules are **cross-field** and live in the application instead (decision
-D-014, spec §6.2): exactly one of `apiKey`/`apiKeyEnv` per account, unique
+D-014, spec §6.2): at most one of `apiKey`/`apiKeyEnv` per account (a keyless
+account is valid — §5.3 step 3's skip path, created keyless in the UI and
+keyed later; decision D-140), unique
 account and window ids, valid IANA time zone names, `start < end` and
 non-overlapping peak windows on the same day, and the password requirements
 for non-loopback binds or `auth.mode: required` (spec §15.1). A file that

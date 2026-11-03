@@ -3,8 +3,24 @@
 The application assembly point (spec §3, §5.6, §13, §15): the process entry
 point `main.ts` — runtime gate (Node.js ≥ 22.13.0 by numeric prefix, so a
 nightly of a supported line runs while anything below the line refuses;
-non-root; task 129, decision D-098), signal wiring, exit codes — and the
-lifecycle skeleton `app.ts` (task 060), where components
+non-root; task 129, decision D-098), signal wiring, exit codes — whose
+`buildComponents()` (task U-040, decision D-140) now delegates to
+`composition.ts`: `composeApplication()` resolves the §6.1 directories,
+enforces the §6.3 permissions eagerly (before the file's content is read),
+loads and validates through `loadConfigWithEnv` (§6.2's refuse-to-start),
+then assembles the §5.6 component list
+`[single-instance-lock, storage, http-listener]` with every landed route
+family wired — the D-128 `AccountConfigStore` and D-130 `SettingsStore` over
+`config-stores.ts`'s serialized config-file owner, the D-064 suspension
+holder (`src/services/account-suspensions.ts`) feeding `suspensionOf` and
+the manual-test lift, the registry with observation-wrapped adapters
+(`providers.ts`, task U-040), and a lazy repository facade bridging eager
+route registration to the storage component's start-time open (the data
+directory exists only after the lock's start, D-017). Deliberately unwired
+(D-140's loose ends): SIGHUP → reload (the D-024 readiness seam), the
+sessions-backed `isAuthenticated` (the login endpoints are the recorded
+D-125/D-126 gap), and the polling engine. The lifecycle skeleton `app.ts`
+(task 060) is where components
 start in registration order and stop in reverse, realizing the §5.6 shutdown
 sequence by construction. `single-instance.ts` (task 074) guards each data
 directory with an atomically published lockfile: a second process on the same
@@ -37,7 +53,12 @@ hook on the §13 `/api` boundary, percent-decoded so `/%61pi/health` is an API
 path on the wire; every helmet
 default the spec does not list is disabled — D-127), §16's level-gated request
 logging through the
-redacting logger's Pino instance, and the `/api` route seam; the cookie's
+redacting logger's Pino instance, and the `/api` route seam — whose
+route-family dependencies (`HttpServerOptions.routes`, task U-040/D-140)
+the composition root supplies beside the auth projection: absent members
+stay unregistered (the no-half-wired rule and its 404 pins hold for the
+bare construction), present members wire exactly that family to the
+composition's stores; the cookie's
 §15.2 write-side flags are the services-layer primitive
 `src/services/session-cookie.ts` (157, D-126), which the future login/logout
 endpoints spread into `reply.setCookie` — the registered cookie plugin stays
@@ -127,12 +148,20 @@ Later: the remaining HTTP API routes and auth/session endpoints
 limiting is not middleware here: it lives in
 `src/services/login-rate-limit.ts` (156, D-125), composed by the future
 login endpoint. It is the only
-layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133) is that privilege's first
+layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133, extended by
+task U-040) is that privilege's first
 exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
 production defaults for `init`'s initial-account connection test (spec §5.3
-step 6) — the factory constructs and never registers, so the future
-bootstrap composition that fills the `ProviderRegistry` is unchanged by it
-(decision D-102).
+step 6) — the factory constructs and never registers, so the bootstrap
+composition that fills the `ProviderRegistry` is unchanged by it
+(decision D-102). That same composition (U-040, D-140) now registers the
+adapter into the registry wrapped by `observingManualTests()`: manual
+connection tests feed the §7.2 suspension holder — release-on-request
+before the attempt, re-entry with a fresh 60-minute window on a D-052
+`credentials-rejected` rejection, so a successful manual test lifts an
+`Auth rejected` pause (wire-observable through `/api/status`), while
+`fetchSnapshot` stays unobserved (the polling engine owns polled-cycle
+outcomes).
 
 **Rule:** as the composition root it may import every layer except
 `src/cli/`. Route handlers validate input through `src/schemas/api/` and
@@ -474,3 +503,46 @@ authz). The heavy downsampling seeds (120–1501 points) carry explicit
 timeouts — the D-094 load-sensitivity family; the 1501-point bulk seed uses
 one repository transaction for the same structural rows (the per-cycle
 ceremony costs ~40 s there).
+
+## The composition stores and the config-sync (task U-040, spec §6.2–§6.4, §13, §15.2; decision D-140)
+
+`src/server/composition.ts` is the production assembly `buildComponents()`
+delegates to (see the module docblock for the full startup sequence and the
+deliberately-unwired seams). `config-stores.ts` implements the two
+consumer-owned seams over the real configuration file: one
+`ConfigFileOwner` serializes every mutation of both stores (accounts and
+settings edit the same file), and each mutation is a read-modify-write over
+the RAW parsed file JSON — never the environment-merged effective
+configuration, whose verbatim persistence would bake `QUOTAMETER_*` values
+into `config.json` (D-130's write-side hazard) — validated through
+`parseConfigWithEnv` before any byte is written (a mutation that would break
+the effective configuration is refused with the pipeline's value-free
+problems), written atomically (`writeConfigFile`, D-016), and applied
+through §6.4's reload so the last valid configuration stays effective when
+anything refuses (§6.2). The accounts store reads list/find/secretOf from
+the live effective configuration and resolves `apiKeyEnv` against the
+startup environment snapshot; the settings store persists only the mutable
+scalars the request attempted (the payload's `attempted` set, D-140 — never
+an environment-owned field, never the
+sections a PUT cannot own), hashes a supplied `pendingPassword` itself
+(`hashPassword`, D-130's obligation), and revokes every session after a
+password write (§15.2/D-124, the fail-safe direction). The composition's
+reload wrapper runs the config-sync — configured accounts mirrored into
+storage rows at startup (post-migrations) and after every reload whose
+`applied` includes `accounts` (D-128's pre-sync gap): missing rows are
+inserted with the shared clock's stamp, label drift updates the row's
+denormalized mirror, and archived rows are never touched (D-061's terminal
+archive).
+
+**Tests:** `test/integration/composition.spec.ts` — the done-condition
+through the production construction (temp config + SQLite, only the
+provider adapter doubled): the previously-404 families answering, the
+config-sync across two lifecycles, create/update/archive and settings PUTs
+persisting through the real file (secrets present in the file, absent from
+every response body and log line, environment-owned fields never baked,
+the scrypt hash stored and sessions revoked), the §7.2 suspension shown
+`auth-rejected` after a refused manual test and lifted on success, and the
+§6.2 startup refusals — plus the unit pins
+`test/unit/account-suspensions.spec.ts` and
+`test/unit/server-providers.spec.ts` for the holder and the observation
+wrapper.

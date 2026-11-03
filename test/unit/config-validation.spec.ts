@@ -458,13 +458,12 @@ describe('delegation to the landed parser (spec §6.2)', () => {
     expect(problemsOf({ app: {} })).toEqual(["app: missing required property 'timezone'"]);
   });
 
-  it('requires exactly one secret source per account (spec §6.3)', () => {
-    expect(
-      problemsOf({
-        app: { timezone: 'UTC' },
-        accounts: [{ id: 'a1', providerId: 'p', label: 'L' }],
-      }),
-    ).toEqual(["accounts[0] 'a1': exactly one of apiKey or apiKeyEnv must be set (spec §6.3)"]);
+  it('allows a sourceless account — the §5.3 keyless skip path (D-140)', () => {
+    const config = configOf({
+      app: { timezone: 'UTC' },
+      accounts: [{ id: 'a1', providerId: 'p', label: 'L' }],
+    });
+    expect(config.accounts).toEqual([{ id: 'a1', providerId: 'p', label: 'L', enabled: true }]);
   });
 
   it('coerces the peak-hours multipliers from strings', () => {

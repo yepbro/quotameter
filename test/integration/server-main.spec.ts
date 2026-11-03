@@ -1,9 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { createTempDir, type TempDir } from '../helpers/isolation';
+import { withQuotameterEnv } from '../helpers/hermeticEnv';
+import { configFilePath } from '../../src/config/load';
+import { writeConfigFile } from '../../src/config/write';
 import type { LifecycleComponent } from '../../src/server/app';
 import {
   buildComponents,
@@ -26,6 +30,24 @@ import {
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const RUNNER = join(REPO_ROOT, 'test/helpers/serverMainRunner.ts');
+
+/**
+ * Reserves an unused TCP port for a test's own listener (bind `0`, read the
+ * assignment, release). The tiny race between release and the test's own
+ * bind is the standard cost of not hard-coding a default port.
+ */
+async function reservePort(): Promise<number> {
+  const { createServer } = await import('node:net');
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 interface ExitResult {
   code: number | null;
@@ -111,8 +133,41 @@ describe('verifyRuntime', () => {
 });
 
 describe('buildComponents', () => {
-  it('assembles no components at the bootstrap stage', () => {
-    expect(buildComponents()).toEqual([]);
+  it('assembles the production composition in §5.6 order', async () => {
+    const dir = await createTempDir('quotameter-build-components-');
+    try {
+      const configDir = join(dir.path, 'config');
+      await mkdir(configDir, { recursive: true, mode: 0o700 });
+      await writeConfigFile(configFilePath(configDir), { app: { timezone: 'UTC' } });
+      let names: string[] | undefined;
+      await withQuotameterEnv(
+        { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: join(dir.path, 'data') },
+        async () => {
+          names = (await buildComponents()).map((component) => component.name);
+        },
+      );
+      expect(names).toEqual(['single-instance-lock', 'storage', 'http-listener']);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('refuses to assemble without a usable configuration (§6.2)', async () => {
+    const dir = await createTempDir('quotameter-build-components-');
+    try {
+      const configDir = join(dir.path, 'config');
+      await mkdir(configDir, { recursive: true, mode: 0o700 });
+      await expect(
+        withQuotameterEnv(
+          { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: join(dir.path, 'data') },
+          async () => {
+            await expect(buildComponents()).rejects.toThrow(/configuration file not found/);
+          },
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await dir.remove();
+    }
   });
 });
 
@@ -292,18 +347,41 @@ describe('runServer (in-process)', () => {
       resolveReady = resolve;
     });
 
-    // No `components`: the bootstrap assembly from buildComponents() runs —
-    // the "starts and stops cleanly without collecting provider data"
-    // milestone through the production default.
-    const server = runServer({
-      runtime: { nodeVersion: '22.13.0', uid: 1000 },
-      onSignalsReady: () => resolveReady(),
-    });
-    const handler = await sigtermHandlerAfter(onSpy, ready);
-    shutdownTriggers.push(() => handler('SIGTERM'));
+    // No `components`: the production assembly from buildComponents() runs —
+    // the composed service (config load, lock, migrated storage, the wired
+    // listener) over temp directories through the §6.1 environment channel.
+    // The listener binds for real, so the configuration names a port
+    // reserved for this test (the review round's P2: the schema cannot
+    // express the ephemeral `0`, and a fixed default could collide with any
+    // other listener).
+    const port = await reservePort();
+    const dir = await createTempDir('quotameter-runserver-default-');
+    try {
+      const configDir = join(dir.path, 'config');
+      await mkdir(configDir, { recursive: true, mode: 0o700 });
+      await writeConfigFile(configFilePath(configDir), {
+        app: { timezone: 'UTC' },
+        server: { port },
+      });
+      let exitCode = -1;
+      const server = withQuotameterEnv(
+        { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: join(dir.path, 'data') },
+        async () => {
+          exitCode = await runServer({
+            runtime: { nodeVersion: '22.13.0', uid: 1000 },
+            onSignalsReady: () => resolveReady(),
+          });
+        },
+      );
+      const handler = await sigtermHandlerAfter(onSpy, ready);
+      shutdownTriggers.push(() => handler('SIGTERM'));
 
-    handler('SIGTERM');
-    await expect(server).resolves.toBe(0);
+      await handler('SIGTERM');
+      await server;
+      expect(exitCode).toBe(0);
+    } finally {
+      await dir.remove();
+    }
   });
 
   it('propagates a throwing readiness callback and still disposes the handlers', async () => {
