@@ -180,6 +180,14 @@ schema: deps ## Regenerate the published JSON config schema (schema/)
 	$(RUN) cat /var/lib/quotameter/schema/config.schema.json > schema/config.schema.json; \
 	echo "regenerated schema/config.schema.json"
 
+.PHONY: openapi
+openapi: deps ## Regenerate the published OpenAPI document (docs/openapi.json)
+	@set -e; \
+	$(RUN) env OPENAPI_DIR=/var/lib/quotameter/openapi npm run openapi:generate; \
+	mkdir -p docs; \
+	$(RUN) cat /var/lib/quotameter/openapi/openapi.json > docs/openapi.json; \
+	echo "regenerated docs/openapi.json"
+
 .PHONY: build
 build: deps ## Build the UI and verify expected artifacts
 	@set -e; \

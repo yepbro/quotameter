@@ -46,7 +46,7 @@ Run through every step; the release is aborted if any check fails.
 
 1. **Verify CI is green** on the release commit for: `master` (unit/integration/component/E2E, lint, types, format, audit, licenses, mutation, clean-container installs, unsupported-Node behavior).
 2. **Update the changelog**: fold **Unreleased** into the new version with today's date; open a new **Unreleased** section.
-3. **Bump the version** in `package.json` to the target `X.Y.Z` following the semver rules above.
+3. **Bump the version** in `package.json` to the target `X.Y.Z` following the semver rules above, then regenerate the version-stamped OpenAPI document (`make openapi`) and include `docs/openapi.json` in the same commit — the drift guard fails CI on a stale artifact otherwise.
 4. **Commit and push** the version commit (`chore(release): vX.Y.Z`); wait for CI.
 5. **Create and push the tag**: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 6. **Watch the release workflow**: it builds, packs, re-checks the tarball allowlist, and publishes with provenance. Publication only happens from this workflow.

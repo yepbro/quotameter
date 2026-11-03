@@ -17,6 +17,7 @@ Designed to be installed and operated by one person on their own Linux VPS: dist
 - [Decision Log](DECISIONS.md) — key technical and business decisions, their reasons, and consequences
 - [Contributing guide](CONTRIBUTING.md) — commit convention, pull-request rules, and repository workflow
 - [Configuration JSON Schema](docs/config-schema.md) — the published `config.json` schema, editor validation, and regeneration
+- [HTTP API reference](docs/api.md) — the published OpenAPI document (`docs/openapi.json`), generated from the same TypeBox contracts the routes validate through
 - [Package layout](docs/architecture/package-layout.md) — module map and dependency rules for `src/`, `ui/`, and `bin/`
 
 ## Project status
@@ -89,6 +90,7 @@ Everything works inside the worktree exactly as in the main tree (`make check`, 
 | `make licenses`                                                   | Dependency license check against the allowlist                                                                                    |
 | `make mutation`                                                   | Stryker mutation testing                                                                                                          |
 | `make package`                                                    | npm tarball contents against the packaging allowlist                                                                              |
+| `make schema` / `make openapi`                                    | Regenerate the published JSON config schema (`schema/`) / the published OpenAPI document (`docs/openapi.json`)                    |
 | `make build`                                                      | Build the UI and verify the expected artifacts                                                                                    |
 | `make verify-runtime`                                             | Confirm Node `>= 22.13.0` and flagless `node:sqlite`                                                                              |
 

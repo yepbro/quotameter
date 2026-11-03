@@ -33,6 +33,10 @@ services:
       # `make schema` regenerates into the volume and streams the file back
       # to the repository from the host side.
       SCHEMA_DIR: /var/lib/quotameter/schema
+      # Same isolation for the generated OpenAPI document (task 163):
+      # `make openapi` regenerates into the volume and streams the file
+      # back — the identical stream-back recipe.
+      OPENAPI_DIR: /var/lib/quotameter/openapi
     volumes:
       # Live-editable source tree; changes are visible immediately without
       # rebuilding the image.

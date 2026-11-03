@@ -37,6 +37,7 @@
     "verify:build": "node scripts/verify-build.mjs",
     "check:package": "node scripts/check-package.mjs",
     "schema:generate": "node scripts/generate-schema.mjs",
+    "openapi:generate": "node scripts/generate-openapi.mjs",
     "test:mutation": "stryker run",
     "license:check": "node scripts/check-licenses.mjs",
     "format": "prettier . --write",
