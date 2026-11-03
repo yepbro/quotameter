@@ -491,6 +491,40 @@ describe('assembleInitConfig', () => {
     expect(assembled.ok).toBe(true);
     if (assembled.ok) expect(assembled.config.accounts).toEqual([]);
   });
+
+  it('a collected password hash joins the fresh configuration as auth.passwordHash (U-042, D-141)', () => {
+    const assembled = assembleInitConfig(
+      { ...ANSWERS, host: '0.0.0.0' },
+      undefined,
+      undefined,
+      'scrypt$N=65536$unit',
+    );
+    expect(assembled).toMatchObject({ ok: true, passwordPending: false });
+    if (assembled.ok) {
+      expect(assembled.config.auth.passwordHash).toBe('scrypt$N=65536$unit');
+      expect(assembled.config.auth.mode).toBe('auto');
+    }
+  });
+
+  it('a hash on a loopback bind is stored too — optional, not forbidden (§15.1)', () => {
+    const assembled = assembleInitConfig(ANSWERS, undefined, undefined, 'scrypt$loopback');
+    expect(assembled).toMatchObject({ ok: true, passwordPending: false });
+    if (assembled.ok) expect(assembled.config.auth.passwordHash).toBe('scrypt$loopback');
+  });
+
+  it('the hash satisfies §5.3 step 4: a remote bind with one is not pending', () => {
+    const assembled = assembleInitConfig(
+      { ...ANSWERS, host: '192.168.1.10' },
+      undefined,
+      undefined,
+      'scrypt$remote',
+    );
+    expect(assembled).toMatchObject({ ok: true, passwordPending: false });
+    if (assembled.ok) {
+      expect(assembled.config.server.host).toBe('192.168.1.10');
+      expect(assembled.config.auth.passwordHash).toBe('scrypt$remote');
+    }
+  });
 });
 
 describe('initSettingsChanged', () => {

@@ -73,7 +73,11 @@ async function readConfig(dir: TempDir): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<string, unknown>;
 }
 
-/** Interactive fresh-run answers: settings, account label, key, offer. */
+/**
+ * Interactive fresh-run answers: settings, account label, key, the §5.3
+ * step-4 password skip (loopback bind, D-141), then the offer when one is
+ * reached.
+ */
 const FULL_WITH_KEY: readonly string[] = [
   'Europe/Berlin',
   '127.0.0.1',
@@ -81,6 +85,7 @@ const FULL_WITH_KEY: readonly string[] = [
   '300',
   'work',
   MARKER,
+  '',
 ];
 
 describe('init initial account (real adapter, loopback mock provider)', () => {

@@ -20,8 +20,9 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                                         |
 | `prompts.ts`           | the interactive prompt seam: readline prompter with a line queue, EOF-safe questions, muted secrets                                              |
 | `init-questions.ts`    | the §5.3 question flow: per-value validation, empty-answer semantics, answers→config assembly                                                    |
-| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key channel                                                |
+| `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key and password channels                                  |
 | `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                                   |
+| `init-password.ts`     | the §5.3 step-4 password leg: the loopback-optional/non-loopback-required question pair over passwd's shared flow (U-042)                        |
 | `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                              |
 | `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                                            |
 | `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                                         |
@@ -117,8 +118,10 @@ through three modules:
   (`quotameter init: input closed … — initialization cancelled`, exit 1),
   and prints `renderInitSummary`: every collected value except the key,
   which appears only as `configured (hidden)` / `skipped` (§6.3, §15.4), a
-  password note for non-loopback hosts (§5.3 step 4), and — since task 132 —
-  the write trailer naming the file the run wrote (or kept unchanged).
+  state-only `Password` row (`set (only a scrypt hash is stored)` /
+  `none`, U-042), the §5.3 step-4 requirement note when no password was
+  set on a non-loopback bind, and — since task 132 — the write trailer
+  naming the file the run wrote (or kept unchanged).
 
 The remaining §5.3 steps (service installation) extend `InitAnswers`/
 `buildInitConfig` rather than re-deriving validation.
@@ -227,10 +230,45 @@ non-object `auth` section is a defect the probe never masks, and any
 further defect still refuses. Such a
 configuration is written and re-read as `passwordPending`, displayed with
 its remedy, and the service refuses to start on it until `passwd` completes
-it — exactly the §15.1 sentence. Password collection inside `init` has
-not landed: task 153 delivered the §15.2 hashing/verification
-primitives, and `quotameter passwd` (task 144, D-118) is the completing
-command for this pending state.
+it — exactly the §15.1 sentence.
+
+Since U-042 (decision D-141) `init` collects the password itself on fresh
+runs — §15.2's promise that the password is set "via `init`" is now the
+whole truth, not a `passwd` detour:
+
+- **Interactive (`init-password.ts`)** — after the §5.3 step-3 questions
+  and before the account's connection test, one muted question pair over
+  `passwd`'s own `askNewPassword` (D-118): loopback binds ask optionally
+  (`Web password (…; Enter for none — set one later with quotameter
+passwd): `, the exactly-empty answer skips), non-loopback binds ask
+  required-shaped (`Web password (… — required before the service starts
+on a non-loopback bind): `, the empty answer is the §15.2 length
+  complaint; three rejected pairs abort the run). The confirmation is
+  passwd's own `Confirm password:`; a mismatch restarts the pair.
+  Completing the run without a password keeps the §15.1 default —
+  `auth: { mode: 'auto' }`, no hash.
+- **Non-interactive (`--password-env <variable>`, `init-yes.ts`)** — the
+  same by-name environment discipline as `--api-key-env` (never a
+  `--password <value>` flag: §15.4's process-listing rule). Name checks
+  identical; the §15.2 minimum is checked on the raw untrimmed value; no
+  problem ever contains the argument or the value. Absent flag → no
+  password (a non-loopback bind then lands in the pending state above —
+  the D-101 journey stays). Against an existing configuration the flag is
+  a clear failure pointing at `quotameter passwd`.
+- **Storage** — the handler hashes the collected password through
+  `hashPassword` (D-118's encoding, D-122's verification) and submits only
+  the opaque hash through `validateSettings` — passwd's exact convention;
+  the plaintext exists only between the prompt (or the env read) and the
+  hashing call, never inside `InitAnswers`, any output line, or the file.
+  When the data directory still holds a database (a configuration deleted
+  or re-pointed while the database survived), storing the password revokes
+  its sessions first, in `passwd`'s fail-secure order (review round P1:
+  "fresh" is fresh about the configuration file only) — revoke before the
+  write, abort on failure, report what was revoked.
+- **Re-runs collect no password** — D-101's four settings questions stay
+  exactly four; changing a password requires D-118's fail-secure
+  session-revocation ordering, which is `passwd`'s contract, and a pending
+  re-run keeps its passwd remedy.
 
 The handler's detection and persistence are injectable seams
 (`InitDeps.readExisting`/`persistConfig`) for unit tests; the real wiring —
@@ -241,10 +279,11 @@ launcher — is pinned by `test/integration/cli-init-idempotent.spec.ts`.
 
 `quotameter init --yes` is the non-interactive half of §5.3: every value
 comes from explicit options — `--timezone` (mandatory), `--host`,
-`--port`, `--polling-interval`, `--account-label`, and the key channel
-below — and stdin is never opened; the handler branches before a prompter
-is constructed, so a prompt fallback is impossible by construction and the
-command works with input closed. Rules:
+`--port`, `--polling-interval`, `--account-label`, the key channel below,
+and `--password-env` (U-042's §15.2 password channel, same env-by-name
+discipline) — and stdin is never opened; the handler branches before a
+prompter is constructed, so a prompt fallback is impossible by
+construction and the command works with input closed. Rules:
 
 - **Validation is the interactive flow's, reused.** `init-yes.ts` feeds
   every value through the task-130 exported parsers; an absent optional
@@ -280,7 +319,8 @@ time zone automatically…`, exit 1) — a set `QUOTAMETER_APP_TIMEZONE`
 - **A key source needs an account:** `--api-key-env` without
   `--account-label` is a problem (the label is what creates the account,
   exactly as in the interactive flow). `--account-label` alone means
-  "account with the key added later in the UI".
+  "account with the key added later in the UI". `--password-env` needs no
+  account — the web password is independent of the initial account.
 - **Reproducibility:** `buildYesAnswers` is pure over flags + an
   environment snapshot + the optional existing configuration, and the
   summary rendered from its answers contains no timestamps, hints, or
@@ -290,7 +330,7 @@ time zone automatically…`, exit 1) — a set `QUOTAMETER_APP_TIMEZONE`
   configuration the run started from (D-100's consequences say exactly
   this about task 132), so the reproducibility pin runs the launcher
   twice in fresh directories with the path normalized.
-- **Value options require `--yes`:** any of the six without it is a clear
+- **Value options require `--yes`:** any of the seven without it is a clear
   failure (`--<name> requires --yes (non-interactive mode)`), never a
   silently ignored flag and never a half-prefilled wizard.
 
@@ -886,7 +926,12 @@ what is on disk).
   secret-free stderr complaint and restart the pair, up to three attempts;
   closed input or Ctrl-C cancels with nothing changed. No complaint, the
   success report, or any other line ever contains the typed value — the
-  done-condition, pinned by marker tests at every level.
+  done-condition, pinned by marker tests at every level. Since U-042 the
+  pair flow is shared: `askNewPassword` takes additive options (a custom
+  first prompt, and a skip for exactly-empty first answers) that init's
+  §5.3 step-4 leg (`init-password.ts`, D-141) consumes — one prompt-flow
+  implementation behind both password setters, and `passwd`'s own call
+  shape (no options) unchanged.
 - **The write is never privileged**: a run with privileges held is refused
   to the owner's regular account before anything is asked — the atomic
   write replaces the inode, so a root write would leave the owner's

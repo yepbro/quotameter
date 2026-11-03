@@ -33,6 +33,19 @@
  *   stderr (spec §15.4; review-round finding on the first version, which
  *   echoed it). Task 133 consumes the name for the connection test and the
  *   secret-source decision.
+ * - **The password enters the same way** (task U-042, decision D-141):
+ *   `--password-env <variable>` names the variable holding the §15.2 web
+ *   password — the identical reasoning (`--password <value>` would put the
+ *   secret in the process listing), the identical name checks, plus the
+ *   §15.2 minimum checked on the raw untrimmed value. The value travels
+ *   straight into the result's `password` field for the handler to hash —
+ *   it is never trimmed, echoed, or logged, and no `--password-env` problem
+ *   contains the argument or the value (the argument may be a mistyped
+ *   password). Fresh runs only: against an existing configuration the flag
+ *   is a clear failure — changing a password is `quotameter passwd`'s job
+ *   (D-118 owns the fail-secure session-revocation ordering such a change
+ *   requires); an absent flag writes no password (a non-loopback bind then
+ *   lands in D-101's password-pending state with its passwd remedy).
  * - **All value problems are reported at once** — one line each on stderr,
  *   then a single exit 1. The interactive flow complains per question because
  *   it can re-ask; a script gets the complete diagnosis in one run.
@@ -53,6 +66,7 @@
 
 import type { CanonicalConfig } from '../config/load';
 import { API_KEY_ENV_NAME_PATTERN } from '../schemas/config';
+import { MIN_PASSWORD_LENGTH } from '../services/config-validation';
 import type { InitAnswers } from './init-questions';
 import {
   parseAccountLabel,
@@ -76,13 +90,16 @@ export const INIT_VALUE_OPTIONS = [
   'polling-interval',
   'account-label',
   'api-key-env',
+  'password-env',
 ] as const;
 
 /** The environment read through by `--api-key-env`; injectable for tests. */
 export type YesEnv = Readonly<Record<string, string | undefined>>;
 
 /** What {@link buildYesAnswers} yields: complete answers, or every problem. */
-export type YesInput = { readonly answers: InitAnswers } | { readonly problems: readonly string[] };
+export type YesInput =
+  | { readonly answers: InitAnswers; readonly password?: string }
+  | { readonly problems: readonly string[] };
 
 /** A present string flag's value, or `undefined` when absent (booleans count). */
 function flagValue(
@@ -187,6 +204,12 @@ export function buildYesAnswers(
         'managed in the web UI.',
     );
   }
+  if (existing !== undefined && flagValue(flags, 'password-env') !== undefined) {
+    problems.push(
+      '--password-env applies only to a fresh initialization: a configuration ' +
+        'already exists. Change the password with quotameter passwd.',
+    );
+  }
   const label =
     existing === undefined
       ? parseFlag(flags, 'account-label', parseAccountLabel, problems)
@@ -195,6 +218,10 @@ export function buildYesAnswers(
     existing === undefined
       ? parseApiKeyEnvFlag(flags, env, label !== undefined, problems)
       : undefined;
+  // The password is collected on fresh runs only (D-141): against an
+  // existing configuration a password change needs D-118's fail-secure
+  // session revocation — `quotameter passwd`'s contract, not init's.
+  const password = existing === undefined ? parsePasswordEnvFlag(flags, env, problems) : undefined;
 
   // `problems.length` is the real gate; the value disjuncts exist for the
   // type narrowing — every undefined above has pushed its problem, so the
@@ -217,6 +244,9 @@ export function buildYesAnswers(
       ...(label === undefined ? {} : { accountLabel: label }),
       ...(apiKeyEnv === undefined ? {} : { accountApiKeyEnv: apiKeyEnv }),
     },
+    // The plaintext password rides beside the answers (never inside them):
+    // only the handler's hash of it reaches any persisted object.
+    ...(password === undefined ? {} : { password }),
   };
 }
 
@@ -281,4 +311,63 @@ function parseApiKeyEnvFlag(
   }
   // Set and non-empty: the name is the answer; the value is never retained.
   return name;
+}
+
+/**
+ * Validates `--password-env <variable>` (task U-042, decision D-141): the
+ * name checks are `--api-key-env`'s own — shape, no reserved `QUOTAMETER_`
+ * prefix, set as an own property, a blank value counting as unset (D-011) —
+ * and the §15.2 minimum is checked on the raw untrimmed value (secrets are
+ * never trimmed, D-022). Returns the password itself for the handler to
+ * hash; unlike the key channel nothing is recorded by name, because the
+ * value is consumed now. No problem contains the argument or the value
+ * (spec §15.4): the argument may be a mistyped password.
+ */
+function parsePasswordEnvFlag(
+  flags: Readonly<Record<string, boolean | string>>,
+  env: YesEnv,
+  problems: string[],
+): string | undefined {
+  const raw = flagValue(flags, 'password-env');
+  if (raw === undefined) return undefined;
+  const name = raw.trim();
+  if (name === '') {
+    problems.push('--password-env cannot be blank — pass a variable name or omit the option.');
+    return undefined;
+  }
+  if (!new RegExp(API_KEY_ENV_NAME_PATTERN).test(name)) {
+    problems.push(
+      '--password-env expects an environment variable name such as QM_WEB_PASSWORD. ' +
+        'The given argument is not echoed — a mistyped password must never reach output.',
+    );
+    return undefined;
+  }
+  if (name.startsWith('QUOTAMETER_')) {
+    problems.push(
+      '--password-env must not use the reserved QUOTAMETER_ prefix: the ' +
+        'service rejects unknown QUOTAMETER_* variables at startup — point ' +
+        'the password at a name outside the prefix.',
+    );
+    return undefined;
+  }
+  if (!Object.hasOwn(env, name) || (env[name] ?? '').trim() === '') {
+    problems.push(
+      '--password-env names an environment variable that is not set in this ' +
+        'environment (an empty or blank value counts as unset). Export the ' +
+        'web password there and run init again.',
+    );
+    return undefined;
+  }
+  const value = env[name] ?? '';
+  if (value.length < MIN_PASSWORD_LENGTH) {
+    problems.push(
+      `--password-env holds a password shorter than the spec §15.2 minimum ` +
+        `of ${MIN_PASSWORD_LENGTH} characters — the value is not echoed. ` +
+        'Export a longer password there and run init again.',
+    );
+    return undefined;
+  }
+  // Set, non-blank, long enough: the value is the answer — hashed by the
+  // handler, never echoed or logged (§15.4).
+  return value;
 }

@@ -43,12 +43,20 @@ interface RunResult {
 
 /**
  * Runs `quotameter init` with `stdinData` piped in, stdin then closed, and
- * the configuration redirected into `configDir`.
+ * the configuration redirected into `configDir`. Since U-042 a
+ * password-writing run revokes the sessions of any surviving database in
+ * the data directory, so every run gets its own temporary data directory
+ * too (hermetic — never the container's shared default).
  */
-function runInit(stdinData: string, configDir: string): Promise<RunResult> {
+async function runInit(stdinData: string, configDir: string): Promise<RunResult> {
+  const dataDir = await createTempDir('qm-init-130-data-');
   const child = spawn(process.execPath, NODE_ARGS, {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, QUOTAMETER_CONFIG_DIR: configDir },
+    env: {
+      ...process.env,
+      QUOTAMETER_CONFIG_DIR: configDir,
+      QUOTAMETER_DATA_DIR: dataDir.path,
+    },
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -60,16 +68,20 @@ function runInit(stdinData: string, configDir: string): Promise<RunResult> {
   child.stdin?.on('error', () => undefined);
   child.stdin?.write(stdinData);
   child.stdin?.end();
-  return new Promise((resolve, reject) => {
-    child.once('close', (code) =>
-      resolve({
-        code,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
-      }),
-    );
-    child.once('error', reject);
-  });
+  try {
+    return await new Promise<RunResult>((resolve, reject) => {
+      child.once('close', (code) =>
+        resolve({
+          code,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
+        }),
+      );
+      child.once('error', reject);
+    });
+  } finally {
+    await dataDir.remove();
+  }
 }
 
 /** A fresh temporary configuration directory per run (task 132: init writes). */
@@ -78,14 +90,19 @@ async function freshConfigDir(): Promise<TempDir> {
 }
 
 describe('quotameter init (piped stdin, real launcher)', () => {
+  /** The marker password of the keyed runs (§15.2 minimum met). */
+  const PIPE_PASSWORD = 'integration-password-marker-42';
+
   it('collects, validates, tests, writes, and summarizes — key never printed', async () => {
     const dir = await freshConfigDir();
     try {
       // The child's connection test is guard-blocked (deterministic
       // `provider-unavailable`), so the run explains the failure, asks the
-      // §5.3 offer, and the scripted `y` keeps the account.
+      // §5.3 offer, and the scripted `y` keeps the account. Since U-042 the
+      // non-loopback bind collects the password pair before the test
+      // (§5.3 step 4, D-141) — stored as a real scrypt hash, never echoed.
       const result = await runInit(
-        'Europe/Berlin\n0.0.0.0\n9000\n120\nwork\nsk-e2e-key-value\ny\n',
+        `Europe/Berlin\n0.0.0.0\n9000\n120\nwork\nsk-e2e-key-value\n${PIPE_PASSWORD}\n${PIPE_PASSWORD}\ny\n`,
         dir.path,
       );
       expect(result.code).toBe(0);
@@ -97,12 +114,15 @@ describe('quotameter init (piped stdin, real launcher)', () => {
         "'work' (API key configured, hidden; connection test failed: " +
           'provider-unavailable — stored in error state)',
       );
-      expect(result.stdout).toContain('requires a password before the service');
+      expect(result.stdout).toContain('Password:          set (only a scrypt hash is stored)');
       expect(result.stderr).toContain("the initial connection test for 'work' failed:");
       expect(result.stderr).toContain('the check was inconclusive');
       expect(result.stdout + result.stderr).not.toContain('sk-e2e-key-value');
+      expect(result.stdout + result.stderr).not.toContain(PIPE_PASSWORD);
       // Task 133: the run wrote the configuration with the account — the
-      // key inside the file (§6.3, D-004), never in any stream.
+      // key inside the file (§6.3, D-004), never in any stream. Task
+      // U-042: the password lives in the same file as its scrypt hash
+      // only (§15.2) — the plaintext appears nowhere, not even the file.
       const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<
         string,
         unknown
@@ -118,26 +138,35 @@ describe('quotameter init (piped stdin, real launcher)', () => {
         },
       ]);
       expect(JSON.stringify(config)).toContain('sk-e2e-key-value');
+      expect(JSON.stringify(config)).not.toContain(PIPE_PASSWORD);
+      const auth = config.auth as { mode?: string; passwordHash?: string };
+      expect(auth.mode).toBe('auto');
+      expect(auth.passwordHash).toMatch(/^scrypt\$/);
     } finally {
       await dir.remove();
     }
   }, 20_000);
 
-  it('empty lines take the shown defaults and skip the account', async () => {
+  it('empty lines take the shown defaults, skip the account, and skip the password', async () => {
     const dir = await freshConfigDir();
     try {
-      const result = await runInit('UTC\n\n\n\n\n', dir.path);
+      // The sixth empty line skips the optional §5.3 step-4 password
+      // (loopback bind) — the done-condition's §15.1 half at the real
+      // launcher: completing init without a password keeps `auto`/no hash.
+      const result = await runInit('UTC\n\n\n\n\n\n', dir.path);
       expect(result.code).toBe(0);
       expect(result.stdout).toContain('Time zone:         UTC');
       expect(result.stdout).toContain('Bind host:         127.0.0.1');
       expect(result.stdout).toContain('Port:              8787');
       expect(result.stdout).toContain('Polling interval:  300 seconds');
       expect(result.stdout).toContain('Account:           none (add one later in the UI)');
+      expect(result.stdout).toContain('Password:          none');
       const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<
         string,
         unknown
       >;
       expect(config.server).toEqual({ host: '127.0.0.1', port: 8787 });
+      expect(config.auth).toEqual({ mode: 'auto' });
     } finally {
       await dir.remove();
     }
@@ -146,7 +175,7 @@ describe('quotameter init (piped stdin, real launcher)', () => {
   it('an empty time-zone answer is rejected loudly, not defaulted to the hint', async () => {
     const dir = await freshConfigDir();
     try {
-      const result = await runInit('\nUTC\n\n\n\n\n', dir.path);
+      const result = await runInit('\nUTC\n\n\n\n\n\n', dir.path);
       expect(result.code).toBe(0);
       expect(result.stderr).toContain('Time zone is required');
       expect(result.stderr).toContain('never applies the system time zone');
@@ -159,11 +188,60 @@ describe('quotameter init (piped stdin, real launcher)', () => {
   it('invalid answers complain on stderr and are asked again', async () => {
     const dir = await freshConfigDir();
     try {
-      const result = await runInit('Nope/Zone\nUTC\n\nabc\n8788\n\n\n', dir.path);
+      const result = await runInit('Nope/Zone\nUTC\n\nabc\n8788\n\n\n\n', dir.path);
       expect(result.code).toBe(0);
       expect(result.stderr).toContain("'Nope/Zone' is not a valid IANA time zone");
       expect(result.stderr).toContain("Port must be a whole number (got 'abc')");
       expect(result.stdout).toContain('Port:              8788');
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('a too-short password on a non-loopback bind draws the §15.2 complaint', async () => {
+    const dir = await freshConfigDir();
+    try {
+      // The required pair: a short first answer is complained about and
+      // re-asked; a valid pair then stores the hash (the marker never
+      // reaches any stream).
+      const marker = 'piped-password-marker-42';
+      const result = await runInit(`UTC\n0.0.0.0\n\n\n\nshort\n${marker}\n${marker}\n`, dir.path);
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain(
+        'the password must be at least 12 characters long — try again',
+      );
+      expect(result.stdout + result.stderr).not.toContain(marker);
+      const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as {
+        auth?: { passwordHash?: string };
+      };
+      expect(config.auth?.passwordHash).toMatch(/^scrypt\$/);
+      expect(JSON.stringify(config)).not.toContain(marker);
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('three rejected password attempts on a non-loopback bind cancel the run', async () => {
+    const dir = await freshConfigDir();
+    try {
+      const result = await runInit('UTC\n0.0.0.0\n\n\n\n\n\n\n', dir.path);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('quotameter init: too many unsuccessful password attempts');
+      await expect(readFile(configFilePath(dir.path))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('EOF at the password question cancels the run (no default, no file)', async () => {
+    const dir = await freshConfigDir();
+    try {
+      const result = await runInit('UTC\n\n\n\n\n', dir.path);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        'quotameter init: input closed before the password was answered — initialization cancelled',
+      );
+      await expect(readFile(configFilePath(dir.path))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await dir.remove();
     }
@@ -197,6 +275,9 @@ describe('quotameter init (piped stdin, real launcher)', () => {
 });
 
 describe('quotameter init (real PTY, hidden key entry)', () => {
+  /** The marker password of the PTY runs (§15.2 minimum met). */
+  const PTY_PASSWORD = 'pty-password-marker-42';
+
   /**
    * Runs the launcher under a PTY via `script`. Each answer is written only
    * after its prompt has appeared (the D-087 readiness-marker pattern, not
@@ -204,16 +285,24 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
    * in raw mode and at the right question, so the runs stay deterministic
    * under load and cannot accidentally type the key into an earlier prompt.
    */
-  function runUnderPty(
+  async function runUnderPty(
     mode: 'typed' | 'pasted',
     lines: readonly string[],
     configDir: string,
   ): Promise<RunResult> {
+    // A per-run temporary data directory: the typed/pasted password means
+    // the child revokes surviving sessions, which must never reach the
+    // container's shared default data directory.
+    const dataDir = await createTempDir('qm-init-130-pty-data-');
     const command = [process.execPath, ...NODE_ARGS].map((part) => JSON.stringify(part)).join(' ');
     const child = spawn('script', ['-qec', command, '/dev/null'], {
       cwd: REPO_ROOT,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, QUOTAMETER_CONFIG_DIR: configDir },
+      env: {
+        ...process.env,
+        QUOTAMETER_CONFIG_DIR: configDir,
+        QUOTAMETER_DATA_DIR: dataDir.path,
+      },
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -228,6 +317,9 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
     const typed = (async () => {
       // Task 133: the guard-blocked connection test makes the keyed runs
       // fail into the §5.3 offer — the extra marker and answer step.
+      // Task U-042: the password pair sits between the key and the offer;
+      // its two markers prove the muted secret questions really ran on
+      // the terminal before the typed/pasted secret is judged unechoed.
       const markers = [
         'IANA time zone to use',
         'Bind host',
@@ -235,6 +327,8 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
         'Polling interval',
         'account label',
         "API key for 'work'",
+        'Web password (at least 12 characters',
+        'Confirm password:',
         "Keep 'work' configured anyway?",
       ];
       if (mode === 'pasted') {
@@ -252,25 +346,29 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
       child.stdin?.end();
     })();
 
-    return new Promise((resolve, reject) => {
-      child.once('close', (code) =>
-        resolve({
-          code,
-          stdout: Buffer.concat(stdout).toString('utf8'),
-          stderr: Buffer.concat(stderr).toString('utf8'),
-        }),
-      );
-      child.once('error', reject);
-      void typed.catch(reject);
-    });
+    try {
+      return await new Promise<RunResult>((resolve, reject) => {
+        child.once('close', (code) =>
+          resolve({
+            code,
+            stdout: Buffer.concat(stdout).toString('utf8'),
+            stderr: Buffer.concat(stderr).toString('utf8'),
+          }),
+        );
+        child.once('error', reject);
+        void typed.catch(reject);
+      });
+    } finally {
+      await dataDir.remove();
+    }
   }
 
-  it('echoes typed answers but never the typed API key', async () => {
+  it('echoes typed answers but never the typed API key or password', async () => {
     const dir = await freshConfigDir();
     try {
       const result = await runUnderPty(
         'typed',
-        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value', 'y'],
+        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value', PTY_PASSWORD, PTY_PASSWORD, 'y'],
         dir.path,
       );
       expect(result.code).toBe(0);
@@ -278,16 +376,19 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
       // Normal answers echo on the terminal (terminal-mode readline)…
       expect(transcript).toContain('Europe/Berlin');
       expect(transcript).toContain('work');
-      // …the typed secret never does, and the summary reports it hidden.
+      // …the typed secrets never do, and the summary reports them hidden.
       expect(transcript).not.toContain('sk-pty-key-value');
       expect(transcript).toContain('API key configured, hidden');
+      expect(transcript).not.toContain(PTY_PASSWORD);
+      expect(transcript).toContain('Password:          set (only a scrypt hash is stored)');
       // The guard-blocked connection test is explained (the §5.3 step-6
       // failure contract) without ever naming the key…
       expect(transcript).toContain("the initial connection test for 'work' failed:");
       expect(transcript).toContain('the check was inconclusive');
       expect(transcript).toContain('stored in error state');
       // …and the written configuration carries the account — key inside
-      // the file only (§6.3, D-004).
+      // the file only (§6.3, D-004) — plus the password's scrypt hash,
+      // never its plaintext (§15.2, D-141).
       const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<
         string,
         unknown
@@ -301,6 +402,8 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
           apiKey: 'sk-pty-key-value',
         },
       ]);
+      expect((config.auth as { passwordHash?: string }).passwordHash).toMatch(/^scrypt\$/);
+      expect(JSON.stringify(config)).not.toContain(PTY_PASSWORD);
       expect(transcript).not.toContain('sk-pty-key-value');
     } finally {
       await dir.remove();
@@ -312,7 +415,7 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
     try {
       const result = await runUnderPty(
         'pasted',
-        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value', 'y'],
+        ['Europe/Berlin', '', '', '', 'work', 'sk-pty-key-value', PTY_PASSWORD, PTY_PASSWORD, 'y'],
         dir.path,
       );
       expect(result.code).toBe(0);
@@ -321,11 +424,20 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
       expect(transcript).toContain('IANA time zone to use');
       expect(transcript).toContain('Initial configuration collected');
       expect(transcript).toContain('API key configured, hidden');
+      expect(transcript).toContain('Password:          set (only a scrypt hash is stored)');
       // …the pasted block never echoes: the time zone appears exactly once
       // (the summary line), never a second time as terminal echo…
       expect(transcript.split('Europe/Berlin').length - 1).toBe(1);
-      // …and the pasted secret appears nowhere at all.
+      // …and the pasted secrets appear nowhere at all — not in the
+      // transcript and not in the written file, whose auth carries only
+      // the scrypt hash (§15.2, D-141).
       expect(transcript).not.toContain('sk-pty-key-value');
+      expect(transcript).not.toContain(PTY_PASSWORD);
+      const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as {
+        auth?: { passwordHash?: string };
+      };
+      expect(config.auth?.passwordHash).toMatch(/^scrypt\$/);
+      expect(JSON.stringify(config)).not.toContain(PTY_PASSWORD);
     } finally {
       await dir.remove();
     }

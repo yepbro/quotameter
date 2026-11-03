@@ -317,6 +317,58 @@ describe('askNewPassword (the prompt flow)', () => {
     await askNewPassword('quotameter passwd', rec.output, prompter.handle);
     expect(rec.lines().join('\n')).not.toContain('secret-short-value');
   });
+
+  /* ── the additive options init consumes (task U-042, decision D-141) ─── */
+
+  it('a custom prompt replaces the first question, never the confirmation', async () => {
+    const rec = recorder();
+    const prompter = scriptedPrompter([MARKER_PASSWORD, MARKER_PASSWORD]);
+    const outcome = await askNewPassword('quotameter init', rec.output, prompter.handle, {
+      prompt: 'Web password (custom): ',
+    });
+    expect(outcome).toEqual({ state: 'provided', password: MARKER_PASSWORD });
+    expect(prompter.asked()).toEqual(['Web password (custom): ', CONFIRM_PASSWORD_PROMPT]);
+  });
+
+  it('skippable mode: the exactly-empty first answer is a skip, not a complaint', async () => {
+    const rec = recorder();
+    const prompter = scriptedPrompter(['']);
+    const outcome = await askNewPassword('quotameter init', rec.output, prompter.handle, {
+      skippable: true,
+    });
+    expect(outcome).toEqual({ state: 'skipped' });
+    expect(rec.lines()).toEqual([]);
+  });
+
+  it('skippable mode keeps the shared checks for every non-empty answer', async () => {
+    const rec = recorder();
+    const prompter = scriptedPrompter(['short', MARKER_PASSWORD, MARKER_PASSWORD]);
+    const outcome = await askNewPassword('quotameter init', rec.output, prompter.handle, {
+      skippable: true,
+    });
+    // A too-short answer draws the same complaint as passwd's — the skip
+    // is the exactly-empty line's privilege alone.
+    expect(outcome).toEqual({ state: 'provided', password: MARKER_PASSWORD });
+    expect(rec.lines()).toEqual([
+      'quotameter init: the password must be at least 12 characters long — try again',
+    ]);
+    expect(prompter.asked()).toHaveLength(3);
+  });
+
+  it('the default call shape is unchanged (passwd passes no options)', async () => {
+    const rec = recorder();
+    const prompter = scriptedPrompter(['', '', '', '']);
+    // Without options an empty answer is the too-short complaint —
+    // passwd's own contract (D-118) must not drift with the new options;
+    // three of them exhaust the attempts exactly as before.
+    const outcome = await askNewPassword('quotameter passwd', rec.output, prompter.handle);
+    expect(outcome).toEqual({ state: 'aborted' });
+    expect(rec.lines()).toEqual([
+      'quotameter passwd: the password must be at least 12 characters long — try again',
+      'quotameter passwd: the password must be at least 12 characters long — try again',
+      'quotameter passwd: the password must be at least 12 characters long — try again',
+    ]);
+  });
 });
 
 /* ── The renderers ─────────────────────────────────────────────────────── */

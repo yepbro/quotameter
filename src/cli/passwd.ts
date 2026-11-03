@@ -74,16 +74,45 @@ const MAX_PASSWORD_ATTEMPTS = 3;
 export const NEW_PASSWORD_PROMPT = `New password (at least ${MIN_PASSWORD_LENGTH} characters): `;
 export const CONFIRM_PASSWORD_PROMPT = 'Confirm password: ';
 
+/** How {@link askNewPassword} may be tailored by a caller (init, U-042). */
+export interface AskPasswordOptions {
+  /**
+   * The first question's text, overriding {@link NEW_PASSWORD_PROMPT}. The
+   * caller owns its wording (init names the skip/require consequence of the
+   * bind host, §5.3 step 4); the confirmation always keeps the shared
+   * {@link CONFIRM_PASSWORD_PROMPT}.
+   */
+  readonly prompt?: string;
+  /**
+   * When true, an exactly-empty first answer is a deliberate skip instead
+   * of the length complaint — init's password is optional on a loopback
+   * bind (§15.1 default), so Enter must be able to mean "none". Any other
+   * answer flows through the shared checks unchanged (a whitespace-only
+   * answer is simply too short; secrets are never trimmed).
+   */
+  readonly skippable?: boolean;
+}
+
 /** How the prompt flow ended. */
 export type PasswordPromptOutcome =
   /** A validated, confirmed password. */
   | { readonly state: 'provided'; readonly password: string }
+  /** An exactly-empty first answer in {@link AskPasswordOptions.skippable} mode. */
+  | { readonly state: 'skipped' }
   /** The input ended (EOF) before the pair was complete. */
   | { readonly state: 'closed' }
   /** The user interrupted (Ctrl-C). */
   | { readonly state: 'interrupted' }
   /** Every attempt was rejected — no usable password was confirmed. */
   | { readonly state: 'aborted' };
+
+/**
+ * The outcome a caller that passes no {@link AskPasswordOptions} can see —
+ * the `skipped` state is exclusive to `skippable` mode, so the no-options
+ * overload narrows it away and `passwd`'s outcome handling stays
+ * type-exhaustive over exactly its own states (review round P3).
+ */
+export type RequiredPasswordOutcome = Exclude<PasswordPromptOutcome, { readonly state: 'skipped' }>;
 
 /**
  * Asks for the new password twice and validates what arrived. A blank or
@@ -94,18 +123,41 @@ export type PasswordPromptOutcome =
  * length complaint: zero characters is the shortest way to fail the §15.2
  * minimum, and a distinct wording would add a branch without adding
  * information.
+ *
+ * The overloads keep the two call shapes honest: without options the
+ * `skipped` state is impossible and the result type says so
+ * ({@link RequiredPasswordOutcome}); with options (init's §5.3 step-4 leg,
+ * U-042/D-141) every state is reachable.
  */
 export async function askNewPassword(
   errorPrefix: string,
   output: CliContext['output'],
   prompter: PromptHandle,
+): Promise<RequiredPasswordOutcome>;
+export async function askNewPassword(
+  errorPrefix: string,
+  output: CliContext['output'],
+  prompter: PromptHandle,
+  options: AskPasswordOptions,
+): Promise<PasswordPromptOutcome>;
+export async function askNewPassword(
+  errorPrefix: string,
+  output: CliContext['output'],
+  prompter: PromptHandle,
+  options: AskPasswordOptions = {},
 ): Promise<PasswordPromptOutcome> {
   for (let attempt = 1; attempt <= MAX_PASSWORD_ATTEMPTS; attempt++) {
     // The answer is `raw` until it validates — the init-questions naming
     // convention for prompt answers.
-    const raw = await prompter.askSecret(NEW_PASSWORD_PROMPT);
+    const raw = await prompter.askSecret(options.prompt ?? NEW_PASSWORD_PROMPT);
     if (raw === null) {
       return prompter.interrupted() ? { state: 'interrupted' } : { state: 'closed' };
+    }
+    // The skip is the exactly-empty line only (U-042): a blank-but-not-empty
+    // answer stays an answer and fails the length check below like any
+    // other too-short one.
+    if (options.skippable === true && raw === '') {
+      return { state: 'skipped' };
     }
     // Raw length, never a trimmed one — secrets are never trimmed (D-022).
     if (raw.length < MIN_PASSWORD_LENGTH) {

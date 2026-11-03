@@ -8,6 +8,9 @@ import { runInitCommand, type InitDeps } from '../../src/cli/init';
 import { configFilePath } from '../../src/config/load';
 import { readExistingConfig } from '../../src/cli/init-persist';
 import type { PromptHandle } from '../../src/cli/prompts';
+import { openStorageConnection } from '../../src/storage/connection';
+import { createMigrationRunner, MIGRATIONS } from '../../src/storage/migrations';
+import { createQuotaRepository } from '../../src/storage/repository';
 import { createTempDir } from '../helpers/isolation';
 
 /**
@@ -37,6 +40,7 @@ async function runHandler(
   flags: Record<string, boolean | string>,
   answers: readonly string[],
   depsOverride: Partial<InitDeps> = {},
+  options: { readonly dataDir?: string } = {},
 ): Promise<Recorded> {
   const outText: string[] = [];
   const errText: string[] = [];
@@ -61,9 +65,17 @@ async function runHandler(
     flags,
     positionals: [],
   };
+  // Since U-042 a password-writing run revokes the sessions of a surviving
+  // database, so every handler run resolves a hermetic data directory —
+  // an explicit one for the surviving-database tests, a fresh temp one
+  // otherwise (never the container's shared default).
+  const dataDir = options.dataDir !== undefined ? null : await createTempDir('qm-init-132-data-');
   try {
     const code = await runInitCommand({
-      pathEnv: { QUOTAMETER_CONFIG_DIR: configDir },
+      pathEnv: {
+        QUOTAMETER_CONFIG_DIR: configDir,
+        QUOTAMETER_DATA_DIR: options.dataDir ?? dataDir?.path,
+      },
       createPrompter: () => prompter,
       ...depsOverride,
     })(ctx);
@@ -73,6 +85,8 @@ async function runHandler(
     // same way so refusal cases assert on the message.
     const message = error instanceof Error ? error.message : String(error);
     return { code: 1, out: outText.join(''), err: `quotameter init: ${message}\n` };
+  } finally {
+    await dataDir?.remove();
   }
 }
 
@@ -81,7 +95,24 @@ async function readConfig(configDir: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(configFilePath(configDir), 'utf8')) as Record<string, unknown>;
 }
 
-const FULL_FRESH = ['Europe/Berlin', '0.0.0.0', '9000', '120', 'work', 'sk-e2e-key-value', 'y'];
+/**
+ * The marker password of the keyed fresh-run script (§15.2 minimum met;
+ * the non-loopback bind of FULL_FRESH makes the pair a required part of
+ * it since U-042 — D-141).
+ */
+const FRESH_PASSWORD = 'integration-password-marker-42';
+
+const FULL_FRESH = [
+  'Europe/Berlin',
+  '0.0.0.0',
+  '9000',
+  '120',
+  'work',
+  'sk-e2e-key-value',
+  FRESH_PASSWORD,
+  FRESH_PASSWORD,
+  'y',
+];
 const KEEP_ALL = ['', '', '', ''];
 
 describe('init idempotency (in-process, real filesystem)', () => {
@@ -125,10 +156,17 @@ describe('init idempotency (in-process, real filesystem)', () => {
       ]);
       expect(JSON.stringify(config)).toContain('sk-e2e-key-value');
       expect(run.out + run.err).not.toContain('sk-e2e-key-value');
-      // §15.1 pending (D-101): the remote bind is written hash-less, with
-      // the passwd remedy — the service refuses to start on it until then.
-      expect(config.auth).toEqual({ mode: 'auto' });
-      expect(run.out).toContain('A password is required before the service starts');
+      // §15.2/D-141: the collected password is stored as its scrypt hash
+      // only — inside the 0600 file, never in any output line — so the
+      // §15.1 pending note is gone (the hash satisfies the requirement).
+      expect(config.auth).toMatchObject({ mode: 'auto' });
+      const auth = config.auth as { passwordHash?: string };
+      expect(typeof auth.passwordHash).toBe('string');
+      expect(auth.passwordHash).toMatch(/^scrypt\$/);
+      expect(JSON.stringify(config)).not.toContain(FRESH_PASSWORD);
+      expect(run.out + run.err).not.toContain(FRESH_PASSWORD);
+      expect(run.out).toContain('Password:          set (only a scrypt hash is stored)');
+      expect(run.out).not.toContain('A password is required before the service starts');
     } finally {
       await dir.remove();
     }
@@ -157,13 +195,26 @@ describe('init idempotency (in-process, real filesystem)', () => {
   });
 
   it('a password-pending (remote bind) configuration re-runs as existing and is kept', async () => {
+    // Since U-042 the interactive remote-bind run collects the password
+    // (D-141), so the pending state's remaining first-run producer is
+    // `--yes` without --password-env — the deliberate init-now,
+    // passwd-later journey D-101 blessed (§15.1 binds starting, not
+    // existing).
     const dir = await createTempDir('qm-init-132-');
     try {
-      const first = await runHandler(dir.path, {}, FULL_FRESH);
+      const first = await runHandler(
+        dir.path,
+        { yes: true, timezone: 'Europe/Berlin', host: '0.0.0.0' },
+        [],
+      );
       expect(first.code).toBe(0);
       expect(first.out).toContain('A password is required before the service starts');
+      expect(first.out).toContain('Password:          none');
       const file = configFilePath(dir.path);
       const created = await readFile(file, 'utf8');
+      const createdConfig = JSON.parse(created) as { auth?: { passwordHash?: string } };
+      expect(createdConfig.auth).toMatchObject({ mode: 'auto' });
+      expect(createdConfig.auth?.passwordHash).toBeUndefined();
 
       const second = await runHandler(dir.path, {}, KEEP_ALL);
       expect(second.code).toBe(0);
@@ -173,6 +224,74 @@ describe('init idempotency (in-process, real filesystem)', () => {
       );
       expect(second.out).toContain('No changes — the existing configuration is kept');
       expect(await readFile(file, 'utf8')).toBe(created);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('a password over a surviving database revokes its sessions (review round P1)', async () => {
+    // "Fresh" is fresh about the configuration file only: a database left
+    // behind (the config deleted or re-pointed — init's own invalid-file
+    // remedy says "remove the file, then run init again") may hold sessions
+    // minted under the previous password. Storing a new password revokes
+    // them first (§15.2, `passwd`'s fail-secure order) and states it.
+    const SESSION_HASHES = [
+      'aa11111111111111111111111111111111111111111111111111111111111111',
+      'bb22222222222222222222222222222222222222222222222222222222222222',
+    ] as const;
+    const dir = await createTempDir('qm-init-132-p1-');
+    const dataDir = join(dir.path, 'surviving-data');
+    // A real migrated database with two live sessions, left behind exactly
+    // as a deleted or re-pointed configuration leaves it.
+    await mkdir(dataDir, { recursive: true });
+    {
+      const connection = openStorageConnection({ dataDir });
+      try {
+        await createMigrationRunner({ database: connection.database, migrations: MIGRATIONS }).up();
+        const repository = createQuotaRepository({ database: connection.database });
+        const now = Date.now();
+        for (const [index, tokenHash] of SESSION_HASHES.entries()) {
+          repository.insertSession({
+            tokenHash,
+            createdAt: now - 1000,
+            lastSeenAt: now - 1000,
+            expiresAt: now + 60_000 + index,
+          });
+        }
+      } finally {
+        connection.close();
+      }
+    }
+    try {
+      // Fresh configuration directory, surviving data directory, a
+      // collected password — the §15.2 revocation arm through the real
+      // probe, the real repository, and the real scrypt hash.
+      const run = await runHandler(
+        dir.path,
+        {},
+        ['UTC', '0.0.0.0', '', '', '', FRESH_PASSWORD, FRESH_PASSWORD],
+        {},
+        { dataDir },
+      );
+      expect(run.code).toBe(0);
+      expect(run.out).toContain('Password:          set (only a scrypt hash is stored)');
+      expect(run.out).toContain('All 2 stored sessions of the previous installation were revoked.');
+      expect(run.out + run.err).not.toContain(FRESH_PASSWORD);
+      const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as {
+        auth?: { passwordHash?: string };
+      };
+      expect(config.auth?.passwordHash).toMatch(/^scrypt\$/);
+      expect(JSON.stringify(config)).not.toContain(FRESH_PASSWORD);
+      // The sessions are really gone from the surviving database.
+      const connection = openStorageConnection({ dataDir });
+      try {
+        const repository = createQuotaRepository({ database: connection.database });
+        expect(
+          SESSION_HASHES.filter((tokenHash) => repository.getSession(tokenHash) !== null),
+        ).toHaveLength(0);
+      } finally {
+        connection.close();
+      }
     } finally {
       await dir.remove();
     }
@@ -311,7 +430,7 @@ describe('init idempotency (in-process, real filesystem)', () => {
         return readExistingConfig(target);
       };
 
-      const run = await runHandler(dir.path, {}, ['UTC', '', '', '', ''], { readExisting });
+      const run = await runHandler(dir.path, {}, ['UTC', '', '', '', '', ''], { readExisting });
       expect(run.code).toBe(1);
       expect(run.err).toContain('the configuration changed while init was running');
       expect(run.out).not.toContain('Configuration written to');
@@ -436,14 +555,22 @@ interface RunResult {
 }
 
 /** Runs `quotameter init <args>` in `configDir` with `stdinData` piped in. */
-function runLauncher(
+async function runLauncher(
   configDir: string,
   args: readonly string[],
   stdinData: string,
 ): Promise<RunResult> {
+  // A hermetic per-run data directory beside the config redirect (the
+  // runHandler rule: password-writing runs revoke surviving sessions, so
+  // no launcher run may touch the container's shared default).
+  const dataDir = await createTempDir('qm-init-132-launch-data-');
   const child = spawn(process.execPath, ['--import', 'jiti/register', BIN, 'init', ...args], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, QUOTAMETER_CONFIG_DIR: configDir },
+    env: {
+      ...process.env,
+      QUOTAMETER_CONFIG_DIR: configDir,
+      QUOTAMETER_DATA_DIR: dataDir.path,
+    },
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -452,23 +579,27 @@ function runLauncher(
   child.stdin?.on('error', () => undefined);
   child.stdin?.write(stdinData);
   child.stdin?.end();
-  return new Promise((resolve, reject) => {
-    child.once('close', (code) =>
-      resolve({
-        code,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
-      }),
-    );
-    child.once('error', reject);
-  });
+  try {
+    return await new Promise<RunResult>((resolve, reject) => {
+      child.once('close', (code) =>
+        resolve({
+          code,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
+        }),
+      );
+      child.once('error', reject);
+    });
+  } finally {
+    await dataDir.remove();
+  }
 }
 
 describe('init idempotency (real launcher, double run)', () => {
   it('interactive: first run creates the config, second offers keep and preserves it', async () => {
     const dir = await createTempDir('qm-init-132-');
     try {
-      const first = await runLauncher(dir.path, [], 'Europe/Berlin\n127.0.0.1\n9000\n120\n\n');
+      const first = await runLauncher(dir.path, [], 'Europe/Berlin\n127.0.0.1\n9000\n120\n\n\n');
       expect(first.code).toBe(0);
       expect(first.stdout).toContain('Configuration written to');
       const file = configFilePath(dir.path);

@@ -37,6 +37,20 @@
  * declining drops it from this run's write). The key value never reaches
  * any output at any stage (§15.4).
  *
+ * The §15.2 web password is collected on fresh runs since task U-042
+ * (`init-password.ts`, D-141) — §5.3 step 4's step: one muted question pair
+ * after the step-3 questions (optional on a loopback bind, Enter keeps
+ * none; required-shaped on a non-loopback one), or `--password-env
+ * <variable>` in `--yes` mode (the environment by name — never a value
+ * flag, §15.4). Only the scrypt hash through `hashPassword` (D-118/D-122)
+ * is stored, as `auth.passwordHash` inside the `0600` file; completing init
+ * without a password keeps the §15.1 default (`mode: 'auto'`, no hash).
+ * When the data directory still holds a database, storing the password
+ * revokes its sessions first (`passwd`'s fail-secure order — review round
+ * P1: "fresh" is fresh about the configuration file only). Re-runs collect
+ * no password — `quotameter passwd` owns changes (D-118's fail-secure
+ * session revocation) and the pending state's remedy (D-101).
+ *
  * Service setup (task 137, `service-setup.ts`, D-106): the owner context of
  * §5.3 step 1 is resolved first and fails fast on problems; after a fresh
  * run's write, step 7 routes by privilege and machine capabilities — the
@@ -59,6 +73,7 @@ import { configFilePath } from '../config/load';
 import { resolvePaths, type PathEnv } from '../config/paths';
 import type { QuotaProvider } from '../providers/registry';
 import { createInitialAccountProvider } from '../server/providers';
+import { hashPassword } from '../services/password-hash';
 import type { CliContext, CliHandler } from './commands';
 import {
   runInitialAccountSetup,
@@ -66,6 +81,7 @@ import {
   type InitialAccountSetup,
   type PreparedAccount,
 } from './init-account';
+import { askInitPassword } from './init-password';
 import {
   assembleInitConfig,
   initSettingsChanged,
@@ -80,6 +96,7 @@ import {
 } from './init-persist';
 import { askInitQuestions, defaultSystemTimeZone, type InitAnswers } from './init-questions';
 import { buildYesAnswers, INIT_VALUE_OPTIONS, type YesEnv } from './init-yes';
+import { revokeAllSessions, type SessionRevocation } from './passwd';
 import { createReadlinePrompter, type PromptHandle } from './prompts';
 import {
   resolveServiceOwner,
@@ -87,8 +104,10 @@ import {
   type ServiceOwnerResolution,
 } from './service-owner';
 import {
+  failureLine,
   probeServiceCapabilities,
   runServiceSetupStep,
+  thrownMessage,
   type ServiceCapabilities,
   type ServiceCommandRunner,
   type ServiceExecPaths,
@@ -125,7 +144,9 @@ export interface InitDeps {
   readonly resolveOwner?: () => ServiceOwnerResolution;
   /** The §5.3 step 1 capability probe; production `probeServiceCapabilities`. */
   readonly probeCapabilities?: () => ServiceCapabilities;
-  /** The §5.3 step 7 service-command executor; production `spawnServiceCommand`. */
+  /**
+   * The §5.3 step 7 service-command executor; production `spawnServiceCommand`.
+   */
   readonly runServiceCommand?: ServiceCommandRunner;
   /** The §5.3 step 7 unit-file writer; production `writeUnitFileToDisk`. */
   readonly writeServiceUnitFile?: ServiceUnitWriter;
@@ -137,6 +158,19 @@ export interface InitDeps {
    * under `/var/lib/systemd/linger`).
    */
   readonly probeUserLinger?: UserLingerProbe;
+  /**
+   * The §15.2 hashing behind the collected password (task U-042, D-141);
+   * production `hashPassword` (D-118's scrypt encoding). Only the hash
+   * ever reaches the assembled configuration.
+   */
+  readonly hash?: (password: string) => Promise<string>;
+  /**
+   * The §15.2 revocation a collected password owes a surviving database
+   * (task U-042, D-141; review round P1): production `revokeAllSessions`
+   * (`passwd`'s own probe — only `ENOENT` reads as absence, every other
+   * failure fails the run before anything is stored).
+   */
+  readonly revokeSessions?: (dataDir: string) => Promise<SessionRevocation>;
 }
 
 /**
@@ -171,6 +205,7 @@ export function runInitCommand(deps: InitDeps = {}): CliHandler {
         ctx,
         deps,
         paths.configDir,
+        paths.dataDir,
         configFile,
         existing,
         ownerResolution.context,
@@ -201,6 +236,7 @@ export function runInitCommand(deps: InitDeps = {}): CliHandler {
     // offer (task 133) is asked on the same seam as the questions, and a
     // closed input there cancels exactly like a closed question (D-099).
     let prepared: PreparedAccount;
+    let password: string | undefined;
     try {
       const asked = await askInitQuestions({
         output: ctx.output,
@@ -212,6 +248,31 @@ export function runInitCommand(deps: InitDeps = {}): CliHandler {
         throw new Error(
           'input closed before the questions were answered — initialization cancelled',
         );
+      }
+      // §5.3 step 4 (task U-042, D-141): the web password, a fresh run's
+      // last collection — asked after the step-3 questions and before the
+      // account's connection test; optional on a loopback bind (Enter
+      // keeps none, §15.1's default), required-shaped on a non-loopback
+      // one. Re-runs collect no password: changing one is `quotameter
+      // passwd`'s contract (D-118 owns the fail-secure session-revocation
+      // ordering such a change requires), and a password-pending re-run
+      // keeps its passwd remedy (D-101).
+      if (existing.state !== 'existing') {
+        const passwordOutcome = await askInitPassword({
+          output: ctx.output,
+          prompter,
+          host: asked.host,
+          errorPrefix: 'quotameter init',
+        });
+        if (passwordOutcome.state === 'cancelled') {
+          throw new Error(
+            'input closed before the password was answered — initialization cancelled',
+          );
+        }
+        if (passwordOutcome.state === 'aborted') {
+          throw new Error('too many unsuccessful password attempts — initialization cancelled');
+        }
+        password = passwordOutcome.state === 'provided' ? passwordOutcome.password : undefined;
       }
       prepared = await runInitialAccountSetup({
         answers: asked,
@@ -238,11 +299,13 @@ export function runInitCommand(deps: InitDeps = {}): CliHandler {
       ctx,
       deps,
       paths.configDir,
+      paths.dataDir,
       configFile,
       existing,
       prepared,
       ownerResolution.context,
       capabilities,
+      password,
     );
   };
 }
@@ -258,6 +321,7 @@ async function runYesInit(
   ctx: CliContext,
   deps: InitDeps,
   configDir: string,
+  dataDir: string,
   configFile: string,
   existing: ExistingConfig,
   owner: ServiceOwnerContext,
@@ -292,7 +356,18 @@ async function runYesInit(
     provider: deps.provider ?? createInitialAccountProvider(),
     env: deps.env ?? process.env,
   });
-  return finishInit(ctx, deps, configDir, configFile, existing, prepared, owner, capabilities);
+  return finishInit(
+    ctx,
+    deps,
+    configDir,
+    dataDir,
+    configFile,
+    existing,
+    prepared,
+    owner,
+    capabilities,
+    result.password,
+  );
 }
 
 /**
@@ -304,16 +379,28 @@ async function runYesInit(
  * account step (task 133) has already run by now: its `stored` account
  * joins the assembled configuration, its dropped/no-key outcomes join
  * nothing, and its connection-test outcome renders in the summary.
+ *
+ * `password` (task U-042, D-141) is the collected §15.2 password of a fresh
+ * run — `undefined` on every re-run (no collection there) and on a fresh
+ * run that skipped or did not pass one. It exists in plaintext only until
+ * the hash below; only `hashPassword`'s scrypt hash reaches the assembled
+ * configuration and the write (§15.2), and neither the password nor its
+ * hash ever reaches an output line. When the data directory still holds a
+ * database (a configuration deleted or re-pointed while the database
+ * survived), storing the password revokes its sessions first — §15.2's
+ * revocation sentence in `passwd`'s fail-secure order (review round P1).
  */
 async function finishInit(
   ctx: CliContext,
   deps: InitDeps,
   configDir: string,
+  dataDir: string,
   configFile: string,
   existing: ExistingConfig,
   prepared: PreparedAccount,
   owner: ServiceOwnerContext,
   capabilities: ServiceCapabilities,
+  password: string | undefined,
 ): Promise<number> {
   const { answers, setup } = prepared;
   const base = existing.state === 'existing' ? existing.config : undefined;
@@ -321,10 +408,28 @@ async function finishInit(
     ctx.output.out('No changes — the existing configuration is kept as shown above.');
     return 0;
   }
+  // §15.2/D-141: the collected password becomes the stored hash here —
+  // the plaintext's journey ends at the hashing seam, and only the opaque
+  // string reaches the assembled configuration below. No password
+  // collected (skip or absent flag) stores no hash: the §15.1 default.
+  let passwordHash: string | undefined;
+  if (password === undefined) {
+    passwordHash = undefined;
+  } else {
+    try {
+      passwordHash = await (deps.hash ?? hashPassword)(password);
+    } catch (error) {
+      ctx.output.err(
+        failureLine('quotameter init', 'hashing the password failed', thrownMessage(error)),
+      );
+      return 1;
+    }
+  }
   const assembled = assembleInitConfig(
     answers,
     base,
     setup.kind === 'stored' ? setup.account : undefined,
+    passwordHash,
   );
   if (!assembled.ok) {
     for (const problem of assembled.problems) {
@@ -351,6 +456,34 @@ async function finishInit(
     );
     return 1;
   }
+  // §15.2's "changing the password revokes all sessions" (review round P1
+  // on the first version): a fresh run is fresh about the **configuration
+  // file** only — the data directory may still hold a database whose
+  // sessions were minted under a previous installation's password (a
+  // deleted configuration — init's own invalid-file remedy says "remove
+  // the file, then run init again" — or a re-pointed QUOTAMETER_CONFIG_DIR).
+  // Setting a password over such a database revokes them in `passwd`'s
+  // fail-secure order: revoke **before** the write, a failed revocation
+  // aborts with nothing stored. A fresh machine's probe reads absence and
+  // is silent.
+  let revocation: SessionRevocation | undefined;
+  if (passwordHash !== undefined) {
+    revocation = await (deps.revokeSessions ?? revokeAllSessions)(dataDir);
+    if (revocation.state === 'failed') {
+      ctx.output.err(
+        failureLine(
+          'quotameter init',
+          'revoking the sessions of the existing database failed',
+          revocation.detail,
+        ),
+      );
+      ctx.output.out(
+        'The password was not stored — the configuration file was left untouched. ' +
+          'Fix the database problem, then run init again.',
+      );
+      return 1;
+    }
+  }
   await (deps.persistConfig ?? writeInitConfig)({
     configDir,
     configFile,
@@ -362,8 +495,18 @@ async function finishInit(
     );
   }
   if (base === undefined) {
-    ctx.output.out(renderInitSummary(answers, setup));
+    ctx.output.out(renderInitSummary(answers, setup, passwordHash !== undefined));
     ctx.output.out(`Configuration written to ${configFile}.`);
+    // Honest reporting of the P1 revocation above (passwd's report
+    // discipline): sessions existed and are gone — state it, never
+    // silently.
+    if (revocation?.state === 'revoked' && revocation.count > 0) {
+      const noun = revocation.count === 1 ? 'session' : 'sessions';
+      const verb = revocation.count === 1 ? 'was' : 'were';
+      ctx.output.out(
+        `All ${revocation.count} stored ${noun} of the previous installation ${verb} revoked.`,
+      );
+    }
     // §5.3 step 7 (task 137): with the configuration written, set the
     // service up along the routed path — user unit without sudo, manual
     // steps when installation is unavailable, or the system-unit plan.
@@ -412,8 +555,17 @@ function defaultPrompter(): PromptHandle {
  * (not a secret — it is what the account will persist), and the
  * connection-test outcome is stated in words. What happened to the file is
  * the handler's trailer, not part of the values.
+ *
+ * The Password row (task U-042) is state-only like the Account row: `set`
+ * means a scrypt hash was stored, never the value or the hash itself
+ * (§15.2, §15.4). The §5.3 step-4 requirement note renders only when no
+ * password was set — a stored hash satisfies the requirement.
  */
-export function renderInitSummary(answers: InitAnswers, setup: InitialAccountSetup): string {
+export function renderInitSummary(
+  answers: InitAnswers,
+  setup: InitialAccountSetup,
+  passwordSet: boolean,
+): string {
   const lines = [
     'Initial configuration collected and validated:',
     `  Time zone:         ${answers.timezone}`,
@@ -421,8 +573,11 @@ export function renderInitSummary(answers: InitAnswers, setup: InitialAccountSet
     `  Port:              ${answers.port}`,
     `  Polling interval:  ${answers.pollingIntervalSeconds} seconds`,
     `  Account:           ${renderAccountRow(setup)}`,
+    `  Password:          ${passwordSet ? 'set (only a scrypt hash is stored)' : 'none'}`,
   ];
-  const note = passwordRequirementNote(answers.host);
-  if (note !== undefined) lines.push(note);
+  if (!passwordSet) {
+    const note = passwordRequirementNote(answers.host);
+    if (note !== undefined) lines.push(note);
+  }
   return lines.join('\n');
 }

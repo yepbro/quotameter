@@ -95,9 +95,27 @@ const FULL_ARGS = [
   'QM_E2E_TEST_KEY',
 ] as const;
 
-/** Environment with the configuration redirected into `dir` (task 132). */
+/** The marker password of the --password-env runs (§15.2 minimum met). */
+const PASSWORD = 'yes-integration-password-42';
+/** The environment holding it, beside the key variable. */
+const PASSWORD_ENV = { ...process.env, QM_E2E_TEST_PASSWORD: PASSWORD } as NodeJS.ProcessEnv;
+/** The same environment minus the password variable, for the unset cases. */
+const NO_PASSWORD_ENV = { ...process.env } as NodeJS.ProcessEnv;
+delete NO_PASSWORD_ENV.QM_E2E_TEST_PASSWORD;
+
+/**
+ * Environment with the configuration redirected into `dir` (task 132) and
+ * a data-directory redirect beside it: since U-042 a password-writing run
+ * revokes the sessions of any surviving database, so the runs must stay
+ * off the container's shared default data directory (hermetic; removed
+ * with `dir`).
+ */
 function inDir(dir: TempDir, base: NodeJS.ProcessEnv = KEY_ENV): NodeJS.ProcessEnv {
-  return { ...base, QUOTAMETER_CONFIG_DIR: dir.path } as NodeJS.ProcessEnv;
+  return {
+    ...base,
+    QUOTAMETER_CONFIG_DIR: dir.path,
+    QUOTAMETER_DATA_DIR: join(dir.path, 'test-data'),
+  } as NodeJS.ProcessEnv;
 }
 
 /** A fresh temporary configuration directory per run (task 132: init writes). */
@@ -371,6 +389,102 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
       expect(result.stderr).toContain('--host requires --yes (non-interactive mode)');
       expect(result.stderr).not.toContain('input closed before the questions');
       expect(result.stdout).not.toContain('IANA time zone to use');
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('--password-env hashes the environment password and never echoes it (U-042, D-141)', async () => {
+    const dir = await freshConfigDir();
+    try {
+      const result = await runInitYes(
+        ['--yes', '--timezone', 'UTC', '--password-env', 'QM_E2E_TEST_PASSWORD'],
+        inDir(dir, PASSWORD_ENV),
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('Password:          set (only a scrypt hash is stored)');
+      // The plaintext never reaches any stream (spec §15.4)…
+      expect(result.stdout + result.stderr).not.toContain(PASSWORD);
+      // …and the written configuration stores the scrypt hash only
+      // (§15.2) — the plaintext appears nowhere in the file either.
+      const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as {
+        auth?: { mode?: string; passwordHash?: string };
+      };
+      expect(config.auth?.mode).toBe('auto');
+      expect(config.auth?.passwordHash).toMatch(/^scrypt\$/);
+      expect(JSON.stringify(config)).not.toContain(PASSWORD);
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('an unset --password-env variable fails without echoing any value', async () => {
+    const dir = await freshConfigDir();
+    try {
+      const result = await runInitYes(
+        ['--yes', '--timezone', 'UTC', '--password-env', 'QM_E2E_TEST_PASSWORD'],
+        inDir(dir, NO_PASSWORD_ENV),
+      );
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        '--password-env names an environment variable that is not set in this environment',
+      );
+      expect(result.stdout).not.toContain('Initial configuration collected');
+      await expect(readFile(configFilePath(dir.path))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('a too-short --password-env value fails naming the rule, never the value', async () => {
+    const dir = await freshConfigDir();
+    try {
+      const short = { ...process.env, QM_E2E_SHORT_PASSWORD: 'tiny-pw-x9' } as NodeJS.ProcessEnv;
+      const result = await runInitYes(
+        ['--yes', '--timezone', 'UTC', '--password-env', 'QM_E2E_SHORT_PASSWORD'],
+        inDir(dir, short),
+      );
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        '--password-env holds a password shorter than the spec §15.2 minimum of 12 characters',
+      );
+      expect(result.stdout + result.stderr).not.toContain('tiny-pw-x9');
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('--password-env against an existing configuration fails with the passwd remedy', async () => {
+    const dir = await freshConfigDir();
+    try {
+      const first = await runInitYes(['--yes', '--timezone', 'UTC'], inDir(dir, NO_PASSWORD_ENV));
+      expect(first.code).toBe(0);
+      const second = await runInitYes(
+        ['--yes', '--timezone', 'UTC', '--password-env', 'QM_E2E_TEST_PASSWORD'],
+        inDir(dir, PASSWORD_ENV),
+      );
+      expect(second.code).toBe(1);
+      expect(second.stderr).toContain('--password-env applies only to a fresh initialization');
+      expect(second.stderr).toContain('Change the password with quotameter passwd');
+      // The existing configuration is untouched — no hash materialized.
+      const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as {
+        auth?: { passwordHash?: string };
+      };
+      expect(config.auth?.passwordHash).toBeUndefined();
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('--password-env without --yes fails clearly like every value option', async () => {
+    const dir = await freshConfigDir();
+    try {
+      const result = await runInitYes(
+        ['--password-env', 'QM_E2E_TEST_PASSWORD'],
+        inDir(dir, PASSWORD_ENV),
+      );
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('--password-env requires --yes (non-interactive mode)');
     } finally {
       await dir.remove();
     }

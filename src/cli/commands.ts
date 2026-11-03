@@ -151,6 +151,13 @@ export function buildCommandTable(): Command[] {
           description:
             'Environment variable supplying the initial account key (by name, never a value)',
         },
+        // Task U-042 (spec §5.3/§15.2; decision D-141): the §15.2 web
+        // password's non-interactive channel — the same by-name environment
+        // discipline as --api-key-env (§15.4's no-value-flag rule).
+        'password-env': {
+          type: 'string',
+          description: 'Environment variable supplying the web password (by name, never a value)',
+        },
       },
       maxPositionals: 0,
       run: runInitCommand(),

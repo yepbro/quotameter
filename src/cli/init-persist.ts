@@ -292,17 +292,22 @@ export type InitAssembled =
 /**
  * Assembles the configuration the answers produce: `buildInitConfig`'s
  * `server`/`app` mapping — plus, on a fresh run with a stored initial
- * account (task 133), that account as the configuration's `accounts` array
- * — merged over `base` by `validateSettings` (task 073's §5.3 keep-or-change
- * layer — omitted fields keep the base value, object sections merge
- * field-wise, and the result is the canonical, re-validated configuration
- * the write path persists).
+ * account (task 133), that account as the configuration's `accounts` array,
+ * and with a collected password (task U-042, D-141), that password's scrypt
+ * hash as `auth.passwordHash` — merged over `base` by `validateSettings`
+ * (task 073's §5.3 keep-or-change layer — omitted fields keep the base
+ * value, object sections merge field-wise, and the result is the canonical,
+ * re-validated configuration the write path persists).
  *
- * The `account` argument is fresh-run-only by construction: re-runs never
- * collect an account (the questions are not asked and the flags are
- * rejected, D-101), so a defined `account` always means no `base`, and the
- * merge never has to reconcile a submitted account array against existing
- * ones (arrays replace wholesale in the merge — unreachable here).
+ * The `account` and `passwordHash` arguments are fresh-run-only by
+ * construction: re-runs never collect either (the questions are not asked
+ * and the flags are rejected, D-101/D-141), so a defined value always means
+ * no `base`, and the merge never has to reconcile a submitted account array
+ * against existing ones (arrays replace wholesale in the merge —
+ * unreachable here). The hash travels exactly as `passwd` submits it
+ * (D-118): an opaque string through the boundary, the §15.2 minimum having
+ * been enforced at the collection layer — never the plaintext, which never
+ * enters this module.
  *
  * One state is tolerated as pending (decision D-101): a non-loopback bind
  * or `required` mode without a password — the only §15.1 defect — is
@@ -319,9 +324,14 @@ export function assembleInitConfig(
   answers: InitAnswers,
   base?: CanonicalConfig,
   account?: AccountConfig,
+  passwordHash?: string,
 ): InitAssembled {
   const mapped = buildInitConfig(answers);
-  const submission = account === undefined ? mapped : { ...mapped, accounts: [account] };
+  let submission: Record<string, unknown> =
+    account === undefined ? mapped : { ...mapped, accounts: [account] };
+  if (passwordHash !== undefined) {
+    submission = { ...submission, auth: { passwordHash } };
+  }
   // The base feeds only the merge (every field is re-validated on the
   // merged result), so the brand assertion states the pipeline origin of a
   // canonical configuration — including the probe-validated pending one.

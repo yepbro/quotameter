@@ -9,6 +9,7 @@ import { buildYesAnswers, INIT_VALUE_OPTIONS } from '../../src/cli/init-yes';
 import { runCli } from '../../src/cli/main';
 import type { CliOutput } from '../../src/cli/output';
 import type { QuotaProvider } from '../../src/providers/registry';
+import { MIN_PASSWORD_LENGTH } from '../../src/services/config-validation';
 
 /**
  * The non-interactive `init --yes` layer (task 131, spec §5.3; decision
@@ -44,6 +45,10 @@ function forbiddenPrompter(): () => never {
 }
 
 const ENV_WITH_KEY = { ZAI_TEST_KEY: 'sk-unit-secret-value' } as const;
+
+/** The environment holding the marker password (§15.2 minimum met). */
+const MARKER_PASSWORD = 'unit-password-marker-42';
+const ENV_WITH_PASSWORD = { QM_TEST_PASSWORD: MARKER_PASSWORD } as const;
 
 /** A validated canonical fixture through the real parser. */
 function canonical(input: unknown): CanonicalConfig {
@@ -411,6 +416,131 @@ describe('buildYesAnswers', () => {
       ],
     });
   });
+
+  /* ── the password channel (task U-042, spec §15.2, decision D-141) ───── */
+
+  it('a set --password-env yields the password beside the answers', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'password-env': 'QM_TEST_PASSWORD' },
+      ENV_WITH_PASSWORD,
+    );
+    expect(result).toEqual({
+      answers: {
+        timezone: 'UTC',
+        host: '127.0.0.1',
+        port: 8787,
+        pollingIntervalSeconds: 300,
+      },
+      password: MARKER_PASSWORD,
+    });
+  });
+
+  it('the §15.2 minimum is exact: 12 characters accepted, 11 rejected', () => {
+    // Derived from the boundary's own constant, like the settings
+    // boundary's suite — an off-by-one cannot hide behind a literal.
+    const atMinimum = 'c'.repeat(MIN_PASSWORD_LENGTH);
+    const accepted = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'password-env': 'QM_BOUNDARY_PASSWORD' },
+      { QM_BOUNDARY_PASSWORD: atMinimum },
+    );
+    expect(accepted).toEqual({
+      answers: expect.objectContaining({ timezone: 'UTC' }),
+      password: atMinimum,
+    });
+    const belowMinimum = 'd'.repeat(MIN_PASSWORD_LENGTH - 1);
+    const rejected = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'password-env': 'QM_BOUNDARY_PASSWORD' },
+      { QM_BOUNDARY_PASSWORD: belowMinimum },
+    );
+    expect(rejected).toEqual({
+      problems: [expect.stringContaining('--password-env holds a password shorter')],
+    });
+  });
+
+  it('the environment value is taken untrimmed (secrets are never trimmed)', () => {
+    const padded = `  ${MARKER_PASSWORD}  `;
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'password-env': 'QM_PADDED_PASSWORD' },
+      { QM_PADDED_PASSWORD: padded },
+    );
+    expect(result).toEqual({
+      answers: expect.objectContaining({ timezone: 'UTC' }),
+      password: padded,
+    });
+  });
+
+  it('an absent --password-env keeps the result shape password-free', () => {
+    const result = buildYesAnswers({ yes: true, timezone: 'UTC' }, ENV_WITH_PASSWORD);
+    expect(result).toEqual({
+      answers: {
+        timezone: 'UTC',
+        host: '127.0.0.1',
+        port: 8787,
+        pollingIntervalSeconds: 300,
+      },
+    });
+  });
+
+  it('a password shorter than the §15.2 minimum is a problem that never names the value', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'password-env': 'QM_SHORT_PASSWORD' },
+      { QM_SHORT_PASSWORD: 'tiny-pw-x1' },
+    );
+    expect(result).toEqual({
+      problems: [
+        '--password-env holds a password shorter than the spec §15.2 minimum ' +
+          'of 12 characters — the value is not echoed. Export a longer ' +
+          'password there and run init again.',
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain('tiny-pw-x1');
+  });
+
+  it('an unset password variable is a problem (blank counts as unset, D-011)', () => {
+    for (const env of [{}, { QM_TEST_PASSWORD: '' }, { QM_TEST_PASSWORD: '   ' }]) {
+      const result = buildYesAnswers(
+        { yes: true, timezone: 'UTC', 'password-env': 'QM_TEST_PASSWORD' },
+        env,
+      );
+      expect(result).toEqual({
+        problems: [
+          expect.stringContaining(
+            '--password-env names an environment variable that is not set in this environment',
+          ),
+        ],
+      });
+    }
+  });
+
+  it('a malformed or reserved name is rejected without echoing the argument', () => {
+    for (const name of ['bad name!', 'QUOTAMETER_PASSWORD']) {
+      const result = buildYesAnswers(
+        { yes: true, timezone: 'UTC', 'password-env': name },
+        ENV_WITH_PASSWORD,
+      );
+      expect(result).toEqual({ problems: [expect.stringContaining('--password-env')] });
+      expect(JSON.stringify(result)).not.toContain(name);
+    }
+  });
+
+  it('a password-shaped argument (a mistyped password as the name) never reaches output', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'password-env': 'typed_out_password_42' },
+      ENV_WITH_PASSWORD,
+    );
+    expect(result).toEqual({ problems: [expect.stringContaining('--password-env')] });
+    expect(JSON.stringify(result)).not.toContain('typed_out_password_42');
+  });
+
+  it('a blank --password-env is a complaint, not a skip', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'UTC', 'password-env': '' },
+      ENV_WITH_PASSWORD,
+    );
+    expect(result).toEqual({
+      problems: ['--password-env cannot be blank — pass a variable name or omit the option.'],
+    });
+  });
 });
 
 describe('buildYesAnswers (retain mode — task 132, decision D-101)', () => {
@@ -485,6 +615,18 @@ describe('buildYesAnswers (retain mode — task 132, decision D-101)', () => {
     });
     // Neither the key value nor its variable leaks into the problem.
     expect(JSON.stringify(withEnv)).not.toContain('sk-unit-secret-value');
+  });
+
+  it('--password-env applies only to a fresh initialization (D-141)', () => {
+    const result = buildYesAnswers(
+      { yes: true, timezone: 'Europe/Berlin', 'password-env': 'QM_TEST_PASSWORD' },
+      ENV_WITH_PASSWORD,
+      EXISTING,
+    );
+    expect(result).toEqual({
+      problems: [expect.stringContaining('--password-env applies only to a fresh initialization')],
+    });
+    expect(JSON.stringify(result)).not.toContain(MARKER_PASSWORD);
   });
 
   it('invalid explicit values fail exactly like the fresh flow', () => {
@@ -580,7 +722,42 @@ describe('runInitCommand (--yes mode)', () => {
     // §15.1 pending (D-101): the hash-less remote bind is written with the
     // remedy; the service refuses to start on it until passwd completes it.
     expect(h.out()).toContain('set one with quotameter passwd');
+    expect(h.out()).toContain('Password:          none');
     expect(writes()).toHaveLength(1);
+  });
+
+  it('--password-env hashes and stores the password — never the plaintext (U-042)', async () => {
+    const h = context({ yes: true, timezone: 'UTC', 'password-env': 'QM_TEST_PASSWORD' });
+    const writes: Array<{ config: { auth?: { passwordHash?: string } } }> = [];
+    const hashed: string[] = [];
+    const revoked: string[] = [];
+    const deps: InitDeps = {
+      createPrompter: forbiddenPrompter(),
+      env: ENV_WITH_PASSWORD,
+      readExisting: async () => ({ state: 'none' }),
+      provider: acceptingProvider(),
+      hash: async (password) => {
+        hashed.push(password);
+        return 'scrypt$unit-fake-hash';
+      },
+      revokeSessions: async (dataDir) => {
+        revoked.push(dataDir);
+        return { state: 'none' };
+      },
+      persistConfig: async (options) => {
+        writes.push(options as { config: { auth?: { passwordHash?: string } } });
+      },
+    };
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(hashed).toEqual([MARKER_PASSWORD]);
+    expect(writes[0]?.config.auth?.passwordHash).toBe('scrypt$unit-fake-hash');
+    expect(h.out()).toContain('Password:          set (only a scrypt hash is stored)');
+    expect(h.out() + h.err()).not.toContain(MARKER_PASSWORD);
+    expect(JSON.stringify(writes)).not.toContain(MARKER_PASSWORD);
+    // The §15.2 revocation probe ran for the stored hash (fresh machine:
+    // silent absence).
+    expect(revoked).toHaveLength(1);
   });
 
   it('a missing --timezone fails on stderr with exit 1 and prints no summary', async () => {
@@ -684,6 +861,7 @@ describe('renderInitSummary (environment key source)', () => {
         },
         test: { outcome: 'passed' },
       },
+      false,
     );
     expect(summary).toContain(
       "'work' (API key from environment variable 'ZAI_KEY', value never stored or printed; connection test passed)",
@@ -693,7 +871,11 @@ describe('renderInitSummary (environment key source)', () => {
 
   it('a label without any key source states the skip outcome', () => {
     expect(
-      renderInitSummary({ ...base, accountLabel: 'work' }, { kind: 'no-key', label: 'work' }),
+      renderInitSummary(
+        { ...base, accountLabel: 'work' },
+        { kind: 'no-key', label: 'work' },
+        false,
+      ),
     ).toContain("none ('work' was named without an API key — add the account in the web UI)");
   });
 });

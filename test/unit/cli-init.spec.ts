@@ -4,6 +4,7 @@ import type { CliContext } from '../../src/cli/commands';
 import { renderInitSummary, runInitCommand, type InitDeps } from '../../src/cli/init';
 import type { WriteInitConfigOptions } from '../../src/cli/init-persist';
 import type { InitAnswers } from '../../src/cli/init-questions';
+import type { SessionRevocation } from '../../src/cli/passwd';
 import type { PromptHandle } from '../../src/cli/prompts';
 import type { AccountContext, QuotaProvider } from '../../src/providers/registry';
 
@@ -98,26 +99,52 @@ const EXISTING: CanonicalConfig = canonical({
 /**
  * Deps scripted for a fresh run: no existing config, captured writes, and
  * a fake connection-test provider (accepting unless `providerOverride`
- * says otherwise — the real default provider must never run here).
+ * says otherwise — the real default provider must never run here). The
+ * §15.2 hashing is a deterministic fake (the real scrypt runs in the
+ * integration suites); it records the plaintext it was handed so the
+ * handler's hand-off stays asserted without ever hashing for real. The
+ * §15.2 revocation is a recording seam answering absence by default (the
+ * real probe runs in the integration suites); the fixed pathEnv keeps the
+ * data-dir argument hermetic.
  */
 function freshDeps(
   prompterAnswers: readonly string[],
   providerOverride?: QuotaProvider,
+  options?: {
+    readonly revocation?: SessionRevocation;
+    readonly hashFails?: Error;
+  },
 ): {
   deps: InitDeps;
   writes(): readonly WriteInitConfigOptions[];
+  hashedPasswords(): readonly string[];
+  revokedDirs(): readonly string[];
 } {
   const writes: WriteInitConfigOptions[] = [];
+  const hashed: string[] = [];
+  const revokedDirs: string[] = [];
   return {
     deps: {
       createPrompter: () => prompterWith(prompterAnswers),
+      pathEnv: { QUOTAMETER_CONFIG_DIR: '/qm/test/config', QUOTAMETER_DATA_DIR: '/qm/test/data' },
       readExisting: async () => ({ state: 'none' }),
-      persistConfig: async (options) => {
-        writes.push(options);
+      persistConfig: async (options_) => {
+        writes.push(options_);
       },
       provider: providerOverride ?? fakeProvider().provider,
+      hash: async (password) => {
+        if (options?.hashFails !== undefined) throw options.hashFails;
+        hashed.push(password);
+        return 'scrypt$unit-fake-hash';
+      },
+      revokeSessions: async (dataDir) => {
+        revokedDirs.push(dataDir);
+        return options?.revocation ?? { state: 'none' };
+      },
     },
     writes: () => writes,
+    hashedPasswords: () => hashed,
+    revokedDirs: () => revokedDirs,
   };
 }
 
@@ -137,6 +164,12 @@ function existingDeps(prompterAnswers: readonly string[]): InitDeps {
   };
 }
 
+/**
+ * The marker password of the fresh-run scripts (§15.2 minimum met, §15.4
+ * marker discipline: it must appear nowhere but the hash seam's input).
+ */
+const PASSWORD = 'unit-password-marker-42';
+
 const FULL: readonly string[] = [
   'Europe/Berlin',
   '0.0.0.0',
@@ -144,6 +177,10 @@ const FULL: readonly string[] = [
   '120',
   'work',
   'sk-live-key-abc123',
+  // §5.3 step 4 (U-042): the non-loopback bind makes the password pair a
+  // required part of every keyed fresh-run script.
+  PASSWORD,
+  PASSWORD,
 ];
 
 describe('runInitCommand (fresh run, task 130)', () => {
@@ -196,7 +233,7 @@ describe('runInitCommand (fresh run, task 130)', () => {
 
   it('a label collected without a key stores no account and says so', async () => {
     const h = context();
-    const { deps, writes } = freshDeps(['UTC', '', '', '', 'work', '']);
+    const { deps, writes } = freshDeps(['UTC', '', '', '', 'work', '', '']);
     await runInitCommand(deps)(h.ctx);
     expect(h.out()).toContain(
       "none ('work' was named without an API key — add the account in the web UI)",
@@ -207,7 +244,7 @@ describe('runInitCommand (fresh run, task 130)', () => {
 
   it('a run without an account states that service setup follows', async () => {
     const h = context();
-    const { deps } = freshDeps(['UTC', '', '', '', '']);
+    const { deps } = freshDeps(['UTC', '', '', '', '', '']);
     await runInitCommand(deps)(h.ctx);
     expect(h.out()).toContain('Service setup:');
     expect(h.out()).toContain('Account:           none (add one later in the UI)');
@@ -339,7 +376,7 @@ describe('runInitCommand (fresh run, task 130)', () => {
   it('a failed write propagates as the handler failure (never a written claim)', async () => {
     const h = context();
     const deps: InitDeps = {
-      createPrompter: () => prompterWith(['UTC', '', '', '', '']),
+      createPrompter: () => prompterWith(['UTC', '', '', '', '', '']),
       readExisting: async () => ({ state: 'none' }),
       persistConfig: async () => {
         throw new Error('configuration directory /x is a symbolic link');
@@ -349,19 +386,198 @@ describe('runInitCommand (fresh run, task 130)', () => {
     expect(h.out()).not.toContain('Configuration written to');
   });
 
-  it('warns about the password requirement for a non-loopback host (§5.3 step 4)', async () => {
+  it('a collected password on a non-loopback host satisfies §5.3 step 4 — no requirement note', async () => {
+    // Since U-042 the interactive non-loopback run collects the password
+    // (D-141): a stored hash satisfies §5.3 step 4, so the requirement
+    // note is gone and the summary reports the password as set (state
+    // words only). The note's positive cases live with the `--yes` pending
+    // write and the re-run pending display.
     const h = context();
-    const { deps } = freshDeps(['Europe/Berlin', '192.168.1.10', '9000', '120', 'work', 'k']);
+    const { deps, writes, hashedPasswords } = freshDeps([
+      'Europe/Berlin',
+      '192.168.1.10',
+      '9000',
+      '120',
+      'work',
+      'k',
+      PASSWORD,
+      PASSWORD,
+    ]);
     await runInitCommand(deps)(h.ctx);
-    expect(h.out()).toContain('requires a password before the service');
-    expect(h.out()).toContain('quotameter passwd');
+    expect(h.out()).not.toContain('requires a password before the service');
+    expect(h.out()).toContain('Password:          set (only a scrypt hash is stored)');
+    expect(writes()[0]?.config.auth.passwordHash).toBe('scrypt$unit-fake-hash');
+    expect(hashedPasswords()).toEqual([PASSWORD]);
+    expect(h.out() + h.err()).not.toContain(PASSWORD);
   });
 
   it('no password warning on the loopback default', async () => {
     const h = context();
-    const { deps } = freshDeps(['UTC', '', '', '', '']);
+    const { deps } = freshDeps(['UTC', '', '', '', '', '']);
     await runInitCommand(deps)(h.ctx);
     expect(h.out()).not.toContain('requires a password');
+    expect(h.out()).toContain('Password:          none');
+  });
+});
+
+describe('runInitCommand (fresh run password collection, task U-042, D-141)', () => {
+  it('hashes the confirmed password once and stores only the hash', async () => {
+    const h = context();
+    const { deps, writes, hashedPasswords, revokedDirs } = freshDeps([
+      'UTC',
+      '',
+      '',
+      '',
+      '',
+      PASSWORD,
+      PASSWORD,
+    ]);
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(hashedPasswords()).toEqual([PASSWORD]);
+    // Only the hash the seam produced reaches the configuration (§15.2)…
+    expect(writes()[0]?.config.auth.passwordHash).toBe('scrypt$unit-fake-hash');
+    // …the plaintext reaches no output line and not even the written
+    // object at any stage (§15.4, the done-condition's marker test at the
+    // handler level).
+    expect(h.out() + h.err()).not.toContain(PASSWORD);
+    expect(JSON.stringify(writes())).not.toContain(PASSWORD);
+    expect(h.out()).toContain('Password:          set (only a scrypt hash is stored)');
+    // The §15.2 revocation probe ran (review round P1): the fresh-machine
+    // answer is silence — no revoked line beside the write.
+    expect(revokedDirs()).toEqual(['/qm/test/data']);
+    expect(h.out()).not.toContain('revoked');
+  });
+
+  it('an empty first answer skips the password and keeps the §15.1 default', async () => {
+    // The done-condition's optional half: completing init without a
+    // password leaves auth exactly as §15.1 ships it — mode `auto`, no
+    // hash — and neither the hash seam nor the revocation probe runs.
+    const h = context();
+    const { deps, writes, hashedPasswords, revokedDirs } = freshDeps(['UTC', '', '', '', '', '']);
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(hashedPasswords()).toEqual([]);
+    expect(revokedDirs()).toEqual([]);
+    expect(writes()[0]?.config.auth).toEqual({ mode: 'auto' });
+    expect(writes()[0]?.config.auth.passwordHash).toBeUndefined();
+    expect(h.out()).toContain('Password:          none');
+  });
+
+  it('a surviving database revokes its sessions before the password is stored (review P1)', async () => {
+    // "Fresh" is fresh about the configuration file only: a database left
+    // behind (config deleted or re-pointed) may hold sessions minted under
+    // the previous password, and §15.2's revocation sentence applies —
+    // revoke before the write, report what was revoked after it.
+    const h = context();
+    const { deps, writes } = freshDeps(['UTC', '', '', '', '', PASSWORD, PASSWORD], undefined, {
+      revocation: { state: 'revoked', count: 2 },
+    });
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0]?.config.auth.passwordHash).toBe('scrypt$unit-fake-hash');
+    expect(h.out()).toContain('All 2 stored sessions of the previous installation were revoked.');
+  });
+
+  it('a failed revocation aborts with the password not stored (fail-secure)', async () => {
+    const h = context();
+    const { deps, writes } = freshDeps(['UTC', '', '', '', '', PASSWORD, PASSWORD], undefined, {
+      revocation: { state: 'failed', detail: 'EACCES: permission denied' },
+    });
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(1);
+    expect(h.err()).toContain(
+      'quotameter init: revoking the sessions of the existing database failed',
+    );
+    expect(h.err()).toContain('EACCES');
+    expect(h.out()).toContain(
+      'The password was not stored — the configuration file was left untouched.',
+    );
+    expect(writes()).toHaveLength(0);
+    expect(h.out()).not.toContain('Configuration written to');
+  });
+
+  it('a mismatching confirmation restarts the pair; a later match stores the hash', async () => {
+    const h = context();
+    const { deps, writes } = freshDeps([
+      'UTC',
+      '',
+      '',
+      '',
+      '',
+      PASSWORD,
+      'a-different-confirmation',
+      PASSWORD,
+      PASSWORD,
+    ]);
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(h.err()).toContain('quotameter init: the passwords do not match — try again');
+    expect(writes()[0]?.config.auth.passwordHash).toBe('scrypt$unit-fake-hash');
+  });
+
+  it('three rejected attempts on a required bind abort the run with nothing written', async () => {
+    const h = context();
+    const { deps, writes } = freshDeps(['UTC', '0.0.0.0', '', '', '', '', '', 'short']);
+    await expect(runInitCommand(deps)(h.ctx)).rejects.toThrow(
+      'too many unsuccessful password attempts — initialization cancelled',
+    );
+    expect(writes()).toHaveLength(0);
+    expect(h.err()).toContain('quotameter init: the password must be at least 12 characters long');
+  });
+
+  it('closed input at the password question cancels the run with nothing written', async () => {
+    const h = context();
+    const { deps, writes } = freshDeps(['UTC', '', '', '', '']);
+    await expect(runInitCommand(deps)(h.ctx)).rejects.toThrow(
+      'input closed before the password was answered — initialization cancelled',
+    );
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('a failed hashing fails the run with nothing written', async () => {
+    const h = context();
+    const { deps, writes, revokedDirs } = freshDeps(
+      ['UTC', '', '', '', '', PASSWORD, PASSWORD],
+      undefined,
+      { hashFails: new Error('scrypt is unavailable') },
+    );
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(1);
+    expect(h.err()).toContain('quotameter init: hashing the password failed');
+    expect(h.err()).toContain('scrypt is unavailable');
+    expect(writes()).toHaveLength(0);
+    // The revocation never ran: nothing is revoked for a password that was
+    // not stored (the fail-secure order's other half).
+    expect(revokedDirs()).toEqual([]);
+    expect(h.out()).not.toContain('Configuration written to');
+  });
+
+  it('re-runs never ask for a password — the four settings questions only', async () => {
+    // A recording prompter over an existing configuration: §5.3's re-run
+    // surface stays exactly D-101's four questions (D-141: changing a
+    // password is passwd's contract), so no secret prompt may appear.
+    const prompts: string[] = [];
+    const prompter: PromptHandle = {
+      ask: (prompt) => {
+        prompts.push(`ask: ${prompt}`);
+        return Promise.resolve('');
+      },
+      askSecret: (prompt) => {
+        prompts.push(`secret: ${prompt}`);
+        return Promise.resolve('');
+      },
+      close: () => undefined,
+      interrupted: () => false,
+    };
+    const h = context();
+    const code = await runInitCommand({ ...existingDeps([]), createPrompter: () => prompter })(
+      h.ctx,
+    );
+    expect(code).toBe(0);
+    expect(prompts).toHaveLength(4);
+    expect(prompts.every((entry) => entry.startsWith('ask: '))).toBe(true);
   });
 });
 
@@ -432,12 +648,20 @@ describe('runInitCommand (existing configuration, task 132, decision D-101)', ()
     expect(prompts[3]).toContain('Polling interval in seconds (Enter to keep 120)');
   });
 
-  it('a remote bind without a password is written pending, with the passwd remedy (§15.1, D-101)', async () => {
+  it('a remote bind with a collected password stores the hash — pending is the no-answer state (§15.1, D-101/D-141)', async () => {
+    // Since U-042 the interactive remote-bind run collects the password
+    // (§5.3 step 4's "require"); the D-101 pending write — hash-less, with
+    // the passwd remedy — remains exactly the state a run lands in when no
+    // password was collected, which `--yes` without --password-env and the
+    // re-run cases below still pin.
     const h = context();
     const writes: WriteInitConfigOptions[] = [];
     const code = await runInitCommand({
-      createPrompter: () => prompterWith(['UTC', '0.0.0.0', '', '', '']),
+      createPrompter: () => prompterWith(['UTC', '0.0.0.0', '', '', '', PASSWORD, PASSWORD]),
+      pathEnv: { QUOTAMETER_CONFIG_DIR: '/qm/test/config', QUOTAMETER_DATA_DIR: '/qm/test/data' },
       readExisting: async () => ({ state: 'none' }),
+      hash: async () => 'scrypt$unit-fake-hash',
+      revokeSessions: async () => ({ state: 'none' }),
       persistConfig: async (options) => {
         writes.push(options);
       },
@@ -447,12 +671,10 @@ describe('runInitCommand (existing configuration, task 132, decision D-101)', ()
     const written = writes[0];
     if (written !== undefined) {
       expect(written.config.server.host).toBe('0.0.0.0');
-      expect(written.config.auth.passwordHash).toBeUndefined();
+      expect(written.config.auth.passwordHash).toBe('scrypt$unit-fake-hash');
     }
     expect(h.out()).toContain('Configuration written to');
-    expect(h.out()).toContain(
-      'A password is required before the service starts: set one with quotameter passwd.',
-    );
+    expect(h.out()).not.toContain('A password is required before the service starts');
   });
 
   it('changing to a remote bind on a re-run without a stored hash is pending too', async () => {
@@ -567,7 +789,7 @@ describe('runInitCommand (stale-detection guard, review round P1)', () => {
     const h = context();
     let reads = 0;
     const code = await runInitCommand({
-      createPrompter: () => prompterWith(['UTC', '', '', '', '']),
+      createPrompter: () => prompterWith(['UTC', '', '', '', '', '']),
       readExisting: async () => {
         reads += 1;
         return reads === 1
@@ -619,7 +841,7 @@ describe('renderInitSummary', () => {
   };
 
   it('no account is stated explicitly', () => {
-    expect(renderInitSummary(base, { kind: 'none' })).toContain(
+    expect(renderInitSummary(base, { kind: 'none' }, false)).toContain(
       'Account:           none (add one later in the UI)',
     );
   });
@@ -629,6 +851,7 @@ describe('renderInitSummary', () => {
       renderInitSummary(
         { ...base, accountLabel: 'personal' },
         { kind: 'no-key', label: 'personal' },
+        false,
       ),
     ).toContain("none ('personal' was named without an API key — add the account in the web UI)");
   });
@@ -647,6 +870,7 @@ describe('renderInitSummary', () => {
         },
         test: { outcome: 'passed' },
       },
+      false,
     );
     expect(summary).toContain("'personal' (API key configured, hidden; connection test passed)");
     expect(summary).not.toContain('sk-x');

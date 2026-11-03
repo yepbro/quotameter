@@ -73,8 +73,11 @@ function childEnv(dir: TempDir): NodeJS.ProcessEnv {
   return { ...process.env, QUOTAMETER_CONFIG_DIR: dir.path, HOME: dir.path };
 }
 
-/** Account-less fresh-run answers: time zone, then Enter for every default. */
-const ANSWERS = `${['UTC', '', '', '', ''].join('\n')}\n`;
+/**
+ * Account-less fresh-run answers: time zone, then Enter for every default
+ * — including the optional §5.3 step-4 password (Enter keeps none, D-141).
+ */
+const ANSWERS = `${['UTC', '', '', '', '', ''].join('\n')}\n`;
 
 describe('quotameter init service setup (real launcher, systemd-less machine)', () => {
   it('an interactive fresh run prints the exact manual-run steps and writes no service files', async () => {
@@ -157,6 +160,7 @@ describe('quotameter init service setup (real PTY, manual steps on a terminal)',
         'Port (Enter for 8787)',
         'Polling interval',
         'account label',
+        'Web password (at least 12 characters',
       ];
       for (const [index, marker] of markers.entries()) {
         await waitFor(transcript, marker, 15_000);
