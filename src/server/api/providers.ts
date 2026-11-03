@@ -70,6 +70,9 @@ export const providersRoutes: FastifyPluginAsync<ProvidersRouteOptions> = async 
           id: provider.id,
           name: provider.name,
           peakHours: schedules[provider.id]?.peakHours ?? null,
+          // The adapter's declared catalog or the honest empty array —
+          // never invented labels (D-137).
+          metrics: provider.metricCatalog === undefined ? [] : [...provider.metricCatalog],
         })),
       };
       return body;

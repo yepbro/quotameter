@@ -28,6 +28,20 @@ describe('ZaiCodingPlanProvider skeleton', () => {
     expect(provider.name).toBe('Z.ai Coding Plan');
   });
 
+  it('declares the static metric catalog of the recognition table (D-137)', () => {
+    const provider = new ZaiCodingPlanProvider();
+
+    // The catalog is the mapping's own identity table: key/label pairs
+    // in recognition order, frozen — the single source of §14.3's card
+    // labels and §14.4's chart titles (served via /api/providers).
+    expect(provider.metricCatalog).toEqual([
+      { metricKey: 'mcp-monthly', label: 'Monthly MCP tool quota' },
+      { metricKey: 'tokens-5h', label: '5-hour token quota' },
+      { metricKey: 'weekly-quota', label: 'Weekly quota' },
+    ]);
+    expect(Object.isFrozen(provider.metricCatalog)).toBe(true);
+  });
+
   it('satisfies the 070 contract and registers in the ProviderRegistry', () => {
     const provider: QuotaProvider = new ZaiCodingPlanProvider();
     const registry = new ProviderRegistry();

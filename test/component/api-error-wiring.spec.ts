@@ -76,12 +76,12 @@ describe('shared error wiring across pages (task 169, D-134)', () => {
     const wrapper = await mountShell(path, fake.impl);
     expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
     // Real page content rendered beside the wiring: the overview's
-    // placeholder, the accounts page's empty state (task 170), or the
-    // remaining placeholders' status line.
+    // honest empty state (task 172), the accounts page's empty state
+    // (task 170), or the remaining placeholders' status line.
     expect(
       wrapper
         .find(
-          '[data-testid="page-status"], [data-testid="app-status"], [data-testid="accounts-empty"]',
+          '[data-testid="page-status"], [data-testid="overview-empty"], [data-testid="accounts-empty"]',
         )
         .exists(),
     ).toBe(true);

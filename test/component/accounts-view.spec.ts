@@ -41,7 +41,17 @@ function account(overrides: Partial<AccountView> = {}): AccountView {
 }
 
 const PROVIDERS: ProviderView[] = [
-  { id: 'zai-coding-plan', name: 'Z.ai Coding Plan', peakHours: null },
+  {
+    id: 'zai-coding-plan',
+    name: 'Z.ai Coding Plan',
+    peakHours: null,
+    // The D-137 catalog the real adapter declares.
+    metrics: [
+      { metricKey: 'mcp-monthly', label: 'Monthly MCP tool quota' },
+      { metricKey: 'tokens-5h', label: '5-hour token quota' },
+      { metricKey: 'weekly-quota', label: 'Weekly quota' },
+    ],
+  },
 ];
 
 /** The §13 error-envelope response shape (D-113). */

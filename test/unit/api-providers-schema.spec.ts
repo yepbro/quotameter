@@ -31,6 +31,10 @@ describe('ProviderViewSchema (§13 available types)', () => {
     id: 'zai-coding-plan',
     name: 'Z.ai Coding Plan',
     peakHours: SCHEDULE,
+    metrics: [
+      { metricKey: 'tokens-5h', label: '5-hour token quota' },
+      { metricKey: 'mcp-monthly', label: 'Monthly MCP tool quota' },
+    ],
   } as const;
 
   it('accepts a configured provider and the not-configured null', () => {
@@ -45,14 +49,21 @@ describe('ProviderViewSchema (§13 available types)', () => {
         peakHours: { timezone: 'UTC', windows: [] },
       }),
     ).toBe(true);
+    // The D-137 catalog: an adapter without one declares none — the
+    // honest empty array on the wire.
+    expect(validate({ ...VALID_PROVIDER, metrics: [] })).toBe(true);
   });
 
-  it('rejects malformed schedules and non-contract fields', () => {
+  it('rejects malformed schedules, catalogs, and non-contract fields', () => {
     const validate = new Ajv2020().compile(ProviderViewSchema);
     const rejected: unknown[] = [
       { id: 'zai-coding-plan', name: 'Z.ai Coding Plan' },
+      { ...VALID_PROVIDER, metrics: undefined },
       { ...VALID_PROVIDER, requestTimeoutSeconds: 15 },
       { ...VALID_PROVIDER, apiKey: 'sk-marker-secret' },
+      { ...VALID_PROVIDER, metrics: [{ metricKey: 'tokens-5h' }] },
+      { ...VALID_PROVIDER, metrics: [{ metricKey: '', label: 'Empty key' }] },
+      { ...VALID_PROVIDER, metrics: [{ metricKey: 'tokens-5h', label: ' ' }] },
       {
         ...VALID_PROVIDER,
         peakHours: { ...SCHEDULE, windows: [{ ...SCHEDULE.windows[0], days: ['fri', 'fri'] }] },
@@ -76,8 +87,18 @@ describe('ProvidersListResponseSchema (§13 list)', () => {
     expect(
       validate({
         providers: [
-          { id: 'zai-coding-plan', name: 'Z.ai Coding Plan', peakHours: SCHEDULE },
-          { id: 'ghost-plan', name: 'Ghost', peakHours: null },
+          {
+            id: 'zai-coding-plan',
+            name: 'Z.ai Coding Plan',
+            peakHours: SCHEDULE,
+            metrics: [],
+          },
+          {
+            id: 'ghost-plan',
+            name: 'Ghost',
+            peakHours: null,
+            metrics: [{ metricKey: 'weekly-quota', label: 'Weekly quota' }],
+          },
         ],
       }),
     ).toBe(true);

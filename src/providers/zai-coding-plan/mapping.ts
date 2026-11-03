@@ -35,6 +35,7 @@ import type {
   MetricUnit,
   NormalizedMetric,
 } from '../../schemas/metrics';
+import type { MetricCatalogEntry } from '../registry';
 
 /* ── Recognition identities (D-047) ────────────────────────────────────── */
 
@@ -83,6 +84,22 @@ const WEEKLY_QUOTA: MetricIdentity = {
   unitByFields: true,
   windowFromNumber: false,
 };
+
+/* ── The static metric catalog (D-137) ──────────────────────────────────── */
+
+/**
+ * The adapter's static metric catalog — §8.4's `key`/`label` pairs of
+ * every identity the recognition table can emit, in recognition-table
+ * order. Built from the identities themselves so the catalog cannot drift
+ * from the mapping (a new identity appears here by construction); served
+ * through `GET /api/providers` for §14.3's overview cards and §14.4's
+ * charts (decision D-137).
+ */
+export const ZAI_METRIC_CATALOG: readonly MetricCatalogEntry[] = Object.freeze(
+  [MONTHLY_MCP, TOKENS_5H, WEEKLY_QUOTA].map((identity) =>
+    Object.freeze({ metricKey: identity.key, label: identity.label }),
+  ),
+);
 
 /**
  * Recognizes a limits entry by its `(type, unit)` pair (D-047): the quota

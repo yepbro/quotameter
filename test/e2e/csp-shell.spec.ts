@@ -108,7 +108,15 @@ async function expectNoCspViolations(page: Page): Promise<() => Promise<void>> {
 test('the shell loads and renders under the served CSP — no violations', async ({ page }) => {
   const assertNoViolations = await expectNoCspViolations(page);
 
-  const response = await page.goto(`${baseUrl}/`);
+  // Task 172 made `/` an API-loading page (the overview's four loads),
+  // and this construction wires no data-bearing routes — the §13 scope's
+  // catch-all answers their honest 404 envelopes, which Chromium logs as
+  // console noise unrelated to the policy under test. The shell + policy
+  // surface is therefore probed on the login placeholder (whose only
+  // load is the wired public health probe); restoring `/` here is the
+  // composition task's seam (wire the API into the construction) — the
+  // same move the task-170 deep link made for `/accounts`.
+  const response = await page.goto(`${baseUrl}/login`);
   expect(response?.status()).toBe(200);
   expect(response?.headers()['content-security-policy']).toBe(CSP_WIRE_VALUE);
   expect(response?.headers()['x-content-type-options']).toBe('nosniff');

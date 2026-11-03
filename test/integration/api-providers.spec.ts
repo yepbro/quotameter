@@ -36,6 +36,17 @@ function providerDouble(id: string, name: string): QuotaProvider {
   };
 }
 
+/** A double that declares the D-137 static metric catalog. */
+function catalogDouble(id: string, name: string): QuotaProvider {
+  return {
+    ...providerDouble(id, name),
+    metricCatalog: [
+      { metricKey: 'tokens-5h', label: '5-hour token quota' },
+      { metricKey: 'weekly-quota', label: 'Weekly quota' },
+    ],
+  };
+}
+
 /** The spec's own §9.2 sample schedule. */
 const ZAI_SCHEDULE: PeakHoursConfig = {
   timezone: 'Asia/Singapore',
@@ -102,11 +113,52 @@ describe('GET /api/providers — available types and read-only schedules (§13/�
       const response = await app.inject({ method: 'GET', url: '/api/providers' });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
-        providers: [{ id: 'zai-coding-plan', name: 'Z.ai Coding Plan', peakHours: ZAI_SCHEDULE }],
+        providers: [
+          // The double declares no metric catalog: the honest empty
+          // array, never invented labels (D-137).
+          {
+            id: 'zai-coding-plan',
+            name: 'Z.ai Coding Plan',
+            peakHours: ZAI_SCHEDULE,
+            metrics: [],
+          },
+        ],
       });
       expect(response.headers['cache-control']).toBe('no-store');
       expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
     });
+  });
+
+  it('serves a declared metric catalog verbatim (D-137)', async () => {
+    const app = Fastify({
+      loggerInstance: createLogger({
+        level: 'warn',
+        destination: createMemoryLogSink(),
+      }).pino as FastifyBaseLogger,
+    });
+    app.setErrorHandler(apiErrorHandler);
+    const registry = new ProviderRegistry();
+    registry.register(catalogDouble('zai-coding-plan', 'Z.ai Coding Plan'));
+    await app.register(apiRoutes, {
+      prefix: '/api',
+      auth: { mode: 'auto', bindHost: '127.0.0.1' },
+      providers: { registry, schedules: () => ({}) },
+    });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/providers' });
+      expect(response.statusCode).toBe(200);
+      expect((response.json() as { providers: Array<{ metrics: unknown }> }).providers[0]).toEqual({
+        id: 'zai-coding-plan',
+        name: 'Z.ai Coding Plan',
+        peakHours: null,
+        metrics: [
+          { metricKey: 'tokens-5h', label: '5-hour token quota' },
+          { metricKey: 'weekly-quota', label: 'Weekly quota' },
+        ],
+      });
+    } finally {
+      await app.close();
+    }
   });
 
   it('answers an empty registry with an empty list', async () => {

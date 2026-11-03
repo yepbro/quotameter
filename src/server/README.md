@@ -280,7 +280,11 @@ no-half-wired-surface pin, one test per family).
 - **`src/server/api/providers.ts`** (spec §13, §9.2) registers
   `GET /api/providers`: the registry listing (available types in
   registration order) joined with the live configuration's peak-hours
-  schedules through a per-request `schedules()` reader (§6.4-live again).
+  schedules through a per-request `schedules()` reader (§6.4-live again)
+  and with each adapter's declared static metric catalog (`metrics`,
+  decision D-137 — the `{metricKey, label}` pairs the UI's §14.3 cards
+  and §14.4 charts label metrics by; empty for an adapter that declares
+  none, and the UI's documented fallback is the raw metric key).
   `peakHours` is `null` when nothing is configured (§9.2's "not
   configured" state, never an invented schedule), the response nests the
   configuration contract's own `PeakHoursConfigSchema` (one schedule

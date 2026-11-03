@@ -78,6 +78,24 @@ export function createAccountContext(
 }
 
 /**
+ * One entry of a provider's static metric catalog (§8.4's per-metric
+ * `key`/`label` pair, declared adapter-side): the stable metric key the
+ * adapter emits and the English display label §14.3's overview cards and
+ * §14.4's charts render for it. The catalog is the adapter's own
+ * declaration of its metric identities — the same facts its mapping
+ * tables pin (the Z.ai precedent, D-047) — so display names stay
+ * provider-owned data instead of a UI-side fork per provider (§8.1's
+ * extensibility: a new adapter arrives with its labels, no UI rewrite).
+ * Decision D-137.
+ */
+export interface MetricCatalogEntry {
+  /** Stable, adapter-defined metric identifier (§8.4 `key`). */
+  readonly metricKey: string;
+  /** English display label (§8.4 `label`). */
+  readonly label: string;
+}
+
+/**
  * The contract every provider adapter implements (spec §8.1).
  *
  * Adapters validate raw provider payloads adapter-locally (trust boundary 2)
@@ -91,6 +109,15 @@ export interface QuotaProvider {
   /** English display name. */
   readonly name: string;
   /**
+   * The adapter's static metric identities (§8.4 keys and labels), served
+   * through `GET /api/providers` (D-137). Optional: the spec's §8.1
+   * sketch pins only the four members above, and a catalog exists exactly
+   * when the adapter declares one — `undefined` is an honest "no catalog
+   * declared", serialized as an empty `metrics` array; the UI then renders
+   * the raw metric keys (its documented fallback).
+   */
+  readonly metricCatalog?: readonly MetricCatalogEntry[];
+  /**
    * Checks the account's credentials without collecting metrics (the "test
    * connection" action, spec §8.2). Resolves when the provider accepts them;
    * rejects with a provider-neutral error otherwise.
@@ -102,6 +129,48 @@ export interface QuotaProvider {
    * when it fires.
    */
   fetchSnapshot(account: AccountContext, signal: AbortSignal): Promise<ProviderSnapshot>;
+}
+
+/**
+ * Validates a declared metric catalog (D-137): an array whose entries
+ * carry `metricKey`/`label` strings that are non-blank and carry no
+ * surrounding whitespace (the provider-id rule — a padded key could
+ * never match an emitted `metricKey` and would silently degrade every
+ * label to the UI's raw-key fallback), with unique keys — the §8.4
+ * uniqueness rule within a snapshot applied to the declaration the
+ * keys come from.
+ */
+function validateMetricCatalog(providerId: string, catalog: readonly MetricCatalogEntry[]): void {
+  if (!Array.isArray(catalog)) {
+    throw new TypeError(`ProviderRegistry: '${providerId}' metricCatalog must be an array`);
+  }
+  const seen = new Set<string>();
+  for (const [index, entry] of catalog.entries()) {
+    if (entry === null || typeof entry !== 'object') {
+      throw new TypeError(
+        `ProviderRegistry: '${providerId}' metricCatalog[${index}] must be an object`,
+      );
+    }
+    for (const field of ['metricKey', 'label'] as const) {
+      const value = entry[field];
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new TypeError(
+          `ProviderRegistry: '${providerId}' metricCatalog[${index}].${field} must be a non-empty string`,
+        );
+      }
+      if (value !== value.trim()) {
+        throw new TypeError(
+          `ProviderRegistry: '${providerId}' metricCatalog[${index}].${field} must not have surrounding whitespace`,
+        );
+      }
+    }
+    if (seen.has(entry.metricKey)) {
+      throw new TypeError(
+        `ProviderRegistry: '${providerId}' metricCatalog lists metric key '${entry.metricKey}' more than once`,
+      );
+    }
+    seen.add(entry.metricKey);
+  }
 }
 
 /**
@@ -137,8 +206,18 @@ export class ProviderRegistry {
     if (typeof provider.fetchSnapshot !== 'function') {
       throw new TypeError('ProviderRegistry: provider.fetchSnapshot must be a function');
     }
+    // The duplicate-id verdict comes first: re-registering an existing
+    // id must report the shadowing, not whichever member happens to be
+    // validated before it (the review round's P3).
     if (this.providers.has(provider.id)) {
       throw new Error(`ProviderRegistry: provider '${provider.id}' is already registered`);
+    }
+    if (provider.metricCatalog !== undefined) {
+      // The optional catalog (D-137) gets the same fail-fast treatment as
+      // the required members: a malformed declaration would surface later
+      // as a runtime 500 on `/api/providers` instead of a wiring-time
+      // error naming the provider.
+      validateMetricCatalog(provider.id, provider.metricCatalog);
     }
     this.providers.set(provider.id, provider);
   }

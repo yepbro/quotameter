@@ -222,9 +222,10 @@ describe('vue-i18n English catalog (spec §14.1)', () => {
     expect(Object.keys(catalog).length).toBeGreaterThan(0);
     // The bootstrap strings the e2e contracts assert byte-exactly.
     expect(catalog['app.title']).toBe('Quotameter');
-    expect(catalog['overview.status']).toBe(
-      'Setup in progress — the interface is not implemented yet.',
-    );
+    // Task 172 replaced the overview's placeholder line with the §14.3
+    // vocabulary; the honesty marker is the explicit-unknown string.
+    expect(catalog['overview.metric.unknown']).toBe('Unknown');
+    expect(catalog['overview.status.fresh']).toBe('Fresh');
   });
 
   it('every t() key used in ui/src exists in the catalog', () => {
@@ -304,11 +305,13 @@ describe('vue-i18n English catalog (spec §14.1)', () => {
   it('factory: t() renders catalog strings verbatim', () => {
     const { t } = createAppI18n().global as Composer;
     // The whole pipeline over one key: lookup, no reformatting — the
-    // rendered bytes stay identical to the pre-i18n literals, which is
+    // rendered bytes stay identical to the catalog values, which is
     // what keeps the e2e contracts green unchanged.
     expect(t('app.title')).toBe('Quotameter');
     expect(t('nav.ariaLabel')).toBe('Primary');
-    expect(t('overview.status')).toBe(en.overview.status);
+    expect(t('overview.metric.unknown')).toBe(en.overview.metric.unknown);
+    // Named parameters interpolate (the rolling-window phrase).
+    expect(t('overview.metric.windowHours', { count: 5 })).toBe('5-hour window');
   });
 });
 

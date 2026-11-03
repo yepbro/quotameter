@@ -17,9 +17,16 @@ means adding a subdirectory and registering it; nothing else may change.
 `registry.ts` exports everything a provider integration needs:
 
 - **`QuotaProvider`** — the spec §8.1 interface: `id`, `name`,
-  `validateCredentials(account)`, `fetchSnapshot(account, signal)`. Snapshots
-  are the normalized model from `src/schemas/metrics.ts` (spec §8.4) —
-  providers never invent their own shapes.
+  `validateCredentials(account)`, `fetchSnapshot(account, signal)`, plus
+  the optional `metricCatalog` (decision D-137): the adapter's declared
+  §8.4 metric identities (`{metricKey, label}` pairs) served through
+  `GET /api/providers` so the UI renders adapter-owned English labels
+  without a per-provider mapping — the Z.ai catalog is exported from the
+  mapping module (`ZAI_METRIC_CATALOG`), the identity table's own single
+  source. A present-but-malformed catalog (non-array, blank fields,
+  duplicate keys) throws at `register` like every other wiring mistake.
+  Snapshots are the normalized model from `src/schemas/metrics.ts`
+  (spec §8.4) — providers never invent their own shapes.
 - **`AccountContext` / `createAccountContext(accountId, label, secret)`** —
   the account handed to adapters. The type is branded (the `Validated<T>`
   pattern from `src/schemas/boundary.ts`), so contexts are created only by
@@ -29,10 +36,11 @@ means adding a subdirectory and registering it; nothing else may change.
   explicitly is the single sanctioned access path, and secrets never appear in
   error messages (spec §8.1, §15.4).
 - **`ProviderRegistry`** — `register` / `get` / `has` / `list`. Duplicate ids,
-  blank or whitespace-padded ids, blank names, non-function methods, and
-  unknown-id lookups throw (decision D-013): wiring mistakes must fail at
-  startup, not silently shadow a provider or surface at first poll. `list()`
-  returns a fresh array in registration order.
+  blank or whitespace-padded ids, blank names, non-function methods,
+  malformed metric catalogs, and unknown-id lookups throw (decision
+  D-013): wiring mistakes must fail at startup, not silently shadow a
+  provider or surface at first poll. `list()` returns a fresh array in
+  registration order.
 
 ## Response sanitization (task 102, spec §7.4, §15.4)
 

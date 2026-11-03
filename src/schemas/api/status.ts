@@ -178,8 +178,9 @@ export const QuotaQuerySchema = Type.Object(
  * assemble rows from different snapshots.
  *
  * §8.4's `label` is deliberately absent: the storage row omits it (D-039,
- * adapter-owned parse-time data) and no metric catalog exists on the
- * provider contract yet — D-130 records the gap for the §14.3 overview.
+ * adapter-owned parse-time data). The label source is the provider's
+ * declared static metric catalog, served through `GET /api/providers`
+ * (D-137; the UI's documented fallback is the raw metric key).
  */
 export const MetricViewSchema = Type.Object(
   {

@@ -19,6 +19,7 @@ import { createSystemClock, type Clock } from '../../util/clock';
 import type { ProviderSnapshot } from '../../schemas/metrics';
 import type { AccountContext, QuotaProvider } from '../registry';
 import { DEFAULT_REQUEST_TIMEOUT_MS } from '../transport';
+import { ZAI_METRIC_CATALOG } from './mapping';
 import type { SnapshotLogger, ZaiSnapshotUrls } from './snapshot';
 import { collectZaiSnapshot } from './snapshot';
 import { validateZaiCredentials } from './validate';
@@ -157,6 +158,8 @@ export function composeSnapshotUrls(apiBaseUrl: string): ZaiSnapshotUrls {
 export class ZaiCodingPlanProvider implements QuotaProvider {
   readonly id = ZAI_CODING_PLAN_PROVIDER_ID;
   readonly name = 'Z.ai Coding Plan';
+  /** The adapter's §8.4 metric identities, served through `/api/providers` (D-137). */
+  readonly metricCatalog = ZAI_METRIC_CATALOG;
   readonly #credentialCheckUrl: string;
   readonly #snapshotUrls: ZaiSnapshotUrls;
   readonly #timeoutMs: number;

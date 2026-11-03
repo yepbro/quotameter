@@ -34,13 +34,13 @@ The server serves `index.html` for every non-`/api` path (spec §14.1 SPA
 fallback), and the router resolves the URL client-side — deep links work
 without server-side route tables.
 
-| Path        | Name       | View                             | Content task |
-| ----------- | ---------- | -------------------------------- | ------------ |
-| `/`         | `overview` | `src/views/OverviewView.vue`     | 172–174      |
-| `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)   |
-| `/settings` | `settings` | `src/views/SettingsView.vue`     | 179          |
-| `/login`    | `login`    | `src/views/LoginView.vue`        | 180          |
-| any other   | —          | redirect to `/` (decision D-131) | —            |
+| Path        | Name       | View                             | Content task        |
+| ----------- | ---------- | -------------------------------- | ------------------- |
+| `/`         | `overview` | `src/views/OverviewView.vue`     | 172 (done), 173–174 |
+| `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)          |
+| `/settings` | `settings` | `src/views/SettingsView.vue`     | 179                 |
+| `/login`    | `login`    | `src/views/LoginView.vue`        | 180                 |
+| any other   | —          | redirect to `/` (decision D-131) | —                   |
 
 The route table and the `createAppRouter(history)` factory (memory-history
 seam for component tests) live in `src/router/index.ts`. The `/login`
@@ -253,7 +253,7 @@ carry marker secrets end to end. It lives in the integration project
 because the component project's happy-dom environment container cannot
 host the server's `node:*` module graph (D-136's recorded boundary).
 
-### The selected-account store (the task-172+ seam)
+### The selected-account store (consumed by tasks 170 and 172)
 
 `createAccountSelection()` (installed in the composition root beside the
 other factory plugins; `useAccountSelection()` in the consumer) holds
@@ -264,12 +264,91 @@ deliberately knows nothing about accounts beyond ids — which ids exist
 is list data consumers already load. **The reconciliation rule every
 consumer re-runs on a completed list load:** keep the stored id while it
 is listed, else select the first account, else `null`. The accounts page
-does this on every list (re)load; task 172's overview consumes
-`useAccountSelection()` the same way against its own data and may add
-its own selector control on the same store.
+does this on every list (re)load; the overview (task 172) consumes
+`useAccountSelection()` the same way against its own list load and adds
+its own selector on the same store — the two pages share one selection.
 
 The shell nav stays as landed (task 166): §14.2 puts the selector on
 the management page, and the overview's own control is 172's call.
+
+## The overview page (task 172)
+
+`/` (spec §14.3/§14.6; decision D-137) is the account overview: the
+selected account's identity and §7.3/§7.2 facts plus one card per metric
+of its last-valid quota row set (D-077 — each card shows its own
+collection stamp, because rows of one account may come from different
+snapshots).
+
+### Architecture
+
+| Module                                   | Owns                                                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/views/OverviewView.vue`             | the five loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the 174 seam                         |
+| `src/components/AccountOverviewCard.vue` | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`) |
+| `src/components/AccountStatusBadge.vue`  | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                               |
+| `src/components/MetricCard.vue`          | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                  |
+| `src/format.ts`                          | the pure `Intl` helpers (`formatEpochMs`, `formatRelative`, `formatQuotaNumber`, `windowHours`) — 174+ reuse these                   |
+
+The five loads: `accounts.list`, `providers.list` (display names **and**
+the metric-label catalog), `status.get`, `settings.get` (exactly the
+configured display time zone, §14.1), and `quota.get(selectedId)` —
+re-run on every selection change. The selection store is shared with
+the accounts page (`quotameter.selected-account`): the overview adds its
+own selector on the same store and re-runs the same reconciliation rule
+on every completed list load. The quota target is **list-validated** —
+the selected id dispatches only once a completed list load vouches for
+it, so a stale stored id (purged elsewhere) earns no flashing 404 — and
+switching the selection **clears** the previous account's quota before
+the new load: one account's values can never render as another's. A
+failed load is never a fake empty state: each call keeps its last-good
+copy beside its `ApiErrorNotice`; the data-defining loads (accounts,
+status, quota) carry retries with distinct accessible names, the two
+that degrade gracefully (providers → raw ids/keys, settings → the
+browser's time zone) render their notice alone. A status row that is
+absent (load in flight or failed) renders its slots as `Unknown` —
+"Never"/"None" state collection history only a loaded row vouches for.
+
+### Honesty rules (the task's done-condition, spec §7.2/§8.4)
+
+- Per metric field (used/remaining/limit): the absolute value with its
+  **explicit unit** when present, else its percentage (`42%`, a
+  different unit, labeled as such — §14.3's "or percentages"), else an
+  explicit `Unknown` — never zero, never blank. A **genuine zero
+  renders as `0 credits`** (pinned against the null case with hostile
+  zero-plausible fixtures in `overview-view.spec.ts`).
+- A percent-only metric (`unit: 'PERCENT'`, §8.4) renders percentages
+  only — token counts are never inferred from them.
+- An invalid metric renders its `invalidReason` (trusted server data)
+  and **no** value lines — §8.4 stores invalid metrics without numeric
+  values; the reset/window metadata may legitimately survive (D-010).
+- No snapshot yet (`collectedAt: null`): identity + status render, the
+  metrics region states it — told apart from a snapshot that recognized
+  no metric rows (a collection stamp with `metrics: []`, the adapter's
+  skip path), which states its own different fact; task 173 owns the
+  fuller guidance.
+- Absent `resetsAt` omits the reset line (§14.3's own "if available").
+- Times render absolute (in the configured display zone) plus relative,
+  computed when data arrives (no live ticker — a reload re-renders).
+
+### Metric labels (decision D-137)
+
+§14.3 requires each card to show "the quota type and label"; the label
+is §8.4 adapter-owned data, not UI chrome. `/api/providers` therefore
+carries each adapter's declared `metrics` catalog
+(`{metricKey, label}`), single-sourced from the Z.ai mapping's own
+recognition table (`ZAI_METRIC_CATALOG`). The UI resolves
+`(providerId, metricKey) → label` with the **raw metric key as the
+documented fallback** — a stable adapter-defined identifier rendered
+verbatim when the provider declares no catalog or no entry. A new
+provider arrives with its labels; no UI rewrite (§8.1).
+
+### Task 174's layout seam
+
+The metric cards flow in a responsive grid inside
+`[data-testid="overview-metrics"]`; the rolling-range controls (spec
+§14.4, task 174) mount between the account card and that region — no
+placeholder UI is shipped for them. The charts (175+) read colors only
+through the token lookups (D-133) and reuse `src/format.ts`.
 
 ## Layout
 
@@ -291,6 +370,11 @@ the management page, and the overview's own control is 172's call.
   every page presents API failures through.
 - `src/components/AccountAddForm.vue`, `src/components/AccountManageCard.vue` —
   the accounts page's form and card (task 170).
+- `src/components/AccountOverviewCard.vue`, `src/components/AccountStatusBadge.vue`,
+  `src/components/MetricCard.vue` — the overview page's identity card,
+  status badge, and metric cards (task 172; see
+  [The overview page (task 172)](#the-overview-page-task-172)).
+- `src/format.ts` — the pure `Intl` formatting helpers (task 172).
 - `src/i18n/` — the `en` message catalog (`en.ts`) and the
   `createAppI18n()` factory; see [Strings and the i18n
   catalog](#strings-and-the-i18n-catalog).

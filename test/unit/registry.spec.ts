@@ -110,6 +110,37 @@ describe('ProviderRegistry.register', () => {
     expect(registry.get('mock')).toBe(provider);
   });
 
+  it('accepts a declared metric catalog and keeps it reachable (D-137)', () => {
+    const registry = new ProviderRegistry();
+    const catalog = [{ metricKey: 'tokens-5h', label: '5-hour token quota' }];
+    registry.register(mockProvider({ metricCatalog: catalog }));
+    expect(registry.get('mock').metricCatalog).toBe(catalog);
+  });
+
+  it('rejects malformed metric catalogs at registration (fail fast)', () => {
+    const registry = new ProviderRegistry();
+    const malformed: unknown[] = [
+      'not an array',
+      ['not an object'],
+      [{ metricKey: '', label: 'Blank key' }],
+      [{ metricKey: 'tokens-5h', label: '   ' }],
+      [{ metricKey: ' tokens-5h', label: 'Padded key' }],
+      [{ metricKey: 'tokens-5h', label: 'Padded label ' }],
+      [{ metricKey: 'tokens-5h' }],
+      [
+        { metricKey: 'tokens-5h', label: 'A' },
+        { metricKey: 'tokens-5h', label: 'B' },
+      ],
+    ];
+    for (const catalog of malformed) {
+      const overrides = { metricCatalog: catalog } as Partial<QuotaProvider>;
+      expect(() => registry.register(mockProvider(overrides)), JSON.stringify(catalog)).toThrow(
+        TypeError,
+      );
+    }
+    expect(registry.list()).toEqual([]);
+  });
+
   it('rejects a duplicate id even for a different object', () => {
     const registry = new ProviderRegistry();
     registry.register(mockProvider());

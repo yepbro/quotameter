@@ -34,8 +34,95 @@ export const en = {
   },
   overview: {
     title: 'Overview',
-    // The bootstrap status line the smoke contract asserts (D-129).
-    status: 'Setup in progress — the interface is not implemented yet.',
+    // The account-overview page (task 172, spec §14.3/§14.6; decision
+    // D-137): the shared loads' transient states, the selector, the
+    // identity card's fact labels, the §14.6 status vocabulary, the
+    // §7.2 error-outcome phrases, and the metric-card field vocabulary.
+    loading: 'Loading the overview…',
+    // One retry label per data-defining load (distinct accessible names —
+    // a screen-reader user must tell which load failed from the control).
+    retryList: 'Retry loading accounts',
+    retryStatus: 'Retry loading statuses',
+    retryQuota: 'Retry loading values',
+    selector: {
+      label: 'Account',
+      // The archived marker in the selector's option text — a text
+      // signal, never color alone (§14.1).
+      archivedOption: 'Archived',
+    },
+    empty: {
+      // The honest absence states; task 173 owns the fuller guidance.
+      noAccounts: 'No accounts are configured yet — add one on the Accounts page.',
+      noSnapshot: 'No successful collection yet — values appear after the first successful poll.',
+      // A snapshot that succeeded but recognized no metric rows (the
+      // adapter's skip path) — a different fact from no snapshot.
+      noMetrics: 'The latest successful collection reported no quota values.',
+    },
+    // The §14.6 status vocabulary (rendered by AccountStatusBadge).
+    status: {
+      fresh: 'Fresh',
+      collecting: 'Collecting',
+      unreachable: 'Unreachable',
+      authRejected: 'Auth rejected',
+      stale: 'Stale',
+      formatChanged: 'Format changed',
+      disabled: 'Disabled',
+      notConfigured: 'Not configured',
+    },
+    card: {
+      provider: 'Provider',
+      plan: 'Plan',
+      // A null plan name is the explicit unknown — never a guess.
+      planUnknown: 'Unknown',
+      // A status row that is absent (load in flight or failed) — the
+      // explicit unknown, never asserted collection facts.
+      unknown: 'Unknown',
+      status: 'Status',
+      lastSuccess: 'Last successful collection',
+      never: 'Never — no successful collection yet',
+      // The rendered fact phrases (punctuation lives here, not in the
+      // templates — raw text nodes are lint-forbidden, D-132).
+      lastSuccessValue: '{absolute} ({relative})',
+      lastError: 'Last error',
+      noError: 'None',
+      lastErrorValue: '{absolute} ({relative}) · {outcome} · {message}',
+      lastErrorValueNoMessage: '{absolute} ({relative}) · {outcome}',
+    },
+    error: {
+      // The §11.2 failure-outcome classes of a status row's lastError.
+      outcome: {
+        authError: 'Authentication error',
+        rateLimited: 'Rate limited',
+        networkError: 'Network error',
+        timeout: 'Timeout',
+        serverError: 'Server error',
+        parseError: 'Response format error',
+      },
+    },
+    metric: {
+      limitType: {
+        rollingWindow: 'Rolling window',
+        daily: 'Daily',
+        weekly: 'Weekly',
+        monthly: 'Monthly',
+        other: 'Other',
+      },
+      windowHours: '{count}-hour window',
+      used: 'Used',
+      remaining: 'Remaining',
+      limit: 'Limit',
+      // The explicit absence marker — the §7.2 never-zero discipline.
+      unknown: 'Unknown',
+      invalidValue: 'Invalid reading: {reason}',
+      resetsAtValue: 'Resets: {absolute} ({relative})',
+      collectedAtValue: 'Collected: {absolute} ({relative})',
+      unit: {
+        tokens: 'tokens',
+        credits: 'credits',
+        requests: 'requests',
+        percent: 'percent',
+      },
+    },
   },
   // The account-management page (task 170, spec §14.2; decision D-135):
   // the selector, the identity facts of the selected account, one action

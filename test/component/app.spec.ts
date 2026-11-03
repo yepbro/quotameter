@@ -67,9 +67,13 @@ describe('App shell', () => {
     expect(wrapper.find('h1').text()).toBe('Quotameter');
   });
 
-  it('shows the implementation status placeholder on the overview', async () => {
+  it('renders the overview page with its honest empty state (task 172)', async () => {
     const wrapper = await mountShell();
-    expect(wrapper.find('[data-testid="app-status"]').text()).toContain('not implemented yet');
+    expect(wrapper.find('h2').text()).toBe('Overview');
+    // The healthy empty backend: the overview's honest no-accounts line
+    // (task 173 owns the fuller guidance), never a blank or broken page.
+    expect(wrapper.find('[data-testid="overview-empty"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
   });
 
   it('navigates with the three primary sections only (login is task 180)', async () => {

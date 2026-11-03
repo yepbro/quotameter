@@ -77,12 +77,60 @@ export function neverRespond(): () => Promise<ApiFetchResponse> {
  * tests that mount the whole app: success bodies are trusted casts
  * (D-134), so a one-shape answer for every URL is a lie the consumers
  * choke on once a page loads real routes (task 170 made `/accounts`
- * load the accounts and providers lists).
+ * load the accounts and providers lists; task 172 made `/` load the
+ * status, settings, and — when an account is selected — quota routes).
  */
 export function healthyApiBody(input: string): unknown {
   if (input === '/api/accounts') return { accounts: [] };
   if (input === '/api/providers') return { providers: [] };
+  if (input === '/api/status') {
+    return { status: 'ok', pollingIntervalSeconds: 300, accounts: [] };
+  }
+  if (input === '/api/settings') return healthySettingsBody();
+  if (input.startsWith('/api/quota?')) {
+    // The honest empty quota view (§7.2): no snapshot, no metrics.
+    return {
+      accountId: new URLSearchParams(input.slice('/api/quota?'.length)).get('accountId') ?? '',
+      status: 'fresh',
+      collectedAt: null,
+      planName: null,
+      metrics: [],
+    };
+  }
   return { status: 'ok' };
+}
+
+/**
+ * A minimal valid `GET /api/settings` body — the overview reads its
+ * display time zone (`UTC`, deterministic in tests) from here.
+ */
+export function healthySettingsBody(): unknown {
+  const annotated = (value: unknown) => ({
+    value,
+    source: 'file',
+    restartRequired: false,
+  });
+  return {
+    settings: {
+      server: {
+        host: annotated('127.0.0.1'),
+        port: annotated(8642),
+      },
+      app: {
+        timezone: annotated('UTC'),
+        pollingIntervalSeconds: annotated(300),
+        historyRetentionDays: annotated(365),
+      },
+      auth: {
+        mode: annotated('auto'),
+        passwordConfigured: false,
+      },
+      logging: {
+        level: annotated('warn'),
+      },
+    },
+    paths: { configPath: '/tmp/quotameter/config.json', dataDir: '/tmp/quotameter/data' },
+  };
 }
 
 /** A handler that always rejects — the network-failure arm. */

@@ -8,15 +8,21 @@ import { expect, test } from '@playwright/test';
 
 /**
  * Smoke test: opens the built UI and asserts its initial page (spec §17.1).
- * When the real interface arrives, this test keeps guarding the most basic
- * contract — the page loads and renders the application shell.
+ * Since task 172 the overview is a real API-loading page: under the e2e
+ * suite's `vite preview` (no API behind it) every load honestly answers
+ * the SPA-fallback HTML, so the asserted surface is the shell plus the
+ * shared `unexpected` notice — the D-134 degradation contract.
  */
 test('opens the application shell', async ({ page }) => {
   await page.goto('/');
 
   await expect(page).toHaveTitle(/Quotameter/);
   await expect(page.getByRole('heading', { name: 'Quotameter' })).toBeVisible();
-  await expect(page.getByTestId('app-status')).toContainText('not implemented yet');
+  await expect(page.getByRole('heading', { name: 'Overview', level: 2 })).toBeVisible();
+  // The honest no-API degradation (D-134): the loads fail through the
+  // shared notice — never a fake empty state, never a blank page.
+  await expect(page.getByTestId('api-error').first()).toBeVisible();
+  await expect(page.getByTestId('overview-empty')).toHaveCount(0);
 });
 
 test('routes the shell pages (deep link and client navigation)', async ({ page }) => {

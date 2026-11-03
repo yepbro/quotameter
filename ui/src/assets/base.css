@@ -40,6 +40,14 @@
    * modes, and the notice's text carries the meaning beside the color. */
   --qm-color-danger: #b3261e;
   --qm-color-danger-background: #fdf0ef;
+  /* The §14.6 status-badge tones (task 172, D-137): supplementary color
+   * for the status shapes — the badge text stays `--qm-color-foreground`
+   * in every tone, so contrast never rides the tone pair. */
+  --qm-color-ok: #1e6b33;
+  --qm-color-ok-background: #ecf5ee;
+  --qm-color-warn: #8a5800;
+  --qm-color-warn-background: #fbf3e2;
+  --qm-color-muted-background: #efeff2;
   --qm-font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
@@ -51,6 +59,11 @@
     --qm-color-muted: #a9a9b3;
     --qm-color-danger: #f2b8b5;
     --qm-color-danger-background: #2a1d1e;
+    --qm-color-ok: #9fdcae;
+    --qm-color-ok-background: #1d2a20;
+    --qm-color-warn: #e8c179;
+    --qm-color-warn-background: #2b2418;
+    --qm-color-muted-background: #26262c;
   }
 }
 
@@ -61,6 +74,11 @@
   --qm-color-muted: #a9a9b3;
   --qm-color-danger: #f2b8b5;
   --qm-color-danger-background: #2a1d1e;
+  --qm-color-ok: #9fdcae;
+  --qm-color-ok-background: #1d2a20;
+  --qm-color-warn: #e8c179;
+  --qm-color-warn-background: #2b2418;
+  --qm-color-muted-background: #26262c;
 }
 
 body {
