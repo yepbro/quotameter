@@ -37,7 +37,7 @@ without server-side route tables.
 | Path        | Name       | View                             | Content task |
 | ----------- | ---------- | -------------------------------- | ------------ |
 | `/`         | `overview` | `src/views/OverviewView.vue`     | 172–174      |
-| `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170+         |
+| `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)   |
 | `/settings` | `settings` | `src/views/SettingsView.vue`     | 179          |
 | `/login`    | `login`    | `src/views/LoginView.vue`        | 180          |
 | any other   | —          | redirect to `/` (decision D-131) | —            |
@@ -163,10 +163,15 @@ failure (the error is in `error`); anything the call throws that is not an
 non-failures also resolve `null` without touching `error`: a caller
 cancellation (`aborted` — not a failure to present; previously loaded
 data survives) and a superseded run (only the newest `execute()` writes
-state, so overlapping calls cannot race). Until their
-content tasks land, the four placeholder views carry exactly this wiring
+state, so overlapping calls cannot race). `reset()` (task 170) clears
+`data`/`error`/`pending` and supersedes any in-flight run — the
+dismissal seam for presented failures a surface wants gone without a new
+request (closing a confirmation panel, hiding a form). Until their
+content tasks land, the three placeholder views carry exactly this wiring
 against the public health probe, which is the task-169 done-condition:
 errors are handled consistently across pages, through the one surface.
+The accounts page (task 170) is the first real consumer — see
+[The accounts page (task 170)](#the-accounts-page-task-170).
 
 Future families join as methods on the client: `history`/`events`
 (task 161), `peakHours` (162), and `auth` (180). **The task-180 seam:**
@@ -182,20 +187,91 @@ behind it: `/api/*` answers the SPA-fallback HTML, so every page honestly
 renders the `unexpected` notice there. Against the application server
 (Fastify serving both), the health probe succeeds and no notice renders.
 
+## The accounts page (task 170)
+
+`/accounts` (spec §14.2/§8.2; decision D-135) is the management surface
+over the §13 accounts API — the first real page, and the reference shape
+for the content tasks that follow.
+
+### Architecture
+
+| Module                                 | Owns                                                                                                                                      |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/views/AccountsView.vue`           | the two loads (`accounts.list`, `providers.list` — one `useApiCall` each), the selector, the empty state, the reconciliation, composition |
+| `src/components/AccountManageCard.vue` | the selected account's facts and one action group per §14.2 verb — six own `useApiCall`s with scoped notices                              |
+| `src/components/AccountAddForm.vue`    | the create form: provider select, label, optional §5.3 key (write-only), client-side blank guards                                         |
+| `src/account-selection.ts`             | the cross-page selected-account store (see below)                                                                                         |
+
+Every successful mutation reloads the list once (the server's list is
+the single source of truth); the card is keyed by the account id, so a
+selection switch is a fresh instance — no per-account state leaks
+across cards. A failed load is never a fake empty state (D-135's
+failed-load rule): the view keeps the last successful list — a failed
+reload leaves the previous surface rendered beside the failure notice
+and a retry — and the empty state renders only when a completed load
+answered zero accounts. Labels are sent trimmed (the canonical stored
+label is what the purge gate's typed compare shows), and the typed
+purge gate trims both sides, so a padded label — however it came to
+exist — can never make an account unpurgeable from the UI. A
+confirmation panel's cancel also `reset()`s its call: a previous
+attempt's failure notice cannot re-announce itself when the panel
+re-opens, and a successful key replacement clears the previous test
+verdict (it described the credential that no longer exists).
+
+### The action → API map (the done-condition, executable)
+
+| UI action       | Client call                                      | Gate                                                             |
+| --------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
+| add             | `accounts.create({providerId, label[, apiKey]})` | blank label/key refused client-side; key omitted when empty      |
+| rename          | `accounts.update(id, {label})`                   | inline form; the label is prefilled (not a secret)               |
+| enable/disable  | `accounts.update(id, {enabled})`                 | —                                                                |
+| replace key     | `accounts.update(id, {apiKey})`                  | masked write-only field; not offered for env-sourced keys (§6.3) |
+| test connection | `accounts.test(id)`                              | outcome + §13 `message` render immediately (`role="status"`)     |
+| archive         | `accounts.remove(id)`                            | two-step inline confirm; **no** `purgeHistory` flag at all       |
+| purge history   | `accounts.remove(id, {purgeHistory: true})`      | the account's exact label must be typed (trimmed compare)        |
+
+§8.2's terminal semantics show through: an archived account renders no
+mutation controls (the server refuses `account-archived`) except the
+purge — the follow-up that removes the retained history.
+
+### The selected-account store (the task-172+ seam)
+
+`createAccountSelection()` (installed in the composition root beside the
+other factory plugins; `useAccountSelection()` in the consumer) holds
+the selected account id and persists it best-effort under the
+`localStorage` key **`quotameter.selected-account`** (absent/empty reads
+as `null`; a cleared selection persists as the empty string). The store
+deliberately knows nothing about accounts beyond ids — which ids exist
+is list data consumers already load. **The reconciliation rule every
+consumer re-runs on a completed list load:** keep the stored id while it
+is listed, else select the first account, else `null`. The accounts page
+does this on every list (re)load; task 172's overview consumes
+`useAccountSelection()` the same way against its own data and may add
+its own selector control on the same store.
+
+The shell nav stays as landed (task 166): §14.2 puts the selector on
+the management page, and the overview's own control is 172's call.
+
 ## Layout
 
 - `index.html` — document shell (language, viewport, color-scheme, mount
   point, entry module).
 - `src/main.ts` — composition root: creates the app, installs the
-  router, the i18n instance, and the theme controller, and mounts after
+  router, the i18n instance, the theme controller, the API client, and
+  the account-selection store, and mounts after
   the initial navigation resolved (a direct deep link renders the right
   view on the first paint).
 - `src/router/index.ts` — route table and `createAppRouter` factory.
 - `src/api/` — the typed API client, its error taxonomy, and the
   provide/inject + composable glue (see [The API client and error
   presentation](#the-api-client-and-error-presentation)).
+- `src/account-selection.ts` — the selected-account store:
+  `createAccountSelection()`, `useAccountSelection()`, the storage key
+  (see [The accounts page (task 170)](#the-accounts-page-task-170)).
 - `src/components/ApiErrorNotice.vue` — the shared inline error region
   every page presents API failures through.
+- `src/components/AccountAddForm.vue`, `src/components/AccountManageCard.vue` —
+  the accounts page's form and card (task 170).
 - `src/i18n/` — the `en` message catalog (`en.ts`) and the
   `createAppI18n()` factory; see [Strings and the i18n
   catalog](#strings-and-the-i18n-catalog).

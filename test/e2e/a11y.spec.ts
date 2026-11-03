@@ -38,3 +38,22 @@ test('application shell has no WCAG violations under a system dark preference', 
   await assertNoAccessibilityViolations(page);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Quotameter');
 });
+
+test('accounts page has no WCAG violations in either theme (task 170)', async ({ page }) => {
+  // The management page's real content — selector, empty state, add
+  // form, and the API-failure surface — scanned with its tokens applied
+  // per mode. Against `vite preview` (no API behind it) the loads
+  // honestly answer the SPA-fallback HTML, so the page under scan is
+  // its degradation surface: the failure notice with its retry and the
+  // disabled add form (a failed load is never a fake empty state).
+  await page.goto('/accounts');
+  await expect(page.getByRole('heading', { name: 'Accounts', level: 2 })).toBeVisible();
+  await expect(page.getByTestId('api-error').first()).toBeVisible();
+  await expect(page.getByTestId('accounts-retry')).toBeVisible();
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+  expect(await page.getByTestId('accounts-empty').count()).toBe(0);
+});

@@ -110,19 +110,20 @@ file; test files mirror the layout under `test/`.
 The browser application is a separate project with its own tsconfig and build
 (§3, §14). It communicates with the server **only through the HTTP API**.
 
-| Path                 | Contents                                                                                      |
-| -------------------- | --------------------------------------------------------------------------------------------- |
-| `ui/index.html`      | Vite entry                                                                                    |
-| `ui/vite.config.ts`  | build configuration (output via `DIST_DIR`)                                                   |
-| `ui/src/main.ts`     | application bootstrap                                                                         |
-| `ui/src/App.vue`     | root component                                                                                |
-| `ui/src/api/`        | typed API client (task 169) — reserved                                                        |
-| `ui/src/router/`     | Vue Router route table and factory (task 166)                                                 |
-| `ui/src/theme.ts`    | theme controller plugin: `createAppTheme()`, `useTheme()`, the browser-storage key (task 168) |
-| `ui/src/views/`      | route views: overview, accounts, settings, login (Stage 13)                                   |
-| `ui/src/components/` | shared components — reserved                                                                  |
-| `ui/src/i18n/`       | `vue-i18n` `en` catalog and `createAppI18n()` (task 167)                                      |
-| `ui/src/stores/`     | Pinia stores, only if they prove useful (§3) — reserved                                       |
+| Path                          | Contents                                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ui/index.html`               | Vite entry                                                                                              |
+| `ui/vite.config.ts`           | build configuration (output via `DIST_DIR`)                                                             |
+| `ui/src/main.ts`              | application bootstrap                                                                                   |
+| `ui/src/App.vue`              | root component                                                                                          |
+| `ui/src/api/`                 | typed API client (task 169); later endpoint families join here                                          |
+| `ui/src/router/`              | Vue Router route table and factory (task 166)                                                           |
+| `ui/src/theme.ts`             | theme controller plugin: `createAppTheme()`, `useTheme()`, the browser-storage key (task 168)           |
+| `ui/src/account-selection.ts` | selected-account store: `createAccountSelection()`, `useAccountSelection()`, the storage key (task 170) |
+| `ui/src/views/`               | route views: overview, accounts (task 170), settings, login (Stage 13)                                  |
+| `ui/src/components/`          | shared components: `ApiErrorNotice` (169), `AccountAddForm`/`AccountManageCard` (170)                   |
+| `ui/src/i18n/`                | `vue-i18n` `en` catalog and `createAppI18n()` (task 167)                                                |
+| `ui/src/stores/`              | Pinia stores, only if they prove useful (§3) — reserved                                                 |
 
 **Rule:** `ui/**` never imports `src/**` at runtime — the only sanctioned
 sharing is **type-only** imports from `src/schemas/**` (erased at build time),

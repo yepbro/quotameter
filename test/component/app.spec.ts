@@ -2,12 +2,13 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory } from 'vue-router';
 import { describe, expect, it } from 'vitest';
 import App from '../../ui/src/App.vue';
+import { createAccountSelection } from '../../ui/src/account-selection';
 import { createApiClientPlugin } from '../../ui/src/api';
 import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
 import { createAppTheme } from '../../ui/src/theme';
 import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
-import { FakeFetch, jsonResponse } from '../helpers/api';
+import { FakeFetch, jsonResponse, healthyApiBody } from '../helpers/api';
 
 /**
  * The application shell (spec §14.1; decisions D-131, D-132, D-133): the
@@ -46,9 +47,16 @@ async function mountShell(initial: string = '/') {
     media: new FakeThemeMedia(),
   });
   const api = createApiClientPlugin({
-    fetchImpl: new FakeFetch(() => Promise.resolve(jsonResponse(200, { status: 'ok' }))).impl,
+    fetchImpl: new FakeFetch((call) =>
+      Promise.resolve(jsonResponse(200, healthyApiBody(call.input))),
+    ).impl,
   });
-  const wrapper = mount(App, { global: { plugins: [router, createAppI18n(), theme, api] } });
+  // Task 170: the accounts view consumes the selection store; every
+  // shell mount installs one (the composition root does the same).
+  const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
+  const wrapper = mount(App, {
+    global: { plugins: [router, createAppI18n(), theme, api, selection] },
+  });
   await settleNavigation();
   return wrapper;
 }
@@ -71,13 +79,19 @@ describe('App shell', () => {
   });
 
   it.each([
-    ['/accounts', 'Accounts'],
     ['/settings', 'Settings'],
     ['/login', 'Login'],
   ] as const)('direct navigation renders the %s view', async (path, heading) => {
     const wrapper = await mountShell(path);
     expect(wrapper.find('h2').text()).toBe(heading);
     expect(wrapper.find('[data-testid="page-status"]').text()).toBe('Not implemented yet.');
+  });
+
+  it('direct navigation renders the accounts view (task 170: real content)', async () => {
+    const wrapper = await mountShell('/accounts');
+    expect(wrapper.find('h2').text()).toBe('Accounts');
+    // The management page's honest empty state against the empty list.
+    expect(wrapper.find('[data-testid="accounts-empty"]').exists()).toBe(true);
   });
 
   it('navigates between sections through the nav links', async () => {

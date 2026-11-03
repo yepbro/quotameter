@@ -72,6 +72,19 @@ export function neverRespond(): () => Promise<ApiFetchResponse> {
   return () => new Promise<ApiFetchResponse>(() => undefined);
 }
 
+/**
+ * A healthy §13 body per route the shell's pages load, for component
+ * tests that mount the whole app: success bodies are trusted casts
+ * (D-134), so a one-shape answer for every URL is a lie the consumers
+ * choke on once a page loads real routes (task 170 made `/accounts`
+ * load the accounts and providers lists).
+ */
+export function healthyApiBody(input: string): unknown {
+  if (input === '/api/accounts') return { accounts: [] };
+  if (input === '/api/providers') return { providers: [] };
+  return { status: 'ok' };
+}
+
 /** A handler that always rejects — the network-failure arm. */
 export function networkFailure(reason = 'Failed to fetch'): () => Promise<ApiFetchResponse> {
   return () => Promise.reject(new TypeError(reason));

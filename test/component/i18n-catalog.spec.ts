@@ -225,7 +225,6 @@ describe('vue-i18n English catalog (spec §14.1)', () => {
     expect(catalog['overview.status']).toBe(
       'Setup in progress — the interface is not implemented yet.',
     );
-    expect(catalog['accounts.status']).toBe('Not implemented yet.');
   });
 
   it('every t() key used in ui/src exists in the catalog', () => {

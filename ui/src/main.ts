@@ -1,5 +1,6 @@
 import { createApp } from 'vue';
 import App from './App.vue';
+import { createAccountSelection } from './account-selection';
 import { createApiClientPlugin } from './api';
 import { createAppI18n } from './i18n';
 import { createAppRouter } from './router';
@@ -8,18 +9,20 @@ import './assets/base.css';
 
 // Composition root (spec §3): the application is assembled here so each
 // UI stage has a single seam — router (166), string catalog (167), theme
-// selection (168), and the API client (169) are all plugged in. No
-// component owns application wiring.
+// selection (168), the API client (169), and the account selection
+// (170) are all plugged in. No component owns application wiring.
 const router = createAppRouter();
 const i18n = createAppI18n();
 const theme = createAppTheme();
 const api = createApiClientPlugin();
+const accountSelection = createAccountSelection();
 
 const app = createApp(App);
 app.use(router);
 app.use(i18n);
 app.use(theme);
 app.use(api);
+app.use(accountSelection);
 
 function mountApp(): void {
   app.mount('#app');

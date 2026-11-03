@@ -37,9 +37,84 @@ export const en = {
     // The bootstrap status line the smoke contract asserts (D-129).
     status: 'Setup in progress — the interface is not implemented yet.',
   },
+  // The account-management page (task 170, spec §14.2; decision D-135):
+  // the selector, the identity facts of the selected account, one action
+  // group per §14.2 verb, the two confirmation affordances, and the
+  // connection-test outcome vocabulary.
   accounts: {
     title: 'Accounts',
-    status: 'Not implemented yet.',
+    loading: 'Loading accounts…',
+    // The retry beside a failed list load (D-135's failed-load rule).
+    retry: 'Retry loading accounts',
+    // The selector above the selected account's management card.
+    selector: {
+      label: 'Account',
+    },
+    // Helpful empty state (§14.2): what the page shows with no accounts.
+    empty: {
+      title: 'No accounts yet',
+      hint: 'Add your first account below — you can skip the API key and set it later.',
+    },
+    // The selected account's identity and management facts.
+    card: {
+      provider: 'Provider',
+      status: 'Status',
+      statusActive: 'Active',
+      statusArchived: 'Archived',
+      polling: 'Polling',
+      pollingOn: 'Enabled',
+      pollingOff: 'Disabled',
+      key: 'API key',
+      keyNone: 'Not set',
+      keyEnvironment: 'From the environment — read-only here',
+      archivedNotice:
+        'This account is archived. Its history is retained; only purging is available.',
+    },
+    actions: {
+      test: 'Test connection',
+      testPending: 'Testing…',
+      rename: 'Rename',
+      renameField: 'New label',
+      save: 'Save',
+      cancel: 'Cancel',
+      disablePolling: 'Disable polling',
+      enablePolling: 'Enable polling',
+      replaceKey: 'Replace API key',
+      keyField: 'New API key',
+      keyHint: 'Write-only: the key is stored, never displayed.',
+      archive: 'Archive account',
+    },
+    test: {
+      ok: 'Connection test passed.',
+      rejected: 'Connection test failed: the provider rejected the API key.',
+      unavailable: 'Connection test was inconclusive.',
+    },
+    archive: {
+      title: 'Archive this account?',
+      body: 'Archiving stops polling and keeps the collected history. Archiving cannot be undone.',
+      confirm: 'Archive',
+    },
+    purge: {
+      action: 'Purge history',
+      title: 'Purge this account and its history?',
+      body: 'Purging permanently deletes the account and every collected history row. This cannot be undone.',
+      typeLabel: 'Type the account label “{label}” to confirm:',
+      confirm: 'Purge permanently',
+    },
+    add: {
+      title: 'Add account',
+      provider: 'Provider',
+      label: 'Label',
+      key: 'API key (optional)',
+      keyHint: 'Optional now — you can set the key later on this page.',
+      submit: 'Add account',
+      pending: 'Adding…',
+      noProviders: 'No provider is available in this build; accounts cannot be added.',
+    },
+    form: {
+      errorLabelRequired: 'A label is required.',
+      errorKeyBlank: 'The API key must not be blank.',
+    },
   },
   settings: {
     title: 'Settings',

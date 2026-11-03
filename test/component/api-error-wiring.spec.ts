@@ -3,6 +3,7 @@ import { createMemoryHistory } from 'vue-router';
 import { createApp, defineComponent, h, nextTick } from 'vue';
 import { describe, expect, it } from 'vitest';
 import App from '../../ui/src/App.vue';
+import { createAccountSelection } from '../../ui/src/account-selection';
 import { createApiClientPlugin, useApi, useApiCall } from '../../ui/src/api';
 import { ApiClientError } from '../../ui/src/api/error';
 import { createAppI18n } from '../../ui/src/i18n';
@@ -10,7 +11,7 @@ import { createAppRouter } from '../../ui/src/router';
 import { createAppTheme } from '../../ui/src/theme';
 import { en } from '../../ui/src/i18n/en';
 import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
-import { FakeFetch, jsonResponse, networkFailure } from '../helpers/api';
+import { FakeFetch, jsonResponse, networkFailure, healthyApiBody } from '../helpers/api';
 
 /**
  * The done-condition proof (task 169): errors are handled consistently
@@ -33,11 +34,22 @@ async function mountShell(initial: string, fetchImpl: FakeFetch['impl']): Promis
   await router.push(initial);
   await router.isReady();
   const theme = createAppTheme({ storage: new MemoryThemeStorage(), media: new FakeThemeMedia() });
+  const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
   const api = createApiClientPlugin({ fetchImpl });
-  const wrapper = mount(App, { global: { plugins: [router, createAppI18n(), theme, api] } });
+  const wrapper = mount(App, {
+    global: { plugins: [router, createAppI18n(), theme, selection, api] },
+  });
   await settleNavigation();
   return wrapper;
 }
+
+/**
+ * A healthy answer per §13 route the shell's pages load — the shared
+ * `healthyApiBody` helper (task 170 made `/accounts` a real page — the
+ * accounts list and the providers list — so a one-shape answer would be
+ * a lie the trusted casts choke on).
+ */
+const healthyBody = healthyApiBody;
 
 const ROUTES = ['/', '/accounts', '/settings', '/login'] as const;
 
@@ -49,18 +61,30 @@ describe('shared error wiring across pages (task 169, D-134)', () => {
     expect(notice.exists()).toBe(true);
     expect(notice.text()).toBe(en.errors.network);
     expect(notice.attributes('data-error-kind')).toBe('network');
-    // The probe went through the shared client to the §13 health route.
-    expect(fake.calls.at(-1)?.input).toBe('/api/health');
+    // Every dispatched request went through the shared client to a §13
+    // route (the accounts page fires two loads; the probe pages one).
+    expect(fake.calls.length).toBeGreaterThan(0);
+    for (const call of fake.calls) {
+      expect(call.input.startsWith('/api/')).toBe(true);
+    }
   });
 
   it.each(ROUTES)('renders no notice on %s when the API answers', async (path) => {
-    const fake = new FakeFetch(() => Promise.resolve(jsonResponse(200, { status: 'ok' })));
+    const fake = new FakeFetch((call) =>
+      Promise.resolve(jsonResponse(200, healthyBody(call.input))),
+    );
     const wrapper = await mountShell(path, fake.impl);
     expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
-    // The placeholder content is untouched beside the wiring.
-    expect(wrapper.find('[data-testid="page-status"], [data-testid="app-status"]').exists()).toBe(
-      true,
-    );
+    // Real page content rendered beside the wiring: the overview's
+    // placeholder, the accounts page's empty state (task 170), or the
+    // remaining placeholders' status line.
+    expect(
+      wrapper
+        .find(
+          '[data-testid="page-status"], [data-testid="app-status"], [data-testid="accounts-empty"]',
+        )
+        .exists(),
+    ).toBe(true);
   });
 
   it('every page presents an envelope rejection through the same surface', async () => {
@@ -238,5 +262,44 @@ describe('useApiCall (the shared page-level pattern)', () => {
     await state.execute();
     expect(state.error.value).toBeNull();
     expect(state.data.value).toBe('value');
+  });
+
+  it('reset() clears a loaded result without dispatching a new call', async () => {
+    let calls = 0;
+    const { state } = mountProbe(() => {
+      calls += 1;
+      return Promise.resolve('value');
+    });
+    await state.execute();
+    expect(state.data.value).toBe('value');
+    const dispatched = calls;
+    state.reset();
+    expect(calls).toBe(dispatched);
+    expect(state.data.value).toBeNull();
+    expect(state.error.value).toBeNull();
+    expect(state.pending.value).toBe(false);
+  });
+
+  it('reset() clears a presented failure state', async () => {
+    const { state } = mountProbe(() => Promise.reject(new ApiClientError({ kind: 'network' })));
+    await state.execute();
+    expect(state.error.value?.kind).toBe('network');
+    state.reset();
+    expect(state.error.value).toBeNull();
+    expect(state.pending.value).toBe(false);
+  });
+
+  it('reset() supersedes an in-flight run — the settling call writes nothing', async () => {
+    const transport = deferred<string>();
+    const { state } = mountProbe(() => transport.promise);
+    const inFlight = state.execute();
+    expect(state.pending.value).toBe(true);
+    state.reset();
+    expect(state.pending.value).toBe(false);
+    transport.resolve('late');
+    await expect(inFlight).resolves.toBe('late');
+    // The stale success resolved to its caller but wrote no state.
+    expect(state.data.value).toBeNull();
+    expect(state.pending.value).toBe(false);
   });
 });

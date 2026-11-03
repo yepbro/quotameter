@@ -78,6 +78,16 @@ export interface ApiCallState<T> {
    * have a stale result overwrite it).
    */
   readonly execute: () => Promise<T | null>;
+  /**
+   * Clears the state (`data`, `error`, `pending`) and supersedes any
+   * in-flight run (task 170, D-135): an `execute()` still settling
+   * after a `reset()` writes nothing — the same re-entry token that
+   * guards overlapping executes. The UI-facing use: dismissing a
+   * presented failure without a new request (closing a confirmation
+   * panel, hiding a form) so a stale `role="alert"` cannot re-appear
+   * when the surface re-opens.
+   */
+  readonly reset: () => void;
 }
 
 /**
@@ -124,5 +134,15 @@ export function useApiCall<T>(call: () => Promise<T>): ApiCallState<T> {
     return result;
   }
 
-  return { data, error, pending, execute };
+  function reset(): void {
+    // Supersedes every in-flight run: the token bump makes a settling
+    // `execute()` fail the `token === run` check on both of its write
+    // paths, exactly like an overlapping execute.
+    run += 1;
+    data.value = null;
+    error.value = null;
+    pending.value = false;
+  }
+
+  return { data, error, pending, execute, reset };
 }
