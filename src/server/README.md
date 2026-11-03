@@ -373,3 +373,104 @@ Smaller folds: one clock reading per status response (no account row is
 derived against a different instant than its siblings), the compile-time
 exhaustive `RunOutcome` no-drift pin, and the attempted-fields ≡
 `ENV_OVERRIDES` no-drift row.
+
+## The §13 history and events endpoints (task 161, spec §12, §13, §11.3; decision D-139)
+
+`src/server/api/history.ts` registers the two range-bearing §13 routes
+inside the `/api` scope behind the D-128 optional-options rule
+(`ApiRoutesOptions.history` — the store seam, the repository, the §6.4-live
+retention reader, the clock; absent, both paths keep the scope catch-all's
+404). The contracts live in `src/schemas/api/history.ts`; everything is
+composition over the landed Stage-10/11 services — nothing here re-derives a
+gap, a reset, a bucket, or a retention bound.
+
+- **`GET /api/history?accountId&metric&from&to&maxPoints`** — the metric
+  series: retention-aware read (`getMetricSeriesWithRetention`, D-082),
+  downsampling to the `maxPoints` budget (D-081/D-090, with the stored
+  §12.1 reset instants and the §12.2 gaps fed as boundary data), and §12.2's
+  gaps spliced in as explicit `kind: 'empty'` points at the interval
+  midpoints. The response carries the series identity (`unit`/`limitType`
+  from the newest in-range row, honest nulls when empty — an unknown metric
+  key is an empty series, never an error: the vocabulary is adapter-owned
+  and served through `/api/providers`), the effective resolution
+  (`resolutionMs`, the widest allocated slice width — fractional by
+  construction — plus `downsampled` and `sourcePointCount`), and the range
+  report.
+- **`GET /api/events?accountId&from&to&metric`** — the unified §12.2
+  timeline as one time-ordered kind-discriminated array: `reset` (the
+  stored `quota_events` with the D-046/D-074 evidence verbatim), `gap`
+  (D-075's detector over each metric's valid points), `collection_error`
+  (task 120's class-a indicators, message passed the same §7.4
+  exact-occurrence redaction as `/api/status`'s `lastError`), and
+  `stopped_service` (class-b regions). Without a `metric` filter, the
+  last-valid query's key set enumerates exactly the series that can hold
+  gaps (a metric with valid points in range necessarily has a last valid
+  row). Order: instant-ascending, then a frozen kind rank, then metric key.
+
+**The timestamp rule (D-139, closing D-130's loose end):** the request
+`from`/`to` are ISO 8601 UTC strings with a mandatory explicit offset or
+`Z` (parsed through `epochMsFromIso`, §10 — offset-less strings are exactly
+where an implicit zone would creep in), while every response timestamp is
+an epoch-ms integer (the D-128/D-130 vocabulary). The requested and
+effective ranges echo as epoch-ms: one format per direction, never a mixed
+clock inside one body.
+
+**Retention reporting (§13/§11.3):** D-082's open choice is closed as the
+**200-with-report** — a range entirely beyond the horizon answers the empty
+series with `range.outcome: 'rejected'` and the horizon named; a partially
+older range serves truncated with `effectiveFrom` = the horizon; both arms
+share one response contract ("state that in the response" read as the body
+report, not the error envelope). The retention window is read per request
+(`historyRetentionDays`, the `pollingIntervalSeconds` precedent — §6.4
+classifies it live).
+
+**The runs-evidence read:** one margin-widened raw facade read
+(`EVIDENCE_MARGIN_MS = 12_180_000` = the widest §12.2 silence judgment
+`gapThresholdMs(3600)` plus one worst-case cycle span) supplies the
+run-stamped interval timeline the gap detector judges by (D-069's per-run
+`interval_seconds`, collapsed to changes) and the bounding records that
+anchor task 120's range-edge silences. Raw (un-retentioned) reads for
+internal composition are the sanctioned D-082 pattern; pre-horizon rows are
+cadence/anchor evidence only — the timeline module clamps its regions to
+the range and filters its markers, so nothing out-of-policy is served.
+
+**Error vocabulary** stays D-113-frozen: VALIDATION with stable
+`details.reason` values (`invalid-timestamp` + the offending `param`,
+`inverted-range`) for malformed/offset-less/inverted ranges, NOT_FOUND for
+an account unknown to both halves (archived accounts stay readable, §8.2 —
+pinned on the wire), schema VALIDATION for budget violations and smuggled
+query fields.
+
+**Review-round folds (kimi/k3.1-pro, REQUEST_CHANGES, 2 P1 / 1 P2):** when
+the margin read finds no runs at all, the range sits inside an outage
+longer than the margin, and two bounded probes recover the nearest
+bounding records wherever they are (`listCollectionRuns {from: effectiveTo,
+limit: 1}` — ascending order makes it the nearest at/after — plus
+`getLatestCollectionRun` when it precedes the range), so the full-range
+hatched region still renders; the downsampler input is the VALID points
+only, with the invalid rows re-inserted as their own point entries
+(`insertInvalidPointItems`) — an invalid row inside a gap used to glue the
+gap's edge points into one segment (nothing straddled the whole interval)
+and defeat §13's must-not-be-lost boundary — and the empty-point merge
+flushes by the gap's midpoint (timestamp-ordered even when an in-gap entry
+passes the midpoint, with a strict gap-start guard for the degenerate 1 ms
+gap).
+
+**Tests:** `test/unit/api-history-schema.spec.ts` (closed contracts, kind
+unions, the query grammar, and the no-drift rows pinning the schema-layer
+literals against `history-downsample`'s budget constants, task 123's
+outcome vocabulary, and the status surface's outcome list),
+`test/unit/api-history-view.spec.ts` (the pure compositions: parsing,
+timeline, views, merge, report, redaction, ordering), and the two
+integration suites through the real `/api` scope over migrated disposable
+SQLite — history (contract shapes, gap empty points, downsampling with
+boundary preservation and extrema equality, the default budget, retention
+truncation/rejection/live-read, error classes, §15.1 seam, no-half-wired
+404, marker discipline) and events (both §12.1 reset conditions and the
+false-positive avoidance through the real detection pipeline, gap threshold
+and cadence judgments, failed-cycle evidence with §7.4 redaction,
+stopped-region clamping and the pre-range anchor, retention, errors,
+authz). The heavy downsampling seeds (120–1501 points) carry explicit
+timeouts — the D-094 load-sensitivity family; the 1501-point bulk seed uses
+one repository transaction for the same structural rows (the per-cycle
+ceremony costs ~40 s there).

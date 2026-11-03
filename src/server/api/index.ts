@@ -41,6 +41,8 @@ import { accountRoutes } from './accounts';
 import { createAuthModeGuard, type AuthModeGuardOptions } from './auth';
 import { sendApiError, unmatchedApiClassification } from './error';
 import { healthRoutes } from './health';
+import type { HistoryRouteOptions } from './history';
+import { historyRoutes } from './history';
 import type { ProvidersRouteOptions } from './providers';
 import { providersRoutes } from './providers';
 import { customHeaderGuard, originGuard } from './security';
@@ -94,6 +96,15 @@ export interface ApiRoutesOptions {
    * 404 envelope.
    */
   readonly settings?: SettingsRouteOptions;
+  /**
+   * The history-family endpoints' dependencies (task 161, D-139) — the
+   * configuration-store seam (159's own), the storage facade, the §6.4-live
+   * retention reader, and the clock; registers `GET /api/history` and
+   * `GET /api/events`. Optional for the same reason as `accounts`: absent,
+   * both paths answer the scope catch-all's 404 envelope until the
+   * composition wires real stores.
+   */
+  readonly history?: HistoryRouteOptions;
 }
 
 /**
@@ -158,6 +169,15 @@ export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, o
   }
   if (options.settings !== undefined) {
     await fastify.register(settingsRoutes, options.settings);
+  }
+
+  // Task 161 (spec §12, §13; decision D-139): the history and events
+  // endpoints — the retention-aware series with §13 downsampling and §12.2
+  // gap empty points, and the unified §12.2 timeline (resets, gaps, failed
+  // cycles, stopped-service regions). Same encapsulated-child registration
+  // and no-half-wired rule as the families above.
+  if (options.history !== undefined) {
+    await fastify.register(historyRoutes, options.history);
   }
 
   // Task 148 (D-113, post-verification fix): the scope's catch-all route,
