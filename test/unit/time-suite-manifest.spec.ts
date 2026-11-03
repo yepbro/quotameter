@@ -18,10 +18,11 @@ import { describe, expect, it } from 'vitest';
  * `test:time` command is parsed from package.json (same-process truth, no
  * text parsing of a script's callers), its filters are applied to the real
  * `test/unit` + `test/integration` trees with the same substring rule, and
- * the selection must equal the pinned manifest — the twelve-file
+ * the selection must equal the pinned manifest — the
  * time/peak-hours suite (§17.1 "ranges, calendar boundaries, peak windows,
  * DST transitions … run under different `TZ` values", tasks 071/093/094/
- * 114/115/116 plus the epoch-ordering leaf D-090's family grew).
+ * 114/115/116 plus the epoch-ordering leaf D-090's family grew, and task
+ * 162's endpoint suites joined with the wire-side DST proof).
  *
  * Deliberate limits, accepted in D-097: a file renamed OUT of the filter
  * vocabulary is indistinguishable from a removal by structure alone, so
@@ -49,7 +50,10 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * this manifest in the same change.
  */
 const TIME_SUITE_MANIFEST = [
+  'test/integration/api-peak-hours.spec.ts',
   'test/integration/rolling-ranges-tz.spec.ts',
+  'test/unit/api-peak-hours-schema.spec.ts',
+  'test/unit/api-peak-hours-view.spec.ts',
   'test/unit/clock.property.spec.ts',
   'test/unit/clock.spec.ts',
   'test/unit/compare-epoch-ms.spec.ts',

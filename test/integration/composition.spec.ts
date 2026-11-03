@@ -271,6 +271,21 @@ describe('composeApplication — the previously-404 families answer', () => {
         expect(events.statusCode).toBe(200);
         expect(events.json()).toMatchObject({ accountId: 'seed', events: [] });
 
+        // `/api/peak-hours` (162): the seeded config carries no providers
+        // section, so the production construction answers the no-schedule
+        // arm — the family's last previously-404 path now serves.
+        const peakHours = await h.inject(
+          'GET',
+          `/api/peak-hours?accountId=seed&from=${isoOf(T0 - 3_600_000)}&to=${isoOf(T0)}`,
+        );
+        expect(peakHours.statusCode).toBe(200);
+        expect(peakHours.json()).toMatchObject({
+          accountId: 'seed',
+          providerId: 'zai-coding-plan',
+          timezone: null,
+          intervals: [],
+        });
+
         // `/api/accounts/:id/test` (159): the provider double through the
         // production observation wrapper.
         const test = await h.inject('POST', '/api/accounts/seed/test');
@@ -278,6 +293,85 @@ describe('composeApplication — the previously-404 families answer', () => {
         expect(test.json()).toEqual({ outcome: 'ok' });
         expect(h.composed.repository.getAccount('seed')).not.toBeNull();
       });
+    },
+  );
+});
+
+describe('composeApplication — the peak-hours wiring (162, D-142)', () => {
+  it(
+    'serves the configured schedule’s intervals through the production construction',
+    { timeout: 20_000 },
+    async () => {
+      await withComposedApp(
+        {
+          // The seeded config's own shape plus the §9.1 schedule: the
+          // providers section the peak-hours wiring reads.
+          config: {
+            app: { timezone: 'UTC' },
+            accounts: [
+              {
+                id: 'seed',
+                providerId: 'zai-coding-plan',
+                label: 'Seed account',
+                apiKey: MARKER_KEY,
+              },
+            ],
+            providers: {
+              'zai-coding-plan': {
+                peakHours: {
+                  timezone: 'Asia/Singapore',
+                  offPeakMultiplier: 0.5,
+                  windows: [
+                    {
+                      id: 'zai-weekday-peak',
+                      name: 'Z.ai Coding Plan peak hours',
+                      days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+                      start: '14:00',
+                      end: '18:00',
+                      multiplier: 1.0,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+        async (h) => {
+          // T0 is 2026-11-03T10:00:00Z, a Tuesday: the two hours before it
+          // sit inside that day’s peak (14:00–18:00 SGT = 06:00–10:00 UTC).
+          const response = await h.inject(
+            'GET',
+            `/api/peak-hours?accountId=seed&from=${isoOf(T0 - 7_200_000)}&to=${isoOf(T0)}`,
+          );
+          expect(response.statusCode).toBe(200);
+          expect(response.json()).toEqual({
+            accountId: 'seed',
+            providerId: 'zai-coding-plan',
+            timezone: 'Asia/Singapore',
+            offPeakMultiplier: 0.5,
+            range: {
+              outcome: 'ok',
+              requestedFrom: T0 - 7_200_000,
+              requestedTo: T0,
+              effectiveFrom: T0 - 7_200_000,
+              effectiveTo: T0,
+              retentionHorizon: null,
+            },
+            intervals: [
+              {
+                kind: 'peak',
+                start: T0 - 7_200_000,
+                end: T0,
+                multiplier: 1.0,
+                windowId: 'zai-weekday-peak',
+                name: 'Z.ai Coding Plan peak hours',
+                localStart: '2026-11-03T16:00',
+                localEnd: '2026-11-03T18:00',
+              },
+            ],
+          });
+        },
+      );
     },
   );
 });

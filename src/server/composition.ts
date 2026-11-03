@@ -5,7 +5,8 @@
  * This module is the assembly point the task-060 shell always anticipated:
  * it owns the startup order the spec fixes and the seams the landed route
  * families defined at their consumers (D-121's auth projection, D-128's
- * `AccountConfigStore`, D-130's `SettingsStore`, D-139's history options).
+ * `AccountConfigStore`, D-130's `SettingsStore`, D-139's history options,
+ * D-142's peak-hours options).
  * The sequence, each step refusing loudly when its contract is broken:
  *
  * 1. resolve the §6.1 directories from the environment snapshot;
@@ -376,6 +377,14 @@ export async function composeApplication(
       history: {
         store: accountStore,
         repository,
+        historyRetentionDays: () =>
+          currentConfig().app.historyRetentionDays ?? CONFIG_DEFAULTS.app.historyRetentionDays,
+        now,
+      },
+      peakHours: {
+        store: accountStore,
+        repository,
+        schedules: () => currentConfig().providers ?? {},
         historyRetentionDays: () =>
           currentConfig().app.historyRetentionDays ?? CONFIG_DEFAULTS.app.historyRetentionDays,
         now,

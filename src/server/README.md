@@ -504,6 +504,84 @@ timeouts — the D-094 load-sensitivity family; the 1501-point bulk seed uses
 one repository transaction for the same structural rows (the per-cycle
 ceremony costs ~40 s there).
 
+## The §13 peak-hours endpoint (task 162, spec §9.3, §13, §11.3; decision D-142)
+
+`src/server/api/peak-hours.ts` registers `GET /api/peak-hours` inside the
+`/api` scope behind the D-128 optional-options rule
+(`ApiRoutesOptions.peakHours` — the store seam, the repository, the §6.4-live
+providers-section reader, the §6.4-live retention reader, the clock; absent,
+the path keeps the scope catch-all's 404). The contracts live in
+`src/schemas/api/peak-hours.ts`; the route is pure composition over the
+landed services — task 114/115's `calculatePeakHoursIntervals` owns the
+interval math, the §9.3 DST policy, and the partition (never re-derived
+here), task 123's `boundHistoryRange` owns the retention bound, and task
+161's `parseRequestedRange`/`rangeReportOf` own the §13 range parsing and
+report (this route is §13's third named consumer of both — reused verbatim,
+not forked).
+
+- **`GET /api/peak-hours?accountId&from&to`** — the account's provider
+  schedule as the UTC timeline: `kind`-discriminated `peak`/`off-peak`
+  intervals (exact epoch-ms boundaries, the window's id/name/multiplier,
+  D-073's `yyyy-MM-ddTHH:mm` local times of the boundaries in the schedule
+  zone) partitioning the effective range chronologically. `providerId`
+  echoes the resolved provider (the configured entry wins; a storage-only
+  account reads it from its row — the D-128 both-halves verdict, §8.2's
+  retained accounts stay computable).
+- **The timestamp rule (D-139, inherited):** ISO 8601 UTC requests with a
+  mandatory explicit offset or `Z`, epoch-ms responses — one format per
+  direction. D-073's interim "serialize through `toUtcIso`" note is
+  superseded by D-139's epoch-ms rule (D-142 records the reconciliation).
+- **Retention inherited (D-142):** §13 names peak-hours in its
+  range/retention sentence, so the same 200-with-report applies — the
+  intervals are computed over the effective range only; `rejected` answers
+  empty intervals with the horizon named. The schedule facts
+  (`timezone`, `offPeakMultiplier`) still echo in that arm: they are
+  configuration, not range output.
+- **The no-schedule arm (§9.2):** a provider without a `providers.<id>`
+  entry answers `timezone: null` / `offPeakMultiplier: null` with empty
+  intervals — the same "not configured" fact `/api/providers` states, never
+  an invented schedule. A configured schedule with **empty windows** is not
+  that arm: it computes the whole range as one off-peak interval (§9.2's
+  own unverified-schedule shape). The UI's message reads `/api/providers`,
+  which serves the `windows` array.
+- **The span cap and the epoch edge:** retention never clamps `to` (D-082),
+  so a far-future end can exceed the calculator's `MAX_QUERY_SPAN_DAYS`
+  (3660 local days); the route maps that refusal to VALIDATION with
+  `details.reason: 'range-too-wide'` and `maxDays` — the bound stays
+  single-sited in the service. Beside it, a truthful pre-check rejects the
+  epoch-ceiling neighborhood (±8.64e15 ms minus a two-day headroom for the
+  zone offset, the guard day, and the `24:00` next-midnight resolution)
+  with `range-unsupported` — a narrow range whose instants no zone
+  conversion can render is never misreported as too wide (the review
+  round's P2, pinned by test at the ceiling itself).
+- **Error vocabulary** stays D-113-frozen: the D-139 range reasons
+  (`invalid-timestamp` + `param`, `inverted-range`) and NOT_FOUND ride the
+  family's classes; schema VALIDATION answers smuggled query fields (the
+  strict scope-local compiler).
+
+The composition passes the options (D-140's `HttpServerOptions.routes` seam
+— the wiring the composition root landed for): the same store/repository
+instances as the history family, the live `providers` reader the providers
+endpoint reads, the shared retention reader, and the shared clock.
+
+**Tests:** `test/unit/api-peak-hours-schema.spec.ts` (closed contracts, the
+interval union, the query grammar, and the no-drift rows — the range report
+is history's own schema object, and the calculator's output validates
+against the interval schemas), `test/unit/api-peak-hours-view.spec.ts` (the
+schedule resolution, the schedule-facts drift row against the timeline, the
+verbatim bridge, and **the DST matrix on the wire**: the task-115 matrix
+zones' timelines wrapped in the served envelope, schema-validated, and
+deep-equal to the hand-derived epochs and local times — the done-condition's
+proof), `test/integration/api-peak-hours.spec.ts` (18 tests through the real
+`/api` scope over migrated SQLite: the §9.1 week with exact epochs and
+local times, DST days on the wire, retention truncation/rejection/live
+reads, both schedule arms, the storage-only account, every error class, the
+degenerate range, the no-half-wired 404), and the composition-level proofs
+in `test/integration/composition.spec.ts` (the production construction
+answers the no-schedule arm and serves the configured §9.1 schedule's
+intervals). The three peak-hours-named specs join the §17.1 time-suite
+manifest, so CI runs them under all nine `TZ` cells.
+
 ## The composition stores and the config-sync (task U-040, spec §6.2–§6.4, §13, §15.2; decision D-140)
 
 `src/server/composition.ts` is the production assembly `buildComponents()`

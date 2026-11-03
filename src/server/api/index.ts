@@ -32,7 +32,8 @@
  * seams, so the unwired construction keeps answering the catch-all 404;
  * task 160 (D-130) added the status, providers, quota, and settings
  * endpoints (`./status`, `./providers`, `./settings`) behind the same
- * optional-options rule.
+ * optional-options rule; task 162 (D-142) the peak-hours endpoint
+ * (`./peak-hours`), completing §13's route table.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
@@ -46,6 +47,8 @@ import { historyRoutes } from './history';
 import type { ProvidersRouteOptions } from './providers';
 import { providersRoutes } from './providers';
 import { customHeaderGuard, originGuard } from './security';
+import type { PeakHoursRouteOptions } from './peak-hours';
+import { peakHoursRoutes } from './peak-hours';
 import type { SettingsRouteOptions } from './settings';
 import { settingsRoutes } from './settings';
 import type { StatusRouteOptions } from './status';
@@ -105,6 +108,15 @@ export interface ApiRoutesOptions {
    * composition wires real stores.
    */
   readonly history?: HistoryRouteOptions;
+  /**
+   * The peak-hours endpoint's dependencies (task 162, D-142) — the
+   * configuration-store seam (159's own), the storage facade, the live
+   * providers-section reader (160's own), the §6.4-live retention reader,
+   * and the clock; registers `GET /api/peak-hours`. Optional for the same
+   * reason as `accounts`: absent, the path answers the scope catch-all's
+   * 404 envelope until the composition wires real stores.
+   */
+  readonly peakHours?: PeakHoursRouteOptions;
 }
 
 /**
@@ -178,6 +190,15 @@ export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, o
   // and no-half-wired rule as the families above.
   if (options.history !== undefined) {
     await fastify.register(historyRoutes, options.history);
+  }
+
+  // Task 162 (spec §9.3, §13; decision D-142): the peak-hours endpoint —
+  // the account's provider schedule as UTC peak/off-peak intervals over the
+  // retention-bounded range, §13's third range-bearing consumer. Same
+  // encapsulated-child registration and no-half-wired rule as the families
+  // above.
+  if (options.peakHours !== undefined) {
+    await fastify.register(peakHoursRoutes, options.peakHours);
   }
 
   // Task 148 (D-113, post-verification fix): the scope's catch-all route,
