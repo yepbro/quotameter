@@ -38,6 +38,8 @@ export const en = {
     // D-137): the shared loads' transient states, the selector, the
     // identity card's fact labels, the §14.6 status vocabulary, the
     // §7.2 error-outcome phrases, and the metric-card field vocabulary.
+    // Task 173 (D-138) adds the empty/initial guidance: the
+    // no-accounts block and the attention notice vocabulary.
     loading: 'Loading the overview…',
     // One retry label per data-defining load (distinct accessible names —
     // a screen-reader user must tell which load failed from the control).
@@ -51,12 +53,40 @@ export const en = {
       archivedOption: 'Archived',
     },
     empty: {
-      // The honest absence states; task 173 owns the fuller guidance.
-      noAccounts: 'No accounts are configured yet — add one on the Accounts page.',
+      // The page-level no-accounts guidance (task 173, spec §14.3):
+      // a titled block whose link is the actionable next step. The
+      // wording harmonizes with the accounts page's own empty state
+      // (task 170); the keys stay namespace-distinct (D-132).
+      noAccountsTitle: 'No accounts yet',
+      noAccountsHint:
+        'Add one on the Accounts page — you can skip the API key at first and set it later.',
+      cta: 'Go to Accounts',
       noSnapshot: 'No successful collection yet — values appear after the first successful poll.',
+      // The same absent snapshot under an account-level blocker (no
+      // key, polling off, archived): the waiting sentence's promise
+      // would be false — the attention notice above the region
+      // carries the actionable why (task 173, D-138).
+      noSnapshotBlocked: 'No usage values yet — collection is not running for this account.',
       // A snapshot that succeeded but recognized no metric rows (the
       // adapter's skip path) — a different fact from no snapshot.
       noMetrics: 'The latest successful collection reported no quota values.',
+    },
+    // The account-level attention notice (task 173, spec §14.3/§14.6;
+    // D-138): why collection is not running for the selected account
+    // and what to do about it — the link renders exactly where the
+    // remedy is a UI action.
+    attention: {
+      archived:
+        'This account is archived: polling is stopped and its collected history is retained. Manage or purge it on the Accounts page.',
+      disabled:
+        'Polling is disabled for this account. Enable it on the Accounts page to resume collection.',
+      // An environment-sourced key is read-only through the API
+      // (§6.3) — the remedy is server-side, so no link renders.
+      keylessEnvironment:
+        'The API key for this account comes from an environment variable that is not set where the service runs. Set that variable and restart the service.',
+      keyless:
+        'No API key is configured for this account. Set the API key on the Accounts page so collection can run.',
+      cta: 'Go to Accounts',
     },
     // The §14.6 status vocabulary (rendered by AccountStatusBadge).
     status: {

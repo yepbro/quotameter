@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { RouterLink } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import type { AccountView } from '../../../src/schemas/api/accounts';
 import type { ProviderView } from '../../../src/schemas/api/providers';
 import type { QuotaResponse, StatusResponse } from '../../../src/schemas/api/status';
+import { accountAttentionOf } from '../account-attention';
+import AccountAttentionNotice from '../components/AccountAttentionNotice.vue';
 import AccountOverviewCard from '../components/AccountOverviewCard.vue';
 import ApiErrorNotice from '../components/ApiErrorNotice.vue';
 import MetricCard from '../components/MetricCard.vue';
@@ -17,6 +20,12 @@ import { useAccountSelection } from '../account-selection';
 // the shared selection store (D-135): this page is the store's second
 // consumer and re-runs the documented reconciliation rule against its own
 // accounts-list load.
+//
+// Task 173 (D-138) adds the empty/initial guidance: the page-level
+// no-accounts block with its link to the accounts page, the
+// account-level attention notice (which fact keeps collection from
+// running and what to do about it), and the blocked-vs-waiting
+// no-snapshot wording.
 //
 // Five loads, one `useApiCall` each (D-134): the accounts list (selector
 // + identity), the providers list (provider names AND the metric-label
@@ -140,6 +149,30 @@ watch(
 
 const selected = computed(
   () => accounts.value.find((account) => account.id === selection.selectedId.value) ?? null,
+);
+
+/**
+ * The selected account's attention kind — which account-level fact
+ * keeps collection from running (task 173, D-138): `null` when
+ * nothing does. Single-sourced in `account-attention.ts`; the notice
+ * presents it and the no-snapshot wording below re-reads it. The
+ * §7.3 row rides along because `hasKey` is declaration-level: only
+ * the status row can say an environment-sourced key does not resolve.
+ */
+const attention = computed(() =>
+  selected.value === null
+    ? null
+    : accountAttentionOf(selected.value, statusRowOf.value(selected.value.id)),
+);
+
+/**
+ * The no-snapshot line's wording: under an attention blocker the
+ * waiting sentence's "values appear after the first successful poll"
+ * would promise a poll that never runs — the blocked line states the
+ * fact instead, and the notice above carries the remedy.
+ */
+const noSnapshotText = computed(() =>
+  attention.value === null ? t('overview.empty.noSnapshot') : t('overview.empty.noSnapshotBlocked'),
 );
 
 // The quota load is target-keyed: the watcher below fires on every
@@ -275,6 +308,11 @@ function optionText(account: AccountView): string {
           :now="nowMs"
         />
 
+        <!-- The account-level attention notice (task 173, D-138):
+          rendered only when a blocker exists — a healthy account sees
+          nothing here. -->
+        <AccountAttentionNotice v-if="attention !== null" :attention="attention" />
+
         <!-- Task 174's seam: the rolling-range controls mount above this
           region (spec §14.4); the metric cards are the §14.3 surface. -->
         <div class="metrics" data-testid="overview-metrics">
@@ -294,13 +332,15 @@ function optionText(account: AccountView): string {
           zero), told apart by the snapshot header: no snapshot at all
           (`collectedAt` null) versus a snapshot that recognized no
           metric rows — two different facts, never conflated (the review
-          round's P2); task 173 owns the fuller guidance surfaces. -->
+          round's P2). The no-snapshot wording adapts to the attention
+          notice: a blocked account gets the honest line, a healthy one
+          the waiting sentence. -->
         <p
           v-else-if="lastQuota !== null && lastQuota.collectedAt === null"
           class="status"
           data-testid="overview-no-snapshot"
         >
-          {{ t('overview.empty.noSnapshot') }}
+          {{ noSnapshotText }}
         </p>
         <p
           v-else-if="lastQuota !== null && lastQuota.metrics.length === 0"
@@ -312,8 +352,15 @@ function optionText(account: AccountView): string {
       </template>
     </template>
 
+    <!-- The page-level no-accounts guidance (task 173, §14.3): the
+      actionable next step is the link — the wording harmonizes with
+      the accounts page's own empty state (task 170). -->
     <div v-else-if="listLoaded" class="empty" data-testid="overview-empty">
-      <p>{{ t('overview.empty.noAccounts') }}</p>
+      <h3>{{ t('overview.empty.noAccountsTitle') }}</h3>
+      <p>{{ t('overview.empty.noAccountsHint') }}</p>
+      <RouterLink to="/accounts" data-testid="overview-empty-cta">
+        {{ t('overview.empty.cta') }}
+      </RouterLink>
     </div>
   </section>
 </template>
@@ -354,6 +401,16 @@ function optionText(account: AccountView): string {
 
 .selector select {
   padding: 0.25rem 0.5rem;
+}
+
+.empty h3 {
+  margin: 1rem 0 0;
+}
+
+.empty a {
+  display: inline-block;
+  margin-top: 0.35rem;
+  color: var(--qm-color-foreground);
 }
 
 /* Task 174's layout seam: the cards flow as a responsive grid today;

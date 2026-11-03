@@ -1,4 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import { createMemoryHistory } from 'vue-router';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AccountView } from '../../src/schemas/api/accounts';
 import type { ProviderView } from '../../src/schemas/api/providers';
@@ -11,11 +12,20 @@ import {
   type StatusResponse,
 } from '../../src/schemas/api/status';
 import OverviewView from '../../ui/src/views/OverviewView.vue';
+import { accountAttentionOf, type AccountAttention } from '../../ui/src/account-attention';
 import { createAccountSelection } from '../../ui/src/account-selection';
 import { createApiClientPlugin } from '../../ui/src/api';
 import { createAppI18n } from '../../ui/src/i18n';
+import { createAppRouter } from '../../ui/src/router';
 import { en } from '../../ui/src/i18n/en';
-import { FakeFetch, jsonResponse, healthySettingsBody, type RecordedCall } from '../helpers/api';
+import {
+  FakeFetch,
+  jsonResponse,
+  healthyApiBody,
+  healthySettingsBody,
+  neverRespond,
+  type RecordedCall,
+} from '../helpers/api';
 import { MemoryThemeStorage } from '../helpers/theme';
 
 /**
@@ -182,10 +192,19 @@ async function mountView(
   storage: MemoryThemeStorage = new MemoryThemeStorage(),
 ): Promise<VueWrapper> {
   const selection = createAccountSelection({ storage });
+  // Task 173: the view renders RouterLinks (the empty state's and the
+  // attention notice's CTAs), so the mount carries a memory-history
+  // router (the app-shell precedent).
+  const router = createAppRouter(createMemoryHistory());
   const wrapper = mount(OverviewView, {
     attachTo: document.body,
     global: {
-      plugins: [createAppI18n(), selection, createApiClientPlugin({ fetchImpl: backend.impl })],
+      plugins: [
+        createAppI18n(),
+        selection,
+        router,
+        createApiClientPlugin({ fetchImpl: backend.impl }),
+      ],
     },
   });
   wrappers.push(wrapper);
@@ -703,9 +722,14 @@ describe('overview selection (the D-135 consumer rule)', () => {
     const backend = new FakeOverviewBackend({ accounts: [] });
     const wrapper = await mountView(backend);
 
-    expect(wrapper.find('[data-testid="overview-empty"]').text()).toBe(
-      en.overview.empty.noAccounts,
-    );
+    // Task 173 (D-138): the titled guidance block whose link is the
+    // actionable next step — never a bare one-liner.
+    const empty = wrapper.find('[data-testid="overview-empty"]');
+    expect(empty.find('h3').text()).toBe(en.overview.empty.noAccountsTitle);
+    expect(empty.find('p').text()).toBe(en.overview.empty.noAccountsHint);
+    const cta = empty.find('[data-testid="overview-empty-cta"]');
+    expect(cta.text()).toBe(en.overview.empty.cta);
+    expect(cta.attributes('href')).toBe('/accounts');
     expect(wrapper.find('[data-testid="account-overview-card"]').exists()).toBe(false);
     // No quota request is dispatched without a selected account.
     expect(backend.calls.some((call) => call.input.startsWith('/api/quota'))).toBe(false);
@@ -723,6 +747,423 @@ describe('overview selection (the D-135 consumer rule)', () => {
         .findAll('option')
         .map((o) => o.text()),
     ).toEqual(['Main', `Old (${en.overview.selector.archivedOption})`]);
+  });
+});
+
+/* ── The fresh-install matrix (task 173's done-condition) ─────────────── */
+
+/**
+ * Task 173 (spec §14.3/§14.6; decision D-138): a fresh install never
+ * renders a blank or broken page. Every cell of the fresh-install
+ * matrix mounts against the honest bodies that install shape serves
+ * and pins BOTH halves of the done-condition: some guidance node
+ * renders, and no failure notice does (a guidance surface that only
+ * appears beside an `api-error` would be the broken page in disguise).
+ */
+describe('overview fresh-install matrix (task 173, D-138)', () => {
+  function assertNoPageFailure(wrapper: VueWrapper): void {
+    expect(
+      wrapper.findAll('[data-testid="api-error"]'),
+      'no load failure renders in a fresh-install cell',
+    ).toHaveLength(0);
+  }
+
+  it('fresh init without accounts: the guidance block with its link, nothing else', async () => {
+    // The complete fresh-install floor: no accounts, no providers
+    // listed, no status rows — the page answers with the actionable
+    // no-accounts block.
+    const backend = new FakeOverviewBackend({
+      accounts: [],
+      providers: [],
+      status: { status: 'ok', pollingIntervalSeconds: 300, accounts: [] },
+    });
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="overview-empty"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="overview-empty-cta"]').attributes('href')).toBe('/accounts');
+    expect(wrapper.find('[data-testid="account-overview-card"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="overview-attention"]').exists()).toBe(false);
+    assertNoPageFailure(wrapper);
+  });
+
+  it('an account whose environment key is declared but unset: env-worded guidance, no link', async () => {
+    // The reachable `Not configured` account (§7.3): `apiKeyEnv` names
+    // a variable the process does not provide. `hasKey` is
+    // declaration-level (a source IS configured, §6.3) — the wire
+    // shape is `hasKey: true, keySource: 'environment'` and the
+    // unresolvable-key signal is the §7.3 row's `not-configured`
+    // (the review round's P1). Read-only through the API (§6.3), so
+    // the remedy is server-side and the notice carries no link.
+    const backend = new FakeOverviewBackend({
+      accounts: [account({ keySource: 'environment' })],
+      status: {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [statusRow({ status: 'not-configured' })],
+      },
+      quotaByAccount: new Map([['acc-1', quota()]]),
+    });
+    const wrapper = await mountView(backend);
+
+    const notice = wrapper.find('[data-testid="overview-attention"]');
+    expect(notice.attributes('data-attention')).toBe('keyless-environment');
+    expect(notice.text()).toBe(en.overview.attention.keylessEnvironment);
+    expect(wrapper.find('[data-testid="overview-attention-cta"]').exists()).toBe(false);
+    // The §14.6 badge names the state; the notice adds the remedy.
+    expect(wrapper.find('[data-testid="status-badge"]').attributes('data-status')).toBe(
+      'not-configured',
+    );
+    // The waiting sentence would promise a poll that never runs.
+    expect(wrapper.find('[data-testid="overview-no-snapshot"]').text()).toBe(
+      en.overview.empty.noSnapshotBlocked,
+    );
+    assertNoPageFailure(wrapper);
+  });
+
+  it('an environment-keyed account with the status row still unknown claims nothing', async () => {
+    // The §7.3 load has not completed: a `not-configured` row is the
+    // only keyless evidence the wire carries, so no notice renders and
+    // the status slots stay Unknown (172's absent-row rule) — the
+    // page never announces a key problem it cannot vouch for.
+    const backend = new FakeOverviewBackend({
+      accounts: [account({ keySource: 'environment' })],
+      status: { status: 'ok', pollingIntervalSeconds: 300, accounts: [] },
+      quotaByAccount: new Map([['acc-1', quota()]]),
+    });
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="overview-attention"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="overview-last-success"]').text()).toBe(
+      en.overview.card.unknown,
+    );
+    assertNoPageFailure(wrapper);
+  });
+
+  it('a sourceless account shape: the schema-total fallback links to the fix-here remedy', async () => {
+    // `hasKey: false` on an ACTIVE account is the schema-total
+    // fallback no current composition produces (the config contract
+    // rejects sourceless accounts; archived accounts read
+    // `keySource: 'none'` and classify by the lifecycle above) — the
+    // classifier still answers it honestly: set the key on the
+    // Accounts page.
+    const backend = new FakeOverviewBackend({
+      accounts: [account({ hasKey: false, keySource: 'none', keyMask: null })],
+      status: {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [statusRow({ status: 'not-configured' })],
+      },
+      quotaByAccount: new Map([['acc-1', quota()]]),
+    });
+    const wrapper = await mountView(backend);
+
+    const notice = wrapper.find('[data-testid="overview-attention"]');
+    expect(notice.attributes('data-attention')).toBe('keyless');
+    expect(notice.find('p').text()).toBe(en.overview.attention.keyless);
+    const cta = wrapper.find('[data-testid="overview-attention-cta"]');
+    expect(cta.attributes('href')).toBe('/accounts');
+    expect(cta.text()).toBe(en.overview.attention.cta);
+    expect(wrapper.find('[data-testid="overview-no-snapshot"]').text()).toBe(
+      en.overview.empty.noSnapshotBlocked,
+    );
+    assertNoPageFailure(wrapper);
+  });
+
+  it('a disabled account: the notice links to re-enabling, blocked line, badge agrees', async () => {
+    const backend = new FakeOverviewBackend({
+      accounts: [account({ enabled: false })],
+      status: {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [statusRow({ status: 'disabled' })],
+      },
+      quotaByAccount: new Map([['acc-1', quota()]]),
+    });
+    const wrapper = await mountView(backend);
+
+    const notice = wrapper.find('[data-testid="overview-attention"]');
+    expect(notice.attributes('data-attention')).toBe('disabled');
+    expect(notice.find('p').text()).toBe(en.overview.attention.disabled);
+    expect(wrapper.find('[data-testid="overview-attention-cta"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="status-badge"]').attributes('data-status')).toBe('disabled');
+    expect(wrapper.find('[data-testid="overview-no-snapshot"]').text()).toBe(
+      en.overview.empty.noSnapshotBlocked,
+    );
+    assertNoPageFailure(wrapper);
+  });
+
+  it('an archived account outranks the disabled/keyless facts its wire shape carries', async () => {
+    // The archived wire shape reads `enabled: false`, `hasKey: false`,
+    // `keySource: 'none'` — all three blockers at once — and §7.3
+    // derives `disabled` for it. The archived notice is the fuller
+    // story and wins the precedence (D-138).
+    const backend = new FakeOverviewBackend({
+      accounts: [
+        account({
+          status: 'archived',
+          enabled: false,
+          hasKey: false,
+          keySource: 'none',
+          keyMask: null,
+          archivedAt: 1,
+        }),
+      ],
+      status: {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [statusRow({ status: 'disabled' })],
+      },
+      quotaByAccount: new Map([['acc-1', quota()]]),
+    });
+    const wrapper = await mountView(backend);
+
+    const notice = wrapper.find('[data-testid="overview-attention"]');
+    expect(notice.attributes('data-attention')).toBe('archived');
+    expect(notice.find('p').text()).toBe(en.overview.attention.archived);
+    expect(wrapper.find('[data-testid="overview-attention-cta"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="overview-no-snapshot"]').text()).toBe(
+      en.overview.empty.noSnapshotBlocked,
+    );
+    assertNoPageFailure(wrapper);
+  });
+
+  it('an archived account with retained history renders its values beside the notice', async () => {
+    // §8.2/D-130: archived history stays served — the notice explains
+    // the stopped polling without displacing the collected facts.
+    const collectedAt = Date.now() - 7 * 24 * 3_600_000;
+    const backend = new FakeOverviewBackend({
+      accounts: [
+        account({
+          status: 'archived',
+          enabled: false,
+          hasKey: false,
+          keySource: 'none',
+          archivedAt: 1,
+        }),
+      ],
+      status: {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [statusRow({ status: 'disabled', lastSuccessAt: collectedAt })],
+      },
+      quotaByAccount: new Map([
+        ['acc-1', quota({ collectedAt, planName: 'Max20', metrics: [metric({ collectedAt })] })],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="overview-attention"]').attributes('data-attention')).toBe(
+      'archived',
+    );
+    expect(ddOf(cardOf(wrapper, 'tokens-5h'), 'metric-limit')).toBe('150,000 credits');
+    // A snapshot exists: no absence line renders at all.
+    expect(wrapper.find('[data-testid="overview-no-snapshot"]').exists()).toBe(false);
+    assertNoPageFailure(wrapper);
+  });
+
+  it('a healthy keyed account before its first poll: waiting wording, no notice', async () => {
+    // The pre-sync storage shape (`createdAt` null — the row has not
+    // been mirrored yet) beside the honest empty quota view: §7.3 says
+    // `Collecting`, §7.2 says `Never`, and the metrics region states
+    // the waiting fact — no blocker, so no notice and no blocked line.
+    const backend = new FakeOverviewBackend({
+      accounts: [account({ createdAt: null })],
+      status: {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [statusRow({ status: 'collecting' })],
+      },
+      quotaByAccount: new Map([['acc-1', quota()]]),
+    });
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="overview-attention"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="overview-no-snapshot"]').text()).toBe(
+      en.overview.empty.noSnapshot,
+    );
+    expect(wrapper.find('[data-testid="status-badge"]').text()).toBe(en.overview.status.collecting);
+    expect(wrapper.find('[data-testid="overview-last-success"]').text()).toBe(
+      en.overview.card.never,
+    );
+    assertNoPageFailure(wrapper);
+  });
+
+  it('a registry-empty build degrades to raw ids and keys — never a blank region', async () => {
+    // The degradation case beside the matrix: an empty providers
+    // catalog (D-137's fallback path — the empty-catalog variant of
+    // the failed-providers load, not a fresh-install state: a real
+    // install registers its adapters) still renders provider names
+    // and metric labels verbatim from the wire.
+    const backend = new FakeOverviewBackend({
+      providers: [],
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="overview-provider"]').text()).toBe('zai-coding-plan');
+    expect(cardOf(wrapper, 'tokens-5h').find('h4').text()).toBe('tokens-5h');
+    assertNoPageFailure(wrapper);
+  });
+
+  it('the initial load renders the loading line — never an empty block, never an error', async () => {
+    // The "initial" half of the task: the accounts list never answers,
+    // so the page's honest first paint is the loading line alone (the
+    // review round's P2 — the line had never been pinned).
+    // `neverRespond()` is a thunk factory — invoke it for the promise.
+    const stalled = new FakeFetch((call) =>
+      call.input === '/api/accounts'
+        ? neverRespond()()
+        : Promise.resolve(jsonResponse(200, healthyApiBody(call.input))),
+    );
+    const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
+    const wrapper = mount(OverviewView, {
+      attachTo: document.body,
+      global: {
+        plugins: [
+          createAppI18n(),
+          selection,
+          createAppRouter(createMemoryHistory()),
+          createApiClientPlugin({ fetchImpl: stalled.impl }),
+        ],
+      },
+    });
+    wrappers.push(wrapper);
+    await settle();
+
+    expect(wrapper.find('[data-testid="overview-loading"]').text()).toBe(en.overview.loading);
+    expect(wrapper.find('[data-testid="overview-empty"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="overview-attention"]').exists()).toBe(false);
+    assertNoPageFailure(wrapper);
+  });
+
+  it('a pending quota renders the quota-loading line with no absence wording', async () => {
+    // The selected account's quota never answers: the identity card
+    // renders, the metrics region states the pending fact, and none
+    // of the absence wordings render (absence is a LOADED fact).
+    const stalled = new FakeFetch((call) => {
+      if (call.input.startsWith('/api/quota')) return neverRespond()();
+      if (call.input === '/api/accounts') {
+        return Promise.resolve(jsonResponse(200, { accounts: [account()] }));
+      }
+      if (call.input === '/api/providers') {
+        return Promise.resolve(jsonResponse(200, { providers: PROVIDERS }));
+      }
+      if (call.input === '/api/status') {
+        return Promise.resolve(
+          jsonResponse(200, {
+            status: 'ok',
+            pollingIntervalSeconds: 300,
+            accounts: [statusRow()],
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse(200, healthySettingsBody()));
+    });
+    const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
+    const wrapper = mount(OverviewView, {
+      attachTo: document.body,
+      global: {
+        plugins: [
+          createAppI18n(),
+          selection,
+          createAppRouter(createMemoryHistory()),
+          createApiClientPlugin({ fetchImpl: stalled.impl }),
+        ],
+      },
+    });
+    wrappers.push(wrapper);
+    await settle();
+
+    expect(wrapper.find('[data-testid="account-overview-card"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="overview-quota-loading"]').text()).toBe(en.overview.loading);
+    expect(wrapper.find('[data-testid="metric-card"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="overview-no-snapshot"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="overview-no-metrics"]').exists()).toBe(false);
+    assertNoPageFailure(wrapper);
+  });
+});
+
+/* ── The attention classifier's truth table (D-138's precedence) ──────── */
+
+describe('accountAttentionOf (the D-138 precedence, pure)', () => {
+  const CASES: ReadonlyArray<{
+    label: string;
+    view: AccountView;
+    row: StatusAccountView | null;
+    expected: AccountAttention | null;
+  }> = [
+    {
+      label: 'archived — the terminal lifecycle outranks every switch',
+      view: account({ status: 'archived', enabled: false, hasKey: false, keySource: 'none' }),
+      row: statusRow({ status: 'disabled' }),
+      expected: 'archived',
+    },
+    {
+      label: 'disabled — the operator switch',
+      view: account({ enabled: false }),
+      row: statusRow({ status: 'disabled' }),
+      expected: 'disabled',
+    },
+    {
+      // The reachable keyless shape (the review round's P1): declared
+      // (`hasKey: true`) but unresolved — only the §7.3 row knows.
+      label: 'keyless-environment — declared but unresolved, the reachable shape',
+      view: account({ keySource: 'environment' }),
+      row: statusRow({ status: 'not-configured' }),
+      expected: 'keyless-environment',
+    },
+    {
+      label: 'keyless-environment is NOT claimed while the row is unknown',
+      view: account({ keySource: 'environment' }),
+      row: null,
+      expected: null,
+    },
+    {
+      label: 'an env-sourced key with a resolving row is healthy',
+      view: account({ keySource: 'environment' }),
+      row: statusRow({ status: 'fresh' }),
+      expected: null,
+    },
+    {
+      // A `not-configured` row on a file-sourced account cannot happen
+      // on the wire (a declared file key always resolves); the
+      // classifier discriminates on `keySource` rather than claiming
+      // the environment wording for any not-configured row.
+      label: 'a not-configured row on a file-sourced account claims no environment remedy',
+      view: account({ keySource: 'file' }),
+      row: statusRow({ status: 'not-configured' }),
+      expected: null,
+    },
+    {
+      // The `hasKey: false` active shape is the schema-total fallback
+      // no current composition produces — still answered honestly.
+      label: 'keyless — the schema-total sourceless fallback',
+      view: account({ hasKey: false, keySource: 'none' }),
+      row: null,
+      expected: 'keyless',
+    },
+    {
+      label: 'null — a healthy account',
+      view: account(),
+      row: statusRow(),
+      expected: null,
+    },
+  ];
+
+  it.each(CASES)('$label', ({ view, row, expected }) => {
+    expect(accountAttentionOf(view, row)).toBe(expected);
+  });
+
+  it('mirrors §7.3: the operator switch outranks the key state', () => {
+    // A disabled account without a key derives `disabled` (§7.3's
+    // rank 0a over 0b); the classifier agrees — enabling it later is
+    // the outermost remedy.
+    expect(
+      accountAttentionOf(
+        account({ enabled: false, hasKey: false, keySource: 'none' }),
+        statusRow({ status: 'disabled' }),
+      ),
+    ).toBe('disabled');
   });
 });
 
@@ -823,7 +1264,12 @@ describe('overview failure surfaces (D-134/D-135 rules)', () => {
     const wrapper = mount(OverviewView, {
       attachTo: document.body,
       global: {
-        plugins: [createAppI18n(), selection, createApiClientPlugin({ fetchImpl: failing.impl })],
+        plugins: [
+          createAppI18n(),
+          selection,
+          createAppRouter(createMemoryHistory()),
+          createApiClientPlugin({ fetchImpl: failing.impl }),
+        ],
       },
     });
     wrappers.push(wrapper);

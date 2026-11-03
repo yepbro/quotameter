@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Route } from '@playwright/test';
+import { healthySettingsBody } from '../helpers/api';
 import { assertNoAccessibilityViolations } from './helpers/a11y';
 
 /**
@@ -77,3 +78,119 @@ test('overview page has no WCAG violations in either theme (task 172)', async ({
     await assertNoAccessibilityViolations(page);
   }
 });
+
+test('overview fresh-install empty state has no WCAG violations (task 173)', async ({ page }) => {
+  // The preview server has no API behind it (the suite's standing
+  // shape), so the fresh-install surface is produced by route
+  // interception: the four overview loads answered with the honest
+  // bodies a fresh `init` without an account serves — including the
+  // real registered provider (a fresh install carries its adapters;
+  // the registry-empty build is a separate degradation case, pinned
+  // at the component level). No quota fires — no account is selected.
+  // The scanned page is then the real no-accounts guidance block —
+  // the task-173 done-condition's first cell — in both themes, and
+  // the CTA is proven a live SPA link to the management page.
+  await page.route('**/api/**', (route) =>
+    fulfillOverviewBody(route, {
+      '/api/accounts': { accounts: [] },
+      '/api/status': { status: 'ok', pollingIntervalSeconds: 300, accounts: [] },
+    }),
+  );
+  await page.goto('/');
+  await expect(page.getByTestId('overview-empty')).toBeVisible();
+  await expect(page.getByTestId('overview-empty-cta')).toBeVisible();
+  await expect(page.getByTestId('api-error')).toHaveCount(0);
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+
+  // The link is a real SPA navigation, not a dead anchor.
+  await page.getByTestId('overview-empty-cta').click();
+  await expect(page).toHaveURL(/\/accounts$/);
+  await expect(page.getByRole('heading', { name: 'Accounts', level: 2 })).toBeVisible();
+});
+
+test('overview attention notice has no WCAG violations (task 173)', async ({ page }) => {
+  // The same interception technique for the second task-173 surface:
+  // one disabled account — the notice with its muted-background token
+  // pair and the CTA link — axe-scanned in both themes.
+  await page.route('**/api/**', (route) =>
+    fulfillOverviewBody(route, {
+      '/api/accounts': {
+        accounts: [
+          {
+            id: 'acc-1',
+            providerId: 'zai-coding-plan',
+            label: 'Main',
+            enabled: false,
+            status: 'active',
+            hasKey: true,
+            keySource: 'file',
+            keyMask: '********',
+            planName: null,
+            createdAt: null,
+            archivedAt: null,
+          },
+        ],
+      },
+      '/api/status': {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [{ id: 'acc-1', status: 'disabled', lastSuccessAt: null, lastError: null }],
+      },
+      '/api/quota': {
+        accountId: 'acc-1',
+        status: 'disabled',
+        collectedAt: null,
+        planName: null,
+        metrics: [],
+      },
+    }),
+  );
+  await page.goto('/');
+  await expect(page.getByTestId('overview-attention')).toBeVisible();
+  await expect(page.getByTestId('overview-attention-cta')).toBeVisible();
+  await expect(page.getByTestId('api-error')).toHaveCount(0);
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
+/**
+ * Fulfills one overview GET with the given per-path body overrides on
+ * top of the standing defaults (the real provider listing and the
+ * healthy settings view); unknown API paths answer the §13 envelope's
+ * 404 shape, matching the honest server behavior.
+ */
+async function fulfillOverviewBody(
+  route: Route,
+  overrides: Record<string, unknown>,
+): Promise<void> {
+  const { pathname } = new URL(route.request().url());
+  const body: Record<string, unknown> = {
+    '/api/providers': {
+      providers: [
+        {
+          id: 'zai-coding-plan',
+          name: 'Z.ai Coding Plan',
+          peakHours: null,
+          metrics: [{ metricKey: 'mcp-monthly', label: 'Monthly MCP tool quota' }],
+        },
+      ],
+    },
+    '/api/settings': healthySettingsBody(),
+    ...overrides,
+  };
+  const answer = body[pathname];
+  await route.fulfill({
+    status: answer === undefined ? 404 : 200,
+    contentType: 'application/json',
+    body: JSON.stringify(
+      answer ?? { error: { code: 'NOT_FOUND', message: 'no route', details: null } },
+    ),
+  });
+}

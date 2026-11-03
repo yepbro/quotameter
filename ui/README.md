@@ -36,7 +36,7 @@ without server-side route tables.
 
 | Path        | Name       | View                             | Content task        |
 | ----------- | ---------- | -------------------------------- | ------------------- |
-| `/`         | `overview` | `src/views/OverviewView.vue`     | 172 (done), 173–174 |
+| `/`         | `overview` | `src/views/OverviewView.vue`     | 172–173 (done), 174 |
 | `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)          |
 | `/settings` | `settings` | `src/views/SettingsView.vue`     | 179                 |
 | `/login`    | `login`    | `src/views/LoginView.vue`        | 180                 |
@@ -281,13 +281,15 @@ snapshots).
 
 ### Architecture
 
-| Module                                   | Owns                                                                                                                                 |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/views/OverviewView.vue`             | the five loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the 174 seam                         |
-| `src/components/AccountOverviewCard.vue` | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`) |
-| `src/components/AccountStatusBadge.vue`  | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                               |
-| `src/components/MetricCard.vue`          | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                  |
-| `src/format.ts`                          | the pure `Intl` helpers (`formatEpochMs`, `formatRelative`, `formatQuotaNumber`, `windowHours`) — 174+ reuse these                   |
+| Module                                      | Owns                                                                                                                                 |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/views/OverviewView.vue`                | the five loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the attention wiring, the 174 seam   |
+| `src/components/AccountOverviewCard.vue`    | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`) |
+| `src/components/AccountStatusBadge.vue`     | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                               |
+| `src/components/AccountAttentionNotice.vue` | the account-level attention notice (task 173): the remedy sentence plus a link exactly where the remedy is a UI action               |
+| `src/components/MetricCard.vue`             | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                  |
+| `src/account-attention.ts`                  | the pure attention classifier (task 173, D-138): archived → disabled → keyless-environment → keyless → `null`                        |
+| `src/format.ts`                             | the pure `Intl` helpers (`formatEpochMs`, `formatRelative`, `formatQuotaNumber`, `windowHours`) — 174+ reuse these                   |
 
 The five loads: `accounts.list`, `providers.list` (display names **and**
 the metric-label catalog), `status.get`, `settings.get` (exactly the
@@ -324,11 +326,78 @@ absent (load in flight or failed) renders its slots as `Unknown` —
 - No snapshot yet (`collectedAt: null`): identity + status render, the
   metrics region states it — told apart from a snapshot that recognized
   no metric rows (a collection stamp with `metrics: []`, the adapter's
-  skip path), which states its own different fact; task 173 owns the
-  fuller guidance.
+  skip path), which states its own different fact. The no-snapshot
+  wording is attention-aware (see below).
 - Absent `resetsAt` omits the reset line (§14.3's own "if available").
 - Times render absolute (in the configured display zone) plus relative,
   computed when data arrives (no live ticker — a reload re-renders).
+
+### Empty, initial, and attention states (task 173, decision D-138)
+
+The fresh-install contract: **every cell of the matrix renders guidance
+or its honest degraded content, never a blank or broken region**. The
+matrix is pinned cell-by-cell in `overview-view.spec.ts` against mocked
+backends (each cell asserts its surface renders AND no `api-error`
+notice does — guidance that appears only beside a failure would be the
+broken page in disguise), and the two guidance surfaces (the
+no-accounts block, the attention notice) are axe-scanned in the real
+browser through route interception in `test/e2e/a11y.spec.ts` — the
+preview server has no API behind it, so the fresh-install bodies are
+served by `page.route`.
+
+| State                | Condition                                 | Renders                                                                            |
+| -------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| initial load         | list load in flight                       | the loading line alone (distinct from error/empty, D-134's pending semantics)      |
+| quota pending        | selected, quota load in flight            | the identity card + the quota-loading line; no absence wording (absence is loaded) |
+| load failed          | any of the five loads                     | its own notice (+ retry where data-defining) — never a fake empty state            |
+| **no accounts**      | a completed list answered zero            | the titled guidance block + a link to `/accounts`                                  |
+| account attention    | archived / disabled / keyless (see below) | the attention notice between the identity card and the metrics region              |
+| no snapshot, blocked | `collectedAt` null **and** attention      | the honest line — collection is not running (the notice above carries the remedy)  |
+| no snapshot, waiting | `collectedAt` null, no blocker            | the waiting sentence — values appear after the first successful poll               |
+| zero-metric snapshot | stamp set, `metrics: []`                  | its own different fact (the adapter's skip path)                                   |
+| registry-empty build | providers list answers `[]`               | raw provider ids and metric keys verbatim (D-137's documented fallback)            |
+
+The registry-empty row is a degradation case, not a fresh-install
+state: a real install registers its adapters.
+
+**The attention precedence** (the pure classifier `accountAttentionOf`
+in `src/account-attention.ts`, fed the account view AND its §7.3
+status row) mirrors §7.3's own derivation order — `archived` (the UI
+lifecycle fact) outermost, then `disabled` (the operator's enable
+switch), then the key state — so the notice can never contradict the
+status badge rendered from the same facts:
+
+1. **archived** — polling stopped, history retained; manage or purge on
+   the Accounts page (+ link). An archived account's wire shape reads
+   `enabled: false, hasKey: false, keySource: 'none'` — the terminal
+   lifecycle outranks both switches, matching the `disabled` status
+   §7.3 derives for it. The storage row is the authoritative fact even
+   in the transient window after a partial archive (the row retired,
+   the entry removal still retrying server-side): the row IS retired.
+2. **disabled** — enable polling on the Accounts page (+ link).
+3. **keyless-environment** — the reachable `Not configured` shape: an
+   account whose `apiKeyEnv` names a variable the process does not
+   provide. `hasKey` on the §13 accounts surface is
+   **declaration-level** (a source is configured, §6.3's exactly-one
+   rule), so this account reads `hasKey: true, keySource:
+'environment'` and the unresolvable-key signal is the §7.3 row's
+   `not-configured` — which is what the classifier reads. The remedy
+   is server-side (§6.3 makes environment keys read-only through the
+   API), so the wording names the variable and the restart — **no
+   link**, because nothing on the linked page fixes it. A status row
+   that is absent (load in flight or failed) vouches for nothing: no
+   keyless notice renders beside it.
+4. **keyless** (`hasKey: false` on an active account) — the
+   schema-total fallback no current composition produces (the config
+   contract rejects sourceless accounts), answered honestly with the
+   fix-here wording (+ link).
+
+Wording rules (D-138): the empty states' values harmonize with the
+accounts page's own empty state (task 170) while the keys stay
+namespace-distinct (D-132); every guidance names the next step, and the
+next step is a `RouterLink` exactly where the UI can perform it; the
+blocked line never repeats the link — the actionable advice lives once,
+in the notice.
 
 ### Metric labels (decision D-137)
 
@@ -374,6 +443,10 @@ through the token lookups (D-133) and reuse `src/format.ts`.
   `src/components/MetricCard.vue` — the overview page's identity card,
   status badge, and metric cards (task 172; see
   [The overview page (task 172)](#the-overview-page-task-172)).
+- `src/account-attention.ts` — the pure attention classifier (task 173,
+  D-138; see [The overview page (task 172)](#the-overview-page-task-172)).
+- `src/components/AccountAttentionNotice.vue` — the overview's
+  account-level attention notice (task 173).
 - `src/format.ts` — the pure `Intl` formatting helpers (task 172).
 - `src/i18n/` — the `en` message catalog (`en.ts`) and the
   `createAppI18n()` factory; see [Strings and the i18n
