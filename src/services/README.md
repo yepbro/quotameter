@@ -155,8 +155,9 @@ exact doubling sequence and cap, the ±1 ms window edge, per-source
 isolation, the success reset, the retention exactness, the sweep, the
 clock discipline, and the zero-console pin; the login endpoint that
 composes this primitive is a later task (the `@fastify/rate-limit`
-dependency stays unregistered — the generic per-request 429 limiter
-cannot express a failed-attempt budget with increasing delays).
+dependency is removed — D-143: the generic per-request 429 limiter
+cannot express a failed-attempt budget with increasing delays, and no
+other spec sentence asks for a per-request limit).
 
 Landed: [`session-cookie.ts`](./session-cookie.ts) — the §15.2
 session-cookie attribute layer (task 157, decision D-126), the fourth

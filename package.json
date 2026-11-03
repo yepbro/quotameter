@@ -78,7 +78,6 @@
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
     "@fastify/helmet": "^13.2.0",
-    "@fastify/rate-limit": "^11.2.1",
     "@fastify/static": "^10.1.8",
     "@sinclair/typebox": "^0.34.52",
     "ajv": "^8.20.0",

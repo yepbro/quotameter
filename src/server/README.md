@@ -43,8 +43,10 @@ release the lock. Its `onEvent` stream is the seam for the structured logger
 (decision D-020). `http.ts` (tasks 146/158) is the Fastify construction: the §3
 plugin set (`@fastify/static` with the §14.1 SPA fallback, `@fastify/cookie`;
 `@fastify/helmet` registered by task 158 with the §15.5 list — D-127 — and
-`@fastify/rate-limit` declared but unregistered, superseded by
-the services-layer primitive `src/services/login-rate-limit.ts` (156, D-125)),
+`@fastify/rate-limit` removed, D-143: the services-layer primitive
+`src/services/login-rate-limit.ts` (156, D-125) owns §15.2's budget, which a
+generic per-request 429 limiter cannot express, and no other spec sentence
+asks for a per-request limit),
 the §15.5 body limit and
 connection/request timeouts, the §15.5 security headers (the strict CSP,
 nosniff, and no-referrer on every response — the router-level rejection arm

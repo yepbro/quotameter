@@ -1,6 +1,7 @@
 import { get } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { performance } from 'node:perf_hooks';
+import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -171,23 +172,37 @@ describe('buildHttpServer — construction pins (§3, §15.5)', () => {
     expect(overLimitResponse.statusCode).toBe(413);
   });
 
-  it('registers cookie and helmet; rate-limit stays unregistered', async () => {
+  it('registers cookie and helmet; the rate-limit package is gone', async () => {
     // Decision D-109's split, landed: construction owns @fastify/static +
     // @fastify/cookie; @fastify/helmet is configuration-owning and task
     // 158 registers it with the §15.5 list (D-127 — the exact header
     // values are pinned in security-headers.spec.ts; this pin is the
-    // registration itself). @fastify/rate-limit stays unregistered with
-    // no owning task left: §15.2's budget counts *failed* attempts and
-    // answers with increasing delays, which a generic per-request 429
-    // limiter cannot express — task 156 landed the primitive in
-    // src/services/login-rate-limit.ts (D-125) instead, so whether the
-    // dependency stays at all is an open maintenance question.
+    // registration itself). @fastify/rate-limit is removed outright
+    // (D-143): §15.2's budget counts *failed* attempts and answers with
+    // increasing delays, which a generic per-request 429 limiter cannot
+    // express — the primitive lives in src/services/login-rate-limit.ts
+    // (156, D-125) — and no other spec sentence asks for a per-request
+    // limit (§15.5's own limits are the body size and the timeouts;
+    // §13 defines no 429), so the package had no scope to own. The
+    // declaration pin (over every dependency field npm ships in the
+    // published manifest) makes the removal itself executable: re-adding
+    // the dependency is a successor decision that updates D-143 and this
+    // test (an import from src/ would already fail typecheck — the
+    // package is not installed).
     const { server } = buildServer();
     // Plugin registration completes during boot.
     await server.ready();
     expect(server.hasPlugin('@fastify/cookie')).toBe(true);
     expect(server.hasPlugin('@fastify/helmet')).toBe(true);
     expect(server.hasPlugin('@fastify/rate-limit')).toBe(false);
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    };
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies'] as const) {
+      expect(pkg[field] ?? {}).not.toHaveProperty('@fastify/rate-limit');
+    }
   });
   it('resolves the default static root to the package ui/dist directory', () => {
     expect(resolveUiDistDir()).toBe(join(REPO_ROOT, 'ui', 'dist'));

@@ -1,6 +1,6 @@
 /**
  * Fastify server construction (tasks 146/158, spec §3, §13, §15.5, §16;
- * decisions D-109, D-127).
+ * decisions D-109, D-127, D-143).
  *
  * The server shell: one factory builds the Fastify instance with everything
  * §13/§15.5 prescribe at construction time — the §3 plugin set that
@@ -24,12 +24,13 @@
  * `@fastify/cookie` are construction — serving the built UI and parsing
  * cookies have no configuration of their own. `@fastify/helmet` is
  * configuration-owning: task 158 (§15.5, D-127) registers it here with
- * exactly the security-header list the spec prescribes.
- * `@fastify/rate-limit` stays declared but unregistered
- * with no owning task left: §15.2's budget counts *failed* attempts
- * and answers with increasing delays — landed as the services-layer
- * primitive `src/services/login-rate-limit.ts` (156, D-125), which the
- * generic per-request 429 limiter cannot express.
+ * exactly the security-header list the spec prescribes. The §3 row's
+ * `@fastify/rate-limit` is removed outright (D-143): §15.2's budget
+ * counts *failed* attempts and answers with increasing delays — landed
+ * as the services-layer primitive `src/services/login-rate-limit.ts`
+ * (156, D-125), which the generic per-request 429 limiter cannot
+ * express — and no other spec sentence asks for a per-request limit
+ * (§15.5's own limits are the body size and the timeouts).
  *
  * Security headers (§15.5, task 158, decision D-127): helmet answers the
  * spec's exact list — the strict CSP, nosniff, no-referrer — on every
