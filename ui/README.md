@@ -234,6 +234,25 @@ verdict (it described the credential that no longer exists).
 mutation controls (the server refuses `account-archived`) except the
 purge — the follow-up that removes the retained history.
 
+### The write-only key proof map (task 171, D-136)
+
+"The key is never returned to the browser" (§6.3/§14.2/§15.4) is pinned as
+a three-link chain, each link executable:
+
+| Link (what the browser gets)                             | Pin                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| response bodies (the wire)                               | `test/integration/api-accounts.spec.ts` / `api-settings.spec.ts` / `api-status.spec.ts` — marker-secret scans over every flow per route family (the providers listing carries no secret structurally); compositionally, `test/integration/accounts-real-surface.spec.ts` drives the real `/api` stack through the real API client for a full §14.2 session plus one refused create, scanning every captured response body and request URL against both markers |
+| the client's parsed values (what components render from) | `accounts-real-surface.spec.ts` scans every client-resolved value of the session — successes and the thrown error's `serverMessage`/`serverDetails` alike — and pins that the markers left the browser only through the two write channels (the create POST and the replace-key PATCH), never a GET or DELETE body                                                                                                                                             |
+| the rendered DOM                                         | `test/component/accounts-view.spec.ts` — masked `type="password"` + `autocomplete="new-password"` from first paint, never prefilled, cleared after every submit attempt (success and refusal alike), the constant mask rendered verbatim, the typed value absent from input value and rendered text                                                                                                                                                            |
+
+The real-surface bridge (the client's injectable fetch seam served by the
+real routes over `app.inject`) closes the seam between the per-family
+server pins and the key-free-by-construction component fixtures: it is the
+one test where real serializers, real guards, and the real client pipeline
+carry marker secrets end to end. It lives in the integration project
+because the component project's happy-dom environment container cannot
+host the server's `node:*` module graph (D-136's recorded boundary).
+
 ### The selected-account store (the task-172+ seam)
 
 `createAccountSelection()` (installed in the composition root beside the

@@ -235,6 +235,16 @@ task) — endpoint refusals ride the existing classes with stable
 `environment-key-read-only`/`no-key-configured` (FORBIDDEN), and unknown
 ids as NOT_FOUND.
 
+**The write-only-key proof, browser-side (task 171, D-136):** the marker
+discipline above pins the server's response bodies per flow; the
+composition with the UI is pinned by
+`test/integration/accounts-real-surface.spec.ts`, which drives these
+routes through the real API client over a full §14.2 session (plus one
+refused create) and scans every response body, request URL, and
+client-resolved value the browser would see — plus the server-side log
+channel (non-empty by construction of the refused exchange). The proof
+map's entry point is `ui/README.md` ("The write-only key proof map").
+
 ## The §13 status, providers, quota, and settings endpoints (task 160, decision D-130)
 
 Task 160 lands the four read-heavy §13 route families as three endpoint

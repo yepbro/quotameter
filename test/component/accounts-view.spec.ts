@@ -449,6 +449,31 @@ describe('accounts page: add (task 170, §14.2)', () => {
     expect((wrapper.find('[data-testid="add-label"]').element as HTMLInputElement).value).toBe(
       'Nope',
     );
+    // The typed key never survives the attempt — a REFUSED submit too
+    // (task 171: the write-only clearing pinned on both outcomes).
+    expect((wrapper.find('[data-testid="add-key"]').element as HTMLInputElement).value).toBe('');
+  });
+
+  it('clears the replace-key field after a refused submit too (task 171)', async () => {
+    const backend = new FakeAccountsBackend([account()]);
+    backend.refuseNext = (call) =>
+      call.method === 'PATCH' && call.input.startsWith('/api/accounts/')
+        ? envelope(403, 'FORBIDDEN', 'The account is archived', { reason: 'account-archived' })
+        : undefined;
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="replace-key-button"]').trigger('click');
+    await wrapper.find('[data-testid="replace-key-input"]').setValue('sk-typed-then-refused');
+    await wrapper.find('[data-testid="replace-key-save"]').trigger('submit');
+    await settle();
+
+    // The form stays open for the retry, but the typed key is gone.
+    expect(
+      (wrapper.find('[data-testid="replace-key-input"]').element as HTMLInputElement).value,
+    ).toBe('');
+    expect(wrapper.find('[data-testid="api-error"]').attributes('data-error-code')).toBe(
+      'FORBIDDEN',
+    );
   });
 
   it('the key input is masked and write-only from the first paint', async () => {
