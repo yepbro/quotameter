@@ -28,18 +28,15 @@ jobs:
   mutation:
     # Stryker runs the full vitest suite, which pins systemd-less behavior
     # through the real launcher — the same environment premise as CI's
-    # `test` job (ubuntu-latest moved to a live-systemd 26.04 image;
-    # DECISIONS.md D-160 has the rationale).
-    runs-on: ubuntu-24.04
+    # `test` job. Every hosted image ships a live user systemd since the
+    # ubuntu-26.04 migration (24.04 included), so this job runs in the
+    # node container too — the deterministic systemd-less class per job
+    # (D-160 and its successor correction in DECISIONS.md).
+    runs-on: ubuntu-latest
+    container: node:22.13.0
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: npm
 
       - name: Install dependencies
         run: npm ci

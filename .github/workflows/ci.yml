@@ -71,7 +71,18 @@ jobs:
   # re-pointing them at a newer image requires re-working those suites'
   # environment premises first (see DECISIONS.md D-160).
   test:
-    runs-on: ubuntu-24.04
+    # Job container (D-160's successor correction): EVERY hosted runner
+    # image ships a live user systemd since the ubuntu-26.04 image
+    # migration — the pinned ubuntu-24.04 included — which both breaks
+    # the systemd-less outcome pins of the CLI seam suites and lets
+    # earlier tests write real user units into the runner's passwd home
+    # for later ones to trip over. The node image restores the
+    # deterministic systemd-less class per job: a clean root HOME, no
+    # systemd, no cross-test state — exactly the seam-design premise
+    # (D-103) the suite's outcome pins assume. The image tag carries the
+    # matrix's Node version; no setup-node is needed inside the container.
+    runs-on: ubuntu-latest
+    container: node:${{ matrix.node }}
     strategy:
       fail-fast: false
       # Spec §4.4/§17.2: cover Node.js 22 including the declared minimum
@@ -83,12 +94,6 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
 
       - name: Install dependencies
         run: npm ci
