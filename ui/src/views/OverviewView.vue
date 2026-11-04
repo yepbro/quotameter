@@ -3,6 +3,8 @@ import { computed, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import type { AccountView } from '../../../src/schemas/api/accounts';
+import type { EventsResponse } from '../../../src/schemas/api/history';
+import type { PeakHoursResponse } from '../../../src/schemas/api/peak-hours';
 import type { ProviderView } from '../../../src/schemas/api/providers';
 import type { QuotaResponse, StatusResponse } from '../../../src/schemas/api/status';
 import { accountAttentionOf } from '../account-attention';
@@ -50,7 +52,8 @@ import {
 // below and the account-level §12.2 timeline load beside the quota.
 // Task 175 (D-148) renders the §14.4 metric charts: one card per quota
 // metric below the metric cards, each owning its per-metric range-keyed
-// series load (the §12.2 timeline's consumer is task 176).
+// series load. Task 176 (D-149) adds the §9.3 peak-hours load and feeds
+// both annotation loads into the chart cards as props.
 const { t } = useI18n();
 const api = useApi();
 const selection = useAccountSelection();
@@ -280,10 +283,12 @@ const chartTargets = computed((): readonly { accountId: string; metricKey: strin
 const historyRefreshToken = ref(0);
 
 // The account-level §12.2 timeline load (D-147): the range-keyed request
-// whose consumer is task 176's strip. Boundaries recompute on every
-// dispatch — a rolling range ends "now" (§10); the per-metric series
-// loads live inside the chart cards below.
+// whose consumer is task 176's annotations (the chart cards render the
+// timeline's facts). Boundaries recompute on every dispatch — a rolling
+// range ends "now" (§10); the per-metric series loads live inside the
+// chart cards below.
 const {
+  data: eventsData,
   error: eventsError,
   execute: loadEvents,
   reset: resetEvents,
@@ -296,13 +301,57 @@ const {
   return api.events.list({ accountId, from, to });
 });
 
-// The timeline re-runs on exactly its own dependencies: the validated
-// target and the range.
+// The account-level §9.3 peak-hours load (task 176, D-149): the served
+// intervals every metric chart renders as bands — the browser never
+// calculates windows independently (§9.3). Same trigger shape as the
+// timeline: the validated target × the range, fresh bounds per dispatch.
+const {
+  data: peakData,
+  error: peakError,
+  execute: loadPeakHours,
+  reset: resetPeakHours,
+} = useApiCall(() => {
+  const accountId = quotaTarget.value;
+  if (accountId === null) {
+    throw new Error('peak-hours load dispatched without a target');
+  }
+  const { from, to } = historyRangeIsoBounds(selectedRange.value, Date.now());
+  return api.peakHours.get({ accountId, from, to });
+});
+
+/**
+ * The last-good copies of the two annotation loads (D-135's rule, the
+ * cards' own `lastGood` precedent): a failed refresh must leave the
+ * previous annotations rendering beside the chart cards' kept charts.
+ * Cleared with the query identity — one window's timeline (or schedule)
+ * must never render for another.
+ */
+const lastEvents = ref<EventsResponse | null>(null);
+const lastPeaks = ref<PeakHoursResponse | null>(null);
+watch(eventsData, (data) => {
+  if (data !== null) lastEvents.value = data;
+});
+watch(peakData, (data) => {
+  if (data !== null) lastPeaks.value = data;
+});
+
+/** What the chart cards receive: the live responses, else the kept copies. */
+const displayEvents = computed(() => eventsData.value ?? lastEvents.value);
+const displayPeaks = computed(() => peakData.value ?? lastPeaks.value);
+
+// The annotation loads re-run on exactly their own dependencies: the
+// validated target and the range.
 watch(
   [quotaTarget, selectedRange],
   ([accountId]) => {
+    lastEvents.value = null;
+    lastPeaks.value = null;
     resetEvents();
-    if (accountId !== null) void loadEvents();
+    resetPeakHours();
+    if (accountId !== null) {
+      void loadEvents();
+      void loadPeakHours();
+    }
   },
   { immediate: true },
 );
@@ -315,13 +364,21 @@ watch(
  */
 function refreshAccountData(): void {
   if (quotaAccountId.value !== null) void loadQuota();
-  if (quotaTarget.value !== null) void loadEvents();
+  if (quotaTarget.value !== null) {
+    void loadEvents();
+    void loadPeakHours();
+  }
   historyRefreshToken.value += 1;
 }
 
 /** Re-runs the timeline load (the retry affordance, target-guarded). */
 function retryEvents(): void {
   if (quotaTarget.value !== null) void loadEvents();
+}
+
+/** Re-runs the peak-hours load (the retry affordance, target-guarded). */
+function retryPeakHours(): void {
+  if (quotaTarget.value !== null) void loadPeakHours();
 }
 
 const statusRowOf = computed(() => {
@@ -407,9 +464,9 @@ function optionText(account: AccountView): string {
         {{ t('overview.retryQuota') }}
       </button>
     </div>
-    <!-- The range-keyed loads' failures: the timeline's notice + retry
-      (task 174; the per-metric series failures render inside their chart
-      cards below). -->
+    <!-- The range-keyed loads' failures: the timeline's and the schedule's
+      notices + retries (task 174/176; the per-metric series failures
+      render inside their chart cards below). -->
     <div v-if="eventsError" class="load-failure">
       <ApiErrorNotice :error="eventsError" />
       <button
@@ -419,6 +476,17 @@ function optionText(account: AccountView): string {
         @click="retryEvents"
       >
         {{ t('overview.retryEvents') }}
+      </button>
+    </div>
+    <div v-if="peakError" class="load-failure">
+      <ApiErrorNotice :error="peakError" />
+      <button
+        type="button"
+        data-testid="overview-retry-peak-hours"
+        :disabled="quotaTarget === null"
+        @click="retryPeakHours"
+      >
+        {{ t('overview.retryPeakHours') }}
       </button>
     </div>
     <ApiErrorNotice v-if="providersError" :error="providersError" />
@@ -514,6 +582,8 @@ function optionText(account: AccountView): string {
             :range-id="selectedRange"
             :time-zone="timeZone"
             :refresh-token="historyRefreshToken"
+            :events="displayEvents"
+            :peaks="displayPeaks"
           />
         </section>
         <p v-if="quotaPending" class="status" data-testid="overview-quota-loading">

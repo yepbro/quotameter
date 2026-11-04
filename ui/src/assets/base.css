@@ -55,6 +55,14 @@
    * line's solid. Values keep WCAG AA against the mode background. */
   --qm-chart-used: #1b4fa0;
   --qm-chart-remaining: #1e6b33;
+  /* The §14.4 annotation colors (task 176, D-149): the peak-band tint, the
+   * reset markLine, and the gap/stopped band hatches and borders. Color is
+   * never the only signal — bands differ by fill presence, border style,
+   * and hatch direction, and every element carries a text tooltip. */
+  --qm-chart-peak: #5b4fa8;
+  --qm-chart-reset: #9a3e63;
+  --qm-chart-gap: #5a5a64;
+  --qm-chart-stopped: #8a5800;
   --qm-font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
@@ -73,6 +81,10 @@
     --qm-color-muted-background: #26262c;
     --qm-chart-used: #8ab4f8;
     --qm-chart-remaining: #9fdcae;
+    --qm-chart-peak: #a5a1e8;
+    --qm-chart-reset: #e2a4c0;
+    --qm-chart-gap: #a9a9b3;
+    --qm-chart-stopped: #e8c179;
   }
 }
 
@@ -90,6 +102,10 @@
   --qm-color-muted-background: #26262c;
   --qm-chart-used: #8ab4f8;
   --qm-chart-remaining: #9fdcae;
+  --qm-chart-peak: #a5a1e8;
+  --qm-chart-reset: #e2a4c0;
+  --qm-chart-gap: #a9a9b3;
+  --qm-chart-stopped: #e8c179;
 }
 
 body {

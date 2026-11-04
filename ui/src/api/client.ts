@@ -7,11 +7,10 @@
  * the server's own TypeBox contracts through **type-only imports**: the
  * imports are erased at build time, so the browser bundle carries neither
  * the schema modules nor `@sinclair/typebox`/fastify behind them — the
- * coupling is compile-time truth, zero runtime weight. The endpoint
- * families still to land (peak-hours, task 162; auth, task 180) join
- * as new methods here, the same pattern; the history/events families
- * landed with task 174 (D-139's grammar: ISO-8601 request boundaries,
- * epoch-ms responses).
+ * coupling is compile-time truth, zero runtime weight. The auth family
+ * (task 180) joins as new methods here, the same pattern; the
+ * history/events families landed with task 174 and peak-hours with task
+ * 176 (D-139's grammar: ISO-8601 request boundaries, epoch-ms responses).
  *
  * Success bodies are trusted casts, not re-validated: the same-origin
  * server serializes through the same closed schemas (the D-111/D-128
@@ -48,6 +47,7 @@ import type {
 } from '../../../src/schemas/api/accounts';
 import type { ProvidersListResponse } from '../../../src/schemas/api/providers';
 import type { EventsResponse, HistoryResponse } from '../../../src/schemas/api/history';
+import type { PeakHoursResponse } from '../../../src/schemas/api/peak-hours';
 import type {
   SettingsResponse,
   UpdateSettingsBody,
@@ -219,6 +219,22 @@ export interface ApiClient {
       },
       signal?: AbortSignal,
     ): Promise<EventsResponse>;
+  };
+  /**
+   * `GET /api/peak-hours` (§13/§9.3, D-142): the account's served
+   * peak/off-peak intervals over an ISO-8601 window — the browser never
+   * calculates windows independently (§9.3); the local-time strings ride
+   * the interval items verbatim (task 176, D-149).
+   */
+  readonly peakHours: {
+    get(
+      query: {
+        readonly accountId: string;
+        readonly from: string;
+        readonly to: string;
+      },
+      signal?: AbortSignal,
+    ): Promise<PeakHoursResponse>;
   };
 }
 
@@ -404,6 +420,19 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
             from: query.from,
             to: query.to,
             metric: query.metric,
+          },
+          signal,
+        }),
+    },
+    peakHours: {
+      get: (query, signal) =>
+        request<PeakHoursResponse>({
+          method: 'GET',
+          path: '/peak-hours',
+          query: {
+            accountId: query.accountId,
+            from: query.from,
+            to: query.to,
           },
           signal,
         }),

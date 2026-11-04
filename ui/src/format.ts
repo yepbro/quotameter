@@ -67,6 +67,23 @@ export function formatQuotaNumber(value: number): string {
 }
 
 /**
+ * Formats a duration for chart annotations (§14.4/§12.2 tooltips and band
+ * facts): compact "45s", "47m", "1h 30m" — the honest elapsed fact, never a
+ * false-precision decimal. Non-positive or non-finite input renders "0s"
+ * (a degenerate span states zero, it does not invent time).
+ */
+export function formatChartDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return '0s';
+  const totalSeconds = Math.round(durationMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
+}
+
+/**
  * Formats one UTC epoch-milliseconds timestamp as an absolute local
  * date-time in `timeZone` (§14.3: "in the configured display time zone").
  */

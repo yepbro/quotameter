@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatChartDate,
+  formatChartDuration,
   formatEpochMs,
   formatQuotaNumber,
   formatRelative,
@@ -52,6 +53,21 @@ describe('formatChartDate (§14.4 chart ticks and tooltips)', () => {
   it('honors a zone with a non-whole-hour offset', () => {
     const instant = Date.UTC(2026, 10, 4, 18, 45, 0);
     expect(formatChartDate(instant, 'Asia/Kathmandu')).toBe('Nov 5, 12:30 AM');
+  });
+});
+
+describe('formatChartDuration (§14.4/§12.2 annotation facts, task 176)', () => {
+  it('renders seconds, minutes, and mixed hours/minutes compactly', () => {
+    expect(formatChartDuration(45_000)).toBe('45s');
+    expect(formatChartDuration(2_820_000)).toBe('47m');
+    expect(formatChartDuration(5_400_000)).toBe('1h 30m');
+    expect(formatChartDuration(7_200_000)).toBe('2h');
+  });
+
+  it('states zero for degenerate spans instead of inventing time', () => {
+    expect(formatChartDuration(0)).toBe('0s');
+    expect(formatChartDuration(-5)).toBe('0s');
+    expect(formatChartDuration(Number.NaN)).toBe('0s');
   });
 });
 

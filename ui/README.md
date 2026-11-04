@@ -452,11 +452,12 @@ retention") — never color alone.
   nothing from `src/**` crosses into the UI). The display time zone
   never participates in a request (§10 — presentation only).
 - **The range-keyed loads.** The client's `history`/`events` families
-  carry the windows: the account-level §12.2 timeline keys on the
-  validated target and the range (its rendering is task 176's); since
-  task 175 the metric series render as **one chart card per quota metric
-  key** (`MetricHistoryChart.vue`, below) — no snapshot ⇒ no metric
-  vocabulary ⇒ no series requests. The refresh button beside the
+  carry the windows: the account-level §12.2 timeline and the §9.3
+  peak-hours schedule key on the validated target and the range (their
+  rendering is task 176's — the chart cards receive both as props);
+  since task 175 the metric series render as **one chart card per quota
+  metric key** (`MetricHistoryChart.vue`, below) — no snapshot ⇒ no
+  metric vocabulary ⇒ no series requests. The refresh button beside the
   control re-runs the account's data loads with a fresh "now" — it
   re-anchors the rolling window by bumping a token the chart cards
   watch, keeping last-good charts rendered until fresh data arrives
@@ -466,14 +467,18 @@ retention") — never color alone.
 
 One chart per quota metric, below the metric cards: the used/remaining
 line pair over the selected rolling range, with the percent/absolute
-toggle where the data carries both views.
+toggle where the data carries both views. Task 176 (decision D-149)
+renders the §12.2/§9.3 annotations on the same charts: reset markers,
+peak/off-peak bands, gap/stopped hatch regions, and the failed-cycle
+strip.
 
-| Module                                  | Owns                                                                                                                                                                                                                                |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/charts/runtime.ts`                 | the ONLY module importing ECharts: modular `echarts/core` + the line/grid/tooltip/legend/canvas pieces, the `ChartHandle` structural seam, the injectable `ChartRuntime` (`useChartRuntime()`), and the production `cssTokenReader` |
-| `src/charts/tokens.ts`                  | the pure `--qm-*` token → `ChartTokens` mapping (`chartTokensOf(read)`); the single list of token names both theme blocks must carry                                                                                                |
-| `src/charts/series.ts`                  | the pure adapter: D-139 wire kinds → `ChartSample`s, availability/`resolveViewMode`, the D-147 sliver-thresholded `rangeNoticeOf`, and `buildMetricChartOption` (one mode, one unit, one y-axis)                                    |
-| `src/components/MetricHistoryChart.vue` | the card: its own per-metric `useApiCall`, the toggle (native radios, one group per card), the states, the ECharts instance lifecycle, the aria summary                                                                             |
+| Module                                  | Owns                                                                                                                                                                                                                                                        |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/charts/runtime.ts`                 | the ONLY module importing ECharts: modular `echarts/core` + the line/scatter/custom/grid/tooltip/legend/markLine/canvas pieces, the `ChartHandle` structural seam, the injectable `ChartRuntime` (`useChartRuntime()`), and the production `cssTokenReader` |
+| `src/charts/tokens.ts`                  | the pure `--qm-*` token → `ChartTokens` mapping (`chartTokensOf(read)`); the single list of token names all theme blocks must carry                                                                                                                         |
+| `src/charts/annotations.ts`             | the pure §12.2/§9.3 mapping: the account timeline → one metric's resets/gaps/errors/stopped (per-metric vs account-level split), the served peak intervals → bands, the outcome → symbol map                                                                |
+| `src/charts/series.ts`                  | the pure adapter: D-139 wire kinds → `ChartSample`s, availability/`resolveViewMode`, the D-147 sliver-thresholded `rangeNoticeOf`, and `buildMetricChartOption` (one mode, one unit, one value y-axis, the annotation series)                               |
+| `src/components/MetricHistoryChart.vue` | the card: its own per-metric `useApiCall`, the toggle (native radios, one group per card), the states, the ECharts instance lifecycle, the aria summary with the annotation counts                                                                          |
 
 - **ECharts.** A devDependency mirroring `vue`/`vue-i18n`/`vue-router`
   (the shipped tarball carries the prebuilt bundle; spec §3 keeps
@@ -484,26 +489,43 @@ toggle where the data carries both views.
   attribute the CSP blocks); the canvas painter and rich-text tooltip
   draw without DOM styling.
 - **Unit segregation is structural.** The option builder takes one view
-  mode and one unit and emits ONE y-axis — incompatible units cannot
-  share an axis because no input shape expresses it. The toggle renders
-  only where the data carries BOTH views; percentage-only metrics stay
-  on their bounded 0–100 `%` axis (§14.4: no inferred token counts); the
-  used/remaining pair distinguishes itself by legend text and
-  solid-vs-dashed lines (never color alone).
+  mode and one unit and emits ONE value y-axis — incompatible units
+  cannot share an axis because no input shape expresses it. The toggle
+  renders only where the data carries BOTH views; percentage-only
+  metrics stay on their bounded 0–100 `%` axis (§14.4: no inferred token
+  counts); the used/remaining pair distinguishes itself by legend text
+  and solid-vs-dashed lines (never color alone).
 - **Wire kinds.** Points render verbatim (invalid rows' nulls stay
   null); §12.2 gap empty points become line breaks (`connectNulls:
 false`); D-081 downsampling buckets render as their `first`/`last`
   endpoints — real observed points, the honest minimal render of a
-  bucketed response (task 176 may extend the same samples with extrema
-  bands, markers, and hatched gaps).
+  bucketed response.
+- **The annotations (task 176, D-149).** Reset instants are vertical
+  labeled markLines; peak/off-peak/gap/stopped spans are rect bands of
+  one custom series (the only ECharts primitive whose `decal` hatching
+  renders — marker components skip the decal visual stage); failed
+  cycles are scatter markers on a lower strip grid with a distinct
+  symbol per §11.2 outcome. Resets/gaps filter to their metric; errors
+  and stopped regions are account-level and render on every chart. All
+  bands/markers are silent and every tooltip flows through the one
+  axis-trigger richText formatter, which states — for the hovered
+  instant — the values, the covering schedule band (§14.4: name, times
+  in both zones, multiplier), the gap/stopped region, and the resets
+  inside the snapped sample interval (per-element item tooltips race
+  the axis channel). Never color alone: fill presence, border style,
+  hatch direction, on-line labels, per-outcome shapes, and the legend's
+  strip name all carry meaning beside color.
 - **Theme.** Colors come only from token lookups (`--qm-chart-used`,
-  `--qm-chart-remaining`, and the shell's existing tokens); the option
-  computed reads `resolvedTheme`, so a mode flip re-reads the cascade
-  and re-sets the option live (D-133).
+  `--qm-chart-remaining`, the `--qm-chart-peak`/`-reset`/`-gap`/
+  `-stopped` annotation tokens, and the shell's existing tokens); the
+  option computed reads `resolvedTheme`, so a mode flip re-reads the
+  cascade and re-sets the option live (D-133).
 - **The x-axis** is the numeric epoch-ms axis §14.4 prescribes (ECharts'
   time axis is local/UTC only) with `Intl.DateTimeFormat` labels in the
   configured display zone (`formatChartDate` in `src/format.ts`); tick
-  PLACEMENT (hour/day boundaries, DST days) is task 177's.
+  PLACEMENT (hour/day boundaries, DST days) is task 177's. Both grids
+  share fixed left/right insets (no `containLabel`), so the main plot
+  and the strip align by construction.
 - **The range report.** A `truncated` clamp within 60 s stays quiet (the
   D-147 clock-skew sliver); a real truncation names the retained
   window's start; a rejected range states that instead of a chart.
@@ -512,7 +534,8 @@ false`); D-081 downsampling buckets render as their `first`/`last`
   inject a recording `ChartRuntime` through `useChartRuntime()` — every
   option the card builds is asserted through the fake handle, while the
   token reader stays the production one over live inline custom
-  properties. ECharts itself renders only in real browsers.
+  properties. The band renderer is a pure `renderItem` factory asserted
+  against a stubbed api. ECharts itself renders only in real browsers.
 
 ## Layout
 

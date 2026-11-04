@@ -8,10 +8,16 @@
  * full `echarts` package import never enters the bundle):
  *
  *   `echarts/core`      — `init`, `use`, `dispose` through one instance
- *   `echarts/charts`    — `LineChart` (the used/remaining line series)
+ *   `echarts/charts`    — `LineChart` (the used/remaining line series),
+ *                         `ScatterChart` (the §12.2 error-strip markers,
+ *                         task 176), `CustomChart` (the §14.4 band rects —
+ *                         the only primitive that renders `decal` hatching,
+ *                         task 176)
  *   `echarts/components`— `GridComponent` (the value axes), `TooltipComponent`
  *                         (the date/value tooltip), `LegendComponent` (the
- *                         series labels — one §14.1 never-color-alone signal)
+ *                         series labels — one §14.1 never-color-alone signal),
+ *                         `MarkLineComponent` (the §14.4 vertical reset
+ *                         markers, task 176)
  *   `echarts/renderers` — `CanvasRenderer`
  *
  * The renderer is **canvas with `tooltip.renderMode: 'richText'`** (set in
@@ -31,8 +37,13 @@
  * library (recorded in D-148).
  */
 
-import { LineChart } from 'echarts/charts';
-import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
+import { CustomChart, LineChart, ScatterChart } from 'echarts/charts';
+import {
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  TooltipComponent,
+} from 'echarts/components';
 import { init, use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { inject, type InjectionKey } from 'vue';
@@ -40,7 +51,16 @@ import type { MetricChartOption } from './series';
 
 // One registration for the whole bundle: the modular `use` call replaces the
 // full-package side effects and keeps every consumed piece listed above.
-use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
+use([
+  LineChart,
+  ScatterChart,
+  CustomChart,
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+  MarkLineComponent,
+  CanvasRenderer,
+]);
 
 /**
  * The structural surface of one ECharts instance the chart component uses —

@@ -36,6 +36,16 @@ const LIGHT_CHART_USED = '#1b4fa0';
 const DARK_CHART_USED = '#8ab4f8';
 const LIGHT_CHART_REMAINING = '#1e6b33';
 const DARK_CHART_REMAINING = '#9fdcae';
+// Task 176 (D-149): the annotation tokens — the same chart contract over
+// the peak/reset/gap/stopped colors.
+const LIGHT_CHART_PEAK = '#5b4fa8';
+const DARK_CHART_PEAK = '#a5a1e8';
+const LIGHT_CHART_RESET = '#9a3e63';
+const DARK_CHART_RESET = '#e2a4c0';
+const LIGHT_CHART_GAP = '#5a5a64';
+const DARK_CHART_GAP = '#a9a9b3';
+const LIGHT_CHART_STOPPED = '#8a5800';
+const DARK_CHART_STOPPED = '#e8c179';
 
 function bodyBackground(page: Page): Promise<string> {
   return page.evaluate(() => getComputedStyle(document.body).backgroundColor);
@@ -104,11 +114,20 @@ test('the raw tokens carry verbatim colors in every mode (the chart contract)', 
   // the metric charts (task 175) color through exactly these reads.
   expect(await chartToken(page, '--qm-chart-used')).toBe(LIGHT_CHART_USED);
   expect(await chartToken(page, '--qm-chart-remaining')).toBe(LIGHT_CHART_REMAINING);
+  // Task 176's annotation tokens (D-149) — the same contract.
+  expect(await chartToken(page, '--qm-chart-peak')).toBe(LIGHT_CHART_PEAK);
+  expect(await chartToken(page, '--qm-chart-reset')).toBe(LIGHT_CHART_RESET);
+  expect(await chartToken(page, '--qm-chart-gap')).toBe(LIGHT_CHART_GAP);
+  expect(await chartToken(page, '--qm-chart-stopped')).toBe(LIGHT_CHART_STOPPED);
 
   await page.getByTestId('theme-select').selectOption('dark');
   expect(await backgroundToken(page)).toBe(DARK_TOKEN);
   expect(await chartToken(page, '--qm-chart-used')).toBe(DARK_CHART_USED);
   expect(await chartToken(page, '--qm-chart-remaining')).toBe(DARK_CHART_REMAINING);
+  expect(await chartToken(page, '--qm-chart-peak')).toBe(DARK_CHART_PEAK);
+  expect(await chartToken(page, '--qm-chart-reset')).toBe(DARK_CHART_RESET);
+  expect(await chartToken(page, '--qm-chart-gap')).toBe(DARK_CHART_GAP);
+  expect(await chartToken(page, '--qm-chart-stopped')).toBe(DARK_CHART_STOPPED);
   // Completeness: every token the charts read resolves in the mode — a
   // name missing from one of base.css's three theme blocks fails here
   // (CHART_TOKEN_NAMES is the single list, D-148).

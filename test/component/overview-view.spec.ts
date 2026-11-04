@@ -12,6 +12,7 @@ import {
   type StatusResponse,
 } from '../../src/schemas/api/status';
 import OverviewView from '../../ui/src/views/OverviewView.vue';
+import MetricHistoryChart from '../../ui/src/components/MetricHistoryChart.vue';
 import { accountAttentionOf, type AccountAttention } from '../../ui/src/account-attention';
 import type { ApiFetchResponse } from '../../ui/src/api/client';
 import { createAccountSelection } from '../../ui/src/account-selection';
@@ -26,6 +27,7 @@ import {
   healthyApiBody,
   healthyEventsBody,
   healthyHistoryBody,
+  healthyPeakHoursBody,
   healthySettingsBody,
   neverRespond,
   type RecordedCall,
@@ -171,6 +173,11 @@ class FakeOverviewBackend {
     return this.calls.filter((call) => call.input.startsWith('/api/events?'));
   }
 
+  /** Every dispatched `/api/peak-hours` call, oldest first (task 176). */
+  get peakHoursCalls(): RecordedCall[] {
+    return this.calls.filter((call) => call.input.startsWith('/api/peak-hours?'));
+  }
+
   private route(call: RecordedCall): ApiFetchResponse | Promise<ApiFetchResponse> {
     const refusal = this.refuseNext?.(call);
     if (refusal !== undefined) {
@@ -209,6 +216,9 @@ class FakeOverviewBackend {
     }
     if (method === 'GET' && input.startsWith('/api/events?')) {
       return jsonResponse(200, healthyEventsBody(input));
+    }
+    if (method === 'GET' && input.startsWith('/api/peak-hours?')) {
+      return jsonResponse(200, healthyPeakHoursBody(input));
     }
     return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'no route', details: null } });
   }
@@ -1313,8 +1323,9 @@ describe('overview failure surfaces (D-134/D-135 rules)', () => {
     await settle();
 
     const notices = wrapper.findAll('[data-testid="api-error"]');
-    // Four loads fail (the quota fires only once an account is selected,
-    // which a failed list never produces).
+    // Four loads fail — the list, providers, status, and settings. The
+    // target-keyed loads (quota, timeline, peak-hours) fire only once an
+    // account is selected, which a failed list never produces.
     expect(notices.length).toBe(4);
     for (const notice of notices) {
       expect(notice.text()).toBe(en.errors.network);
@@ -1346,8 +1357,10 @@ function rangeParamsOf(call: RecordedCall): {
   to: string;
   hasMaxPoints: boolean;
 } {
-  const prefix = call.input.startsWith('/api/history?') ? '/api/history?' : '/api/events?';
-  const params = new URLSearchParams(call.input.slice(prefix.length));
+  const prefix = ['/api/history?', '/api/events?', '/api/peak-hours?'].find((candidate) =>
+    call.input.startsWith(candidate),
+  );
+  const params = new URLSearchParams(call.input.slice(prefix!.length));
   return {
     accountId: params.get('accountId') ?? '',
     metric: params.get('metric'),
@@ -1587,6 +1600,99 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
   });
 
+  it('dispatches the peak-hours load range-keyed in D-139’s grammar (task 176, D-149)', async () => {
+    const beforeMount = Date.now();
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    await mountView(backend);
+
+    // The §9.3 schedule load: the same account/window grammar as the
+    // timeline, account-level (no metric parameter exists for it).
+    expect(backend.peakHoursCalls.length).toBeGreaterThan(0);
+    const params = new URLSearchParams(
+      backend.peakHoursCalls[0]!.input.slice('/api/peak-hours?'.length),
+    );
+    expect(params.get('accountId')).toBe('acc-1');
+    expect(params.get('metric')).toBeNull();
+    expect(params.has('maxPoints')).toBe(false);
+    const from = Date.parse(params.get('from') ?? '');
+    const to = Date.parse(params.get('to') ?? '');
+    expect(from).toBe(to - 7 * 86_400_000);
+    expect(to).toBeGreaterThanOrEqual(beforeMount);
+  });
+
+  it('re-runs the peak-hours load on range changes and account switches', async () => {
+    const backend = new FakeOverviewBackend({
+      accounts: [account(), account({ id: 'acc-2', label: 'Second' })],
+      quotaByAccount: new Map([
+        ['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })],
+        ['acc-2', quota({ metrics: [metric({ collectedAt: 1 })] }, 'acc-2')],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+    expect(backend.peakHoursCalls).toHaveLength(1);
+
+    await wrapper.find('[data-range-id="24h"] input').setChecked();
+    await settle();
+    expect(backend.peakHoursCalls).toHaveLength(2);
+    expect(spanOf(backend.peakHoursCalls[1]!)).toBe(24 * 3_600_000);
+
+    await wrapper.find('[data-testid="overview-account-select"]').setValue('acc-2');
+    await settle();
+    expect(backend.peakHoursCalls).toHaveLength(3);
+    expect(rangeParamsOf(backend.peakHoursCalls[2]!).accountId).toBe('acc-2');
+  });
+
+  it('presents a refused peak-hours load beside its own named retry, and the retry recovers', async () => {
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    backend.refuseNext = (call) => (call.input.startsWith('/api/peak-hours?') ? 500 : undefined);
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="api-error"]').text()).toBe(en.errors.codes.internal);
+    const retry = wrapper.find('[data-testid="overview-retry-peak-hours"]');
+    // The distinct accessible name (D-137): the schedule's retry says
+    // which load failed, apart from the timeline's.
+    expect(retry.text()).toBe(en.overview.retryPeakHours);
+    const dispatched = backend.peakHoursCalls.length;
+
+    await retry.trigger('click');
+    await settle();
+    expect(backend.peakHoursCalls.length).toBe(dispatched + 1);
+    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+  });
+
+  it('a failed refresh keeps the previous annotations flowing to the chart cards (D-135/D-149)', async () => {
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    const wrapper = await mountView(backend);
+    const card = wrapper.findComponent(MetricHistoryChart);
+    expect(card.exists()).toBe(true);
+    // The healthy first loads reach the card as props.
+    expect(card.props('events')).toMatchObject({ accountId: 'acc-1' });
+    expect(card.props('peaks')).toMatchObject({ providerId: 'zai-coding-plan' });
+
+    // The next timeline load fails: the refresh renders its notice while
+    // the kept copy keeps the previous annotations at the cards — never
+    // a silently blanked chart (D-135's rule, the cards' own precedent).
+    backend.refuseNext = (call) => (call.input.startsWith('/api/events?') ? 500 : undefined);
+    await wrapper.find('[data-testid="overview-refresh"]').trigger('click');
+    await settle();
+    expect(wrapper.find('[data-testid="overview-retry-events"]').exists()).toBe(true);
+    expect(card.props('events')).toMatchObject({ accountId: 'acc-1' });
+    expect(card.props('peaks')).toMatchObject({ providerId: 'zai-coding-plan' });
+
+    // The schedule's kept copy behaves the same under its own failure.
+    backend.refuseNext = (call) => (call.input.startsWith('/api/peak-hours?') ? 500 : undefined);
+    await wrapper.find('[data-testid="overview-refresh"]').trigger('click');
+    await settle();
+    expect(wrapper.find('[data-testid="overview-retry-peak-hours"]').exists()).toBe(true);
+    expect(card.props('peaks')).toMatchObject({ providerId: 'zai-coding-plan' });
+  });
+
   it('refresh re-runs the account’s data loads and re-anchors the rolling window', async () => {
     const backend = new FakeOverviewBackend({
       quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
@@ -1598,6 +1704,7 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
       quota: quotaCalls(),
       history: backend.historyCalls.length,
       events: backend.eventsCalls.length,
+      peaks: backend.peakHoursCalls.length,
     };
     const firstTo = Date.parse(rangeParamsOf(backend.historyCalls.at(-1)!).to);
 
@@ -1609,6 +1716,7 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     expect(quotaCalls()).toBe(before.quota + 1);
     expect(backend.historyCalls.length).toBe(before.history + 1);
     expect(backend.eventsCalls.length).toBe(before.events + 1);
+    expect(backend.peakHoursCalls.length).toBe(before.peaks + 1);
     // The window re-anchored: the refreshed `to` is not before the old.
     expect(Date.parse(rangeParamsOf(backend.historyCalls.at(-1)!).to)).toBeGreaterThanOrEqual(
       firstTo,

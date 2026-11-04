@@ -79,8 +79,8 @@ export function neverRespond(): () => Promise<ApiFetchResponse> {
  * choke on once a page loads real routes (task 170 made `/accounts`
  * load the accounts and providers lists; task 172 made `/` load the
  * status, settings, and — when an account is selected — quota routes;
- * task 174 added the range-keyed history/events loads, exactly as
- * D-139's consequences recorded).
+ * task 174 added the range-keyed history/events loads and task 176 the
+ * peak-hours load, exactly as D-139's consequences recorded).
  */
 export function healthyApiBody(input: string): unknown {
   if (input === '/api/accounts') return { accounts: [] };
@@ -101,6 +101,7 @@ export function healthyApiBody(input: string): unknown {
   }
   if (input.startsWith('/api/history?')) return healthyHistoryBody(input);
   if (input.startsWith('/api/events?')) return healthyEventsBody(input);
+  if (input.startsWith('/api/peak-hours?')) return healthyPeakHoursBody(input);
   return { status: 'ok' };
 }
 
@@ -192,6 +193,23 @@ export function healthyEventsBody(input: string): unknown {
     metric: params.get('metric'),
     range: healthyRangeReport(input, '/api/events?'),
     events: [],
+  };
+}
+
+/**
+ * A minimal valid `GET /api/peak-hours` body: the §9.2 no-schedule arm —
+ * `timezone: null`, no intervals (task 176's default fixture; the
+ * band-bearing arms build their own responses in the chart suites).
+ */
+export function healthyPeakHoursBody(input: string): unknown {
+  const params = new URLSearchParams(input.slice('/api/peak-hours?'.length));
+  return {
+    accountId: params.get('accountId') ?? '',
+    providerId: 'zai-coding-plan',
+    timezone: null,
+    offPeakMultiplier: null,
+    range: healthyRangeReport(input, '/api/peak-hours?'),
+    intervals: [],
   };
 }
 

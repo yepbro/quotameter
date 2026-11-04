@@ -190,6 +190,36 @@ describe('API client (task 169, D-134)', () => {
       expect(calls.at(-1)?.input).toContain('&metric=tokens-5h');
     });
 
+    it('peakHours.get serializes the schedule range query (task 176, D-149)', async () => {
+      const body = {
+        accountId: 'acc-main',
+        providerId: 'zai-coding-plan',
+        timezone: null,
+        offPeakMultiplier: null,
+        range: {
+          outcome: 'ok',
+          requestedFrom: 0,
+          requestedTo: 1,
+          effectiveFrom: 0,
+          effectiveTo: 1,
+          retentionHorizon: null,
+        },
+        intervals: [],
+      } as const;
+      const { client, lastCall } = clientWith(() => Promise.resolve(jsonResponse(200, body)));
+      const from = '2026-11-03T12:00:00.000Z';
+      const to = '2026-11-04T12:00:00.000Z';
+      await expect(client.peakHours.get({ accountId: 'acc-main', from, to })).resolves.toEqual(
+        body,
+      );
+      expect(lastCall().method).toBe('GET');
+      expect(lastCall().input).toBe(
+        '/api/peak-hours?accountId=acc-main&from=2026-11-03T12%3A00%3A00.000Z&to=2026-11-04T12%3A00%3A00.000Z',
+      );
+      expect(lastCall().headers[API_MUTATION_HEADER]).toBeUndefined();
+      expect(lastCall().headers['Content-Type']).toBeUndefined();
+    });
+
     it('accounts.list resolves the accounts array', async () => {
       const { client } = clientWith(() =>
         Promise.resolve(jsonResponse(200, { accounts: [ACCOUNT] })),

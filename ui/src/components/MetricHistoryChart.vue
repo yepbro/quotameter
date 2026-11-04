@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch, watchEffect } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { HistoryResponse } from '../../../src/schemas/api/history';
+import type { EventsResponse, HistoryResponse } from '../../../src/schemas/api/history';
+import type { PeakHoursResponse } from '../../../src/schemas/api/peak-hours';
 import ApiErrorNotice from './ApiErrorNotice.vue';
 import { useApi, useApiCall } from '../api';
 import { formatEpochMs, formatQuotaNumber } from '../format';
 import { historyRangeIsoBounds, type HistoryRangeId } from '../history-range';
 import { useChartRuntime, type ChartHandle } from '../charts/runtime';
+import {
+  annotationsOf,
+  peakBandsOf,
+  scheduleZoneOf,
+  type ChartWindow,
+} from '../charts/annotations';
 import {
   buildMetricChartOption,
   chartSamplesOf,
@@ -15,6 +22,7 @@ import {
   seriesAvailability,
   type ChartViewMode,
   type MetricChartOption,
+  type MetricChartText,
 } from '../charts/series';
 import { chartTokensOf } from '../charts/tokens';
 import { useTheme } from '../theme';
@@ -30,6 +38,12 @@ import { useTheme } from '../theme';
 // Unit segregation is structural, not checked: the option builder takes
 // one view mode and one unit and emits one y-axis — incompatible units
 // cannot share an axis by construction.
+//
+// Task 176 (D-149) renders the §12.2/§9.3 annotations: the account-level
+// events timeline and peak-hours intervals arrive as PROPS from the page's
+// own range-keyed loads (D-147's single timeline load was always 176's
+// source); resets/gaps filter to this metric, errors/stopped render on
+// every metric chart (account-level facts — D-149's consistent mapping).
 //
 // The card re-styles live with the theme (D-133): the option computed
 // reads `resolvedTheme`, re-reads the `--qm-*` token cascade, and the
@@ -52,6 +66,14 @@ const props = defineProps<{
   readonly timeZone: string;
   /** Bumped by the page's refresh affordance: re-anchor the rolling window. */
   readonly refreshToken: number;
+  /**
+   * The account-level §12.2 timeline (the page's range-keyed load, task
+   * 176): resets/gaps filter to this metric, error/stopped facts render
+   * here as account-level marks. `null` while pending/failed/absent.
+   */
+  readonly events?: EventsResponse | null;
+  /** The account's served §9.3 intervals (task 176): the peak bands. */
+  readonly peaks?: PeakHoursResponse | null;
 }>();
 
 const { data, error, pending, execute, reset } = useApiCall(() => {
@@ -148,9 +170,66 @@ const unitLabel = computed(() => {
   }
 });
 
+/**
+ * The chart's x window — the card's own response's requested bounds: the
+ * annotations clamp to it (the page's events/peaks loads bound their own
+ * `Date.now()`, so the edges can differ by milliseconds; D-149).
+ */
+const chartWindow = computed<ChartWindow | null>(() => {
+  const response = displayData.value;
+  if (response === null) return null;
+  return { from: response.range.requestedFrom, to: response.range.requestedTo };
+});
+
+/** The §12.2 timeline mapped onto this metric (task 176, D-149). */
+const annotations = computed(() =>
+  chartWindow.value === null
+    ? null
+    : annotationsOf(props.events ?? null, props.metricKey, chartWindow.value),
+);
+
+/** The §9.3 bands and schedule zone of the account's served schedule. */
+const peak = computed(() => {
+  const window = chartWindow.value;
+  if (window === null) return null;
+  const peaks = props.peaks ?? null;
+  return { bands: peakBandsOf(peaks, window), scheduleZone: scheduleZoneOf(peaks) };
+});
+
+/** The catalog vocabulary the pure builder composes (D-148/D-149). */
+const chartText = computed<MetricChartText>(() => ({
+  used: t('overview.chart.seriesUsed'),
+  remaining: t('overview.chart.seriesRemaining'),
+  peakHead: t('overview.chart.peakHead'),
+  offPeakHead: t('overview.chart.offPeakHead'),
+  bandTimes: t('overview.chart.bandTimes'),
+  gapHead: t('overview.chart.gapHead'),
+  gapBody: t('overview.chart.gapBody'),
+  stoppedHead: t('overview.chart.stoppedHead'),
+  stoppedBody: t('overview.chart.stoppedBody'),
+  stoppedLabel: t('overview.chart.stoppedLabel'),
+  resetTooltip: t('overview.chart.resetTooltip'),
+  resetLabel: t('overview.chart.resetLabel'),
+  bandsSeries: t('overview.chart.bandsSeries'),
+  errorsSeries: t('overview.chart.errorsSeries'),
+  errorAttempts: t('overview.chart.errorAttempts'),
+  errorStatus: t('overview.chart.errorStatus'),
+  errorRetryAfter: t('overview.chart.errorRetryAfter'),
+  errorOutcomes: {
+    auth_error: t('overview.error.outcome.authError'),
+    rate_limited: t('overview.error.outcome.rateLimited'),
+    network_error: t('overview.error.outcome.networkError'),
+    timeout: t('overview.error.outcome.timeout'),
+    server_error: t('overview.error.outcome.serverError'),
+    parse_error: t('overview.error.outcome.parseError'),
+  },
+}));
+
 const option = computed<MetricChartOption | null>(() => {
   const response = displayData.value;
-  if (response === null || samples.value.length === 0) return null;
+  if (response === null || samples.value.length === 0 || annotations.value === null) {
+    return null;
+  }
   // Reading the resolved mode registers the dependency: a theme flip
   // re-runs this computed, the tokens re-read the cascade, and the chart
   // below re-sets its option — the live restyle D-133 pinned.
@@ -160,10 +239,7 @@ const option = computed<MetricChartOption | null>(() => {
     mode: effectiveMode.value,
     unitLabel: unitLabel.value,
     tokens: chartTokensOf((name) => runtime.readToken(name)),
-    text: {
-      used: t('overview.chart.seriesUsed'),
-      remaining: t('overview.chart.seriesRemaining'),
-    },
+    text: chartText.value,
     timeZone: props.timeZone,
     // The requested bounds: identical across one page-load's per-metric
     // charts, so the axes align even where retention truncated the data.
@@ -171,6 +247,8 @@ const option = computed<MetricChartOption | null>(() => {
       from: response.range.requestedFrom,
       to: response.range.requestedTo,
     },
+    annotations: annotations.value,
+    peak: peak.value ?? undefined,
   });
 });
 
@@ -195,25 +273,51 @@ function statablePercent(value: number | null): string {
   return value === null ? t('overview.metric.unknown') : `${formatQuotaNumber(value)}%`;
 }
 
+/**
+ * The annotation counts of the range as text — the markers are facts, so
+ * the chart's accessible name states them (§14.1: never color alone).
+ */
+const ariaMarks = computed(() => {
+  const marks = annotations.value;
+  if (marks === null) return '';
+  const parts: string[] = [];
+  if (marks.resets.length > 0) {
+    parts.push(t('overview.chart.marksResets', { count: marks.resets.length }));
+  }
+  if (marks.gaps.length > 0) {
+    parts.push(t('overview.chart.marksGaps', { count: marks.gaps.length }));
+  }
+  if (marks.stopped.length > 0) {
+    parts.push(t('overview.chart.marksStopped', { count: marks.stopped.length }));
+  }
+  if (marks.errors.length > 0) {
+    parts.push(t('overview.chart.marksErrors', { count: marks.errors.length }));
+  }
+  return parts.join(', ');
+});
+
 /** The chart's text alternative (§14.1): the metric and its latest values. */
 const ariaSummary = computed(() => {
   const sample = latestStatableSample.value;
-  if (sample === null) return props.label;
-  if (effectiveMode.value === 'percent') {
-    return t('overview.chart.summaryPercent', {
-      metric: props.label,
-      used: statablePercent(sample.percentUsed),
-      remaining: statablePercent(sample.percentRemaining),
-      time: formatEpochMs(sample.at, props.timeZone),
-    });
-  }
-  return t('overview.chart.summaryAbsolute', {
-    metric: props.label,
-    used: statableValue(sample.used),
-    remaining: statableValue(sample.remaining),
-    unit: unitLabel.value,
-    time: formatEpochMs(sample.at, props.timeZone),
-  });
+  const base =
+    sample === null
+      ? props.label
+      : effectiveMode.value === 'percent'
+        ? t('overview.chart.summaryPercent', {
+            metric: props.label,
+            used: statablePercent(sample.percentUsed),
+            remaining: statablePercent(sample.percentRemaining),
+            time: formatEpochMs(sample.at, props.timeZone),
+          })
+        : t('overview.chart.summaryAbsolute', {
+            metric: props.label,
+            used: statableValue(sample.used),
+            remaining: statableValue(sample.remaining),
+            unit: unitLabel.value,
+            time: formatEpochMs(sample.at, props.timeZone),
+          });
+  const marks = ariaMarks.value;
+  return marks === '' ? base : `${base} ${t('overview.chart.summaryMarks', { marks })}`;
 });
 
 /** The D-147 residual, classified (a sliver clamp stays quiet). */

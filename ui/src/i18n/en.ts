@@ -54,8 +54,10 @@ export const en = {
     },
     // One retry per range-keyed load (the distinct-accessible-name rule
     // above; task 174). The per-metric series retries live under
-    // `chart.retry` below (task 175); this one is the timeline's.
+    // `chart.retry` below (task 175); the timeline's and the schedule's
+    // are the page-level loads'.
     retryEvents: 'Retry loading the timeline',
+    retryPeakHours: 'Retry loading the peak-hours schedule',
     // The §14.4 rolling-range control (task 174; decision D-147): the
     // five history ranges, the retention-driven disabling explanation
     // (real text beside the disabled option — never color alone), and
@@ -80,6 +82,12 @@ export const en = {
     // notices), the percent/absolute toggle, the series labels, and the
     // aria summary that states the chart's latest facts as text (§14.1:
     // never color alone).
+    //
+    // Task 176 (D-149) adds the annotation vocabulary: the band/marker
+    // tooltip templates (composed by the pure option builder over the
+    // served §9.3/§12.2 facts), the reset marker's on-line label, the
+    // failed-collections strip's legend name, and the aria summary's mark
+    // counts — every user-facing string of the annotations lives here.
     chart: {
       regionTitle: 'History charts',
       loading: 'Loading history…',
@@ -104,6 +112,34 @@ export const en = {
       // images share one page — each must say which metric it is).
       summaryAbsolute: '{metric}: latest {used} used, {remaining} remaining {unit} at {time}',
       summaryPercent: '{metric}: latest {used} used, {remaining} remaining at {time}',
+      // Appended to the aria summary when the range carries annotations —
+      // the markers are facts, stated as text (§14.1). The count-first
+      // phrasing stays grammatical at any count.
+      summaryMarks: '— in range: {marks}',
+      marksResets: '{count} quota resets',
+      marksGaps: '{count} collection gaps',
+      marksStopped: '{count} stopped periods',
+      marksErrors: '{count} failed collections',
+      // The §14.4 annotation tooltips (task 176, D-149): composed by the
+      // pure builder from the served facts — the peak head names the
+      // window and its rate multiplier (§9.3), the times line renders in
+      // both the display and the schedule zone (the schedule pair is the
+      // server's own local-time rendering, verbatim per §9.3/D-142).
+      peakHead: 'Peak · {name} ×{multiplier}',
+      offPeakHead: 'Off-peak ×{multiplier}',
+      bandTimes: '{start} – {end} ({zone})',
+      gapHead: 'Collection gap',
+      gapBody: 'No successful collection for {duration}',
+      stoppedHead: 'Service stopped',
+      stoppedBody: 'No collection records for {duration}',
+      stoppedLabel: 'Service stopped',
+      resetTooltip: 'Quota reset at {time}',
+      resetLabel: 'Reset',
+      bandsSeries: 'Schedule areas',
+      errorsSeries: 'Failed collections',
+      errorAttempts: 'attempts: {count}',
+      errorStatus: 'HTTP {status}',
+      errorRetryAfter: 'retry after {seconds} s',
     },
     empty: {
       // The page-level no-accounts guidance (task 173, spec §14.3):

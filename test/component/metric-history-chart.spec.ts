@@ -1,13 +1,16 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
+  EventsResponse,
   HistoryPointItem,
   HistoryRangeReport,
   HistoryResponse,
 } from '../../src/schemas/api/history';
+import type { PeakHoursResponse } from '../../src/schemas/api/peak-hours';
 import type { MetricUnit } from '../../src/schemas/metrics';
 import MetricHistoryChart from '../../ui/src/components/MetricHistoryChart.vue';
 import { createApiClientPlugin } from '../../ui/src/api';
+import { historyRangeIsoBounds } from '../../ui/src/history-range';
 import {
   CHART_RUNTIME_KEY,
   cssTokenReader,
@@ -30,6 +33,11 @@ import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
  * out of happy-dom (it cannot boot there) while every option the card
  * builds is asserted through it; the TOKEN reader is the production one
  * over live inline custom properties, so the token plumbing is real.
+ *
+ * Task 176 (D-149): the annotation props (the page's events/peaks loads)
+ * flow into the option — this metric's resets only, the account-level
+ * strip, the served peak bands — and the aria summary states the mark
+ * counts as text.
  */
 
 /* ── The recording chart runtime ───────────────────────────────────────── */
@@ -154,6 +162,11 @@ const INTERNAL_ENVELOPE = { error: { code: 'INTERNAL', message: 'refused', detai
 const LIGHT_TOKENS: Readonly<Record<string, string>> = {
   '--qm-chart-used': '#1b4fa0',
   '--qm-chart-remaining': '#1e6b33',
+  '--qm-chart-peak': '#5b4fa8',
+  '--qm-chart-reset': '#9a3e63',
+  '--qm-chart-gap': '#5a5a64',
+  '--qm-chart-stopped': '#8a5800',
+  '--qm-color-danger': '#b3261e',
   '--qm-color-muted': '#5a5a64',
   '--qm-color-muted-background': '#efeff2',
   '--qm-color-background': '#ffffff',
@@ -163,6 +176,11 @@ const LIGHT_TOKENS: Readonly<Record<string, string>> = {
 const DARK_TOKENS: Readonly<Record<string, string>> = {
   '--qm-chart-used': '#8ab4f8',
   '--qm-chart-remaining': '#9fdcae',
+  '--qm-chart-peak': '#a5a1e8',
+  '--qm-chart-reset': '#e2a4c0',
+  '--qm-chart-gap': '#a9a9b3',
+  '--qm-chart-stopped': '#e8c179',
+  '--qm-color-danger': '#f2b8b5',
   '--qm-color-muted': '#a9a9b3',
   '--qm-color-muted-background': '#26262c',
   '--qm-color-background': '#17171b',
@@ -189,6 +207,8 @@ interface MountOptions {
     rangeId: '24h' | '3d' | '7d' | '14d' | '30d';
     timeZone: string;
     refreshToken: number;
+    events: EventsResponse | null;
+    peaks: PeakHoursResponse | null;
   }>;
   readonly controller?: ThemeController;
 }
@@ -255,6 +275,106 @@ const DUAL_POINTS: HistoryPointItem[] = [
     percentRemaining: 33.33,
   }),
 ];
+
+/* ── Task 176: the annotation prop fixtures ────────────────────────────── */
+
+/**
+ * Instants guaranteed inside the card's own rolling window (the card
+ * clamps annotations to the window its history response requests — fixed
+ * epochs would drift out of it as the calendar moves).
+ */
+function windowInstants(): { inside: number; later: number } {
+  const { from, to } = historyRangeIsoBounds('7d', Date.now());
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  const inside = Math.floor((start + end) / 2);
+  return { inside, later: inside + 600_000 };
+}
+
+/** The events range report: the same rolling window the card requests. */
+function eventsRange(): EventsResponse['range'] {
+  const { from, to } = historyRangeIsoBounds('7d', Date.now());
+  return {
+    outcome: 'ok',
+    requestedFrom: Date.parse(from),
+    requestedTo: Date.parse(to),
+    effectiveFrom: Date.parse(from),
+    effectiveTo: Date.parse(to),
+    retentionHorizon: null,
+  };
+}
+
+/** The window-relative instants the annotation fixtures share (one clock read). */
+type WindowInstants = ReturnType<typeof windowInstants>;
+
+/** An events prop fixture over the four §12.2 kinds (D-139's wire shape). */
+function eventsProp(instants: WindowInstants): EventsResponse {
+  const { inside, later } = instants;
+  return {
+    accountId: 'acc-1',
+    metric: null,
+    range: eventsRange(),
+    events: [
+      {
+        kind: 'reset',
+        metricKey: 'tokens-5h',
+        eventAt: inside,
+        runId: 7,
+        details: { reason: 'usage-decreased' },
+      },
+      {
+        kind: 'reset',
+        metricKey: 'mcp-monthly',
+        eventAt: inside,
+        runId: 7,
+        details: { reason: 'usage-decreased' },
+      },
+      {
+        kind: 'collection_error',
+        outcome: 'rate_limited',
+        fromEpochMs: later,
+        toEpochMs: later + 5_000,
+        durationMs: 5_000,
+        httpStatus: 429,
+        message: 'slow down',
+        attempts: 3,
+        retryAfterSeconds: 30,
+      },
+    ],
+  };
+}
+
+/** A peaks prop fixture: one evening peak plus the off-peak complement. */
+function peaksProp(instants: WindowInstants): PeakHoursResponse {
+  const { inside, later } = instants;
+  return {
+    accountId: 'acc-1',
+    providerId: 'zai-coding-plan',
+    timezone: 'Asia/Shanghai',
+    offPeakMultiplier: 0.75,
+    range: eventsRange(),
+    intervals: [
+      {
+        kind: 'peak',
+        start: inside,
+        end: later,
+        multiplier: 1.5,
+        windowId: 'evening',
+        name: 'Evening',
+        localStart: '2026-11-02T17:00',
+        localEnd: '2026-11-02T18:00',
+      },
+      {
+        kind: 'off-peak',
+        start: later,
+        end: later + 3_600_000,
+        multiplier: 0.75,
+        localStart: '2026-11-02T18:00',
+        localEnd: '2026-11-02T19:00',
+      },
+    ],
+  };
+}
 
 /* ── The load: D-139's grammar, per metric ─────────────────────────────── */
 
@@ -372,8 +492,8 @@ describe('metric chart: rendering and the percent/absolute toggle (§14.4)', () 
 
     // The done-condition's construction: ONE value axis, one unit —
     // both series plot absolute credits fields.
-    expect(Array.isArray(first.option.yAxis)).toBe(false);
-    expect(first.option.yAxis.name).toBe(en.overview.metric.unit.credits);
+    expect(first.option.yAxis).toHaveLength(1);
+    expect(first.option.yAxis[0]!.name).toBe(en.overview.metric.unit.credits);
     expect(first.option.series.map((series) => series.name)).toEqual([
       en.overview.chart.seriesUsed,
       en.overview.chart.seriesRemaining,
@@ -397,9 +517,9 @@ describe('metric chart: rendering and the percent/absolute toggle (§14.4)', () 
 
     expect(handle.setOptions.length).toBeGreaterThan(before);
     const last = handle.setOptions.at(-1)!.option;
-    expect(last.yAxis.name).toBe('%');
-    expect(last.yAxis.min).toBe(0);
-    expect(last.yAxis.max).toBe(100);
+    expect(last.yAxis[0]!.name).toBe('%');
+    expect(last.yAxis[0]!.min).toBe(0);
+    expect(last.yAxis[0]!.max).toBe(100);
     expect(last.series[0]?.data).toEqual([
       [T0, 80],
       [T1, 66.67],
@@ -437,9 +557,9 @@ describe('metric chart: rendering and the percent/absolute toggle (§14.4)', () 
     // The toggle never renders for a metric without both views.
     expect(wrapper.find('[data-testid="chart-view-toggle"]').exists()).toBe(false);
     const option = runtime.handles[0]!.setOptions[0]!.option;
-    expect(option.yAxis.name).toBe('%');
-    expect(option.yAxis.min).toBe(0);
-    expect(option.yAxis.max).toBe(100);
+    expect(option.yAxis[0]!.name).toBe('%');
+    expect(option.yAxis[0]!.min).toBe(0);
+    expect(option.yAxis[0]!.max).toBe(100);
     expect(option.series[0]?.data).toEqual([
       [T0, 42],
       [T1, 50],
@@ -462,8 +582,8 @@ describe('metric chart: rendering and the percent/absolute toggle (§14.4)', () 
 
     expect(wrapper.find('[data-testid="chart-view-toggle"]').exists()).toBe(false);
     const option = runtime.handles[0]!.setOptions[0]!.option;
-    expect(option.yAxis.name).toBe(en.overview.metric.unit.credits);
-    expect(option.yAxis.min).toBeUndefined();
+    expect(option.yAxis[0]!.name).toBe(en.overview.metric.unit.credits);
+    expect(option.yAxis[0]!.min).toBeUndefined();
   });
 
   it('states the chart’s latest facts as text (role=img, §14.1)', async () => {
@@ -678,5 +798,120 @@ describe('metric chart: theme restyle and lifecycle', () => {
     expect(firstHandle.disposed).toBe(true);
     expect(runtime.handles).toHaveLength(2);
     expect(runtime.handles[1]!.setOptions.length).toBeGreaterThan(0);
+  });
+});
+
+/* ── Task 176: the annotation props render (D-149) ────────────────────── */
+
+/** One series of the built option, narrowed per kind for pins. */
+type OptionSeries = MetricChartOption['series'][number];
+
+describe('metric chart: the annotation props (task 176, D-149)', () => {
+  it('renders this metric’s resets only, the served peak bands, and the strip', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const instants = windowInstants();
+    const { runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { events: eventsProp(instants), peaks: peaksProp(instants) },
+    });
+
+    const option = runtime.handles[0]!.setOptions[0]!.option;
+    // The reset of THIS metric renders; the other metric's does not
+    // (per-metric facts, D-149).
+    const used = option.series[0] as Extract<OptionSeries, { type: 'line' }>;
+    expect(used.markLine?.data).toEqual([{ xAxis: instants.inside }]);
+    // The bands series carries the served peak + off-peak pair; the strip
+    // carries the account-level failed cycle.
+    const bands = option.series.find(
+      (series) => 'id' in series && series.id === 'qm-chart-bands',
+    ) as Extract<OptionSeries, { type: 'custom' }>;
+    expect(bands.data.map((datum) => datum.value)).toEqual([
+      [instants.inside, instants.later],
+      [instants.later, instants.later + 3_600_000],
+    ]);
+    const strip = option.series.find(
+      (series) => 'id' in series && series.id === 'qm-chart-errors',
+    ) as Extract<OptionSeries, { type: 'scatter' }>;
+    expect(strip.data).toHaveLength(1);
+    expect(strip.data[0]!.symbol).toBe('triangle');
+    // The strip joins the legend by name — the text signal beside color.
+    expect(option.legend.data).toEqual([
+      en.overview.chart.seriesUsed,
+      en.overview.chart.seriesRemaining,
+      en.overview.chart.errorsSeries,
+    ]);
+  });
+
+  it('states the annotation counts in the accessible name (§14.1)', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { wrapper } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { events: eventsProp(windowInstants()), peaks: peaksProp(windowInstants()) },
+    });
+
+    const label = wrapper.find('[data-testid="chart-canvas"]').attributes('aria-label');
+    // The counts state every annotation kind the range carries.
+    expect(label).toContain('— in range: 1 quota resets, 1 failed collections');
+  });
+
+  it('re-styles the annotations with the theme (the band tokens re-read)', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { runtime, controller } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { events: eventsProp(windowInstants()), peaks: peaksProp(windowInstants()) },
+    });
+    const handle = runtime.handles[0]!;
+    const bandsOf = (): Extract<OptionSeries, { type: 'custom' }> =>
+      handle.setOptions
+        .at(-1)!
+        .option.series.find(
+          (series) => 'id' in series && series.id === 'qm-chart-bands',
+        ) as Extract<OptionSeries, { type: 'custom' }>;
+    expect(bandsOf().data[0]!.itemStyle.color).toBe('#5b4fa8');
+
+    applyTokens(DARK_TOKENS);
+    controller.setTheme('dark');
+    await settle();
+
+    expect(bandsOf().data[0]!.itemStyle.color).toBe('#a5a1e8');
+  });
+
+  it('without the props the option keeps the task-175 shape', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { runtime, wrapper } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+    });
+
+    const option = runtime.handles[0]!.setOptions[0]!.option;
+    expect(option.series.find((series) => 'id' in series)).toBeUndefined();
+    expect(option.series).toHaveLength(2);
+    expect(option.grid).toHaveLength(1);
+    expect(option.legend.data).toEqual([
+      en.overview.chart.seriesUsed,
+      en.overview.chart.seriesRemaining,
+    ]);
+    // No counts append to the accessible name without annotations.
+    const label = wrapper.find('[data-testid="chart-canvas"]').attributes('aria-label');
+    expect(label).not.toContain('in range');
+  });
+
+  it('a no-schedule peak response renders no bands and breaks nothing', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: {
+        peaks: {
+          ...peaksProp(windowInstants()),
+          timezone: null,
+          offPeakMultiplier: null,
+          intervals: [],
+        },
+      },
+    });
+
+    const option = runtime.handles[0]!.setOptions[0]!.option;
+    expect(
+      option.series.find((series) => 'id' in series && series.id === 'qm-chart-bands'),
+    ).toBeUndefined();
   });
 });

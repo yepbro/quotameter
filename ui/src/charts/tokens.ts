@@ -5,11 +5,13 @@
  *
  * D-133's rule is absolute — charts color themselves only through
  * `getComputedStyle` token lookups (re-read on every `resolvedTheme`
- * change), never through hardcoded palettes. Two dedicated tokens
- * (`--qm-chart-used`, `--qm-chart-remaining` — added to all three theme
- * blocks of `base.css`) carry the series colors; everything else the
- * charts need reuses the shell's existing tokens so a theme change keeps
- * the charts in step with the rest of the UI by construction.
+ * change), never through hardcoded palettes. Six dedicated tokens
+ * (`--qm-chart-used`, `--qm-chart-remaining` from task 175; the
+ * `--qm-chart-peak`/`--qm-chart-reset`/`--qm-chart-gap`/`--qm-chart-stopped`
+ * annotation tokens from task 176, D-149 — added to all three theme blocks
+ * of `base.css`) carry the chart's own colors; everything else the charts
+ * need reuses the shell's existing tokens so a theme change keeps the
+ * charts in step with the rest of the UI by construction.
  *
  * Pure: the reader is injected, so the mapping is testable without a DOM
  * (the component passes the runtime's `readToken`, which reads the live
@@ -22,6 +24,16 @@ export interface ChartTokens {
   readonly used: string;
   /** The remaining-series line color (`--qm-chart-remaining`). */
   readonly remaining: string;
+  /** Peak-band tint (`--qm-chart-peak`; task 176, D-149). */
+  readonly peak: string;
+  /** Reset markLine color (`--qm-chart-reset`). */
+  readonly reset: string;
+  /** Gap-band hatch/border color (`--qm-chart-gap`). */
+  readonly gap: string;
+  /** Stopped-band tint/hatch/border color (`--qm-chart-stopped`). */
+  readonly stopped: string;
+  /** The failed-cycle markers' color (`--qm-color-danger` — the error tone). */
+  readonly danger: string;
   /** Axis tick/label color (`--qm-color-muted`). */
   readonly axisLabel: string;
   /** Y-axis split lines (`--qm-color-muted-background`). */
@@ -43,6 +55,11 @@ export type ChartTokenReader = (name: string) => string;
 export const CHART_TOKEN_NAMES = Object.freeze([
   '--qm-chart-used',
   '--qm-chart-remaining',
+  '--qm-chart-peak',
+  '--qm-chart-reset',
+  '--qm-chart-gap',
+  '--qm-chart-stopped',
+  '--qm-color-danger',
   '--qm-color-muted',
   '--qm-color-muted-background',
   '--qm-color-background',
@@ -55,6 +72,11 @@ export function chartTokensOf(read: ChartTokenReader): ChartTokens {
   return {
     used: read('--qm-chart-used'),
     remaining: read('--qm-chart-remaining'),
+    peak: read('--qm-chart-peak'),
+    reset: read('--qm-chart-reset'),
+    gap: read('--qm-chart-gap'),
+    stopped: read('--qm-chart-stopped'),
+    danger: read('--qm-color-danger'),
     axisLabel: read('--qm-color-muted'),
     splitLine: read('--qm-color-muted-background'),
     tooltipBackground: read('--qm-color-background'),
