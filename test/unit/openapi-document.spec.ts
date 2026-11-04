@@ -93,6 +93,8 @@ describe('OpenAPI builder publication rules (task 163, D-144)', () => {
       ['delete', '/api/accounts/{id}'],
       ['post', '/api/accounts/{id}/test'],
       ['put', '/api/settings'],
+      ['post', '/api/auth/login'],
+      ['post', '/api/auth/logout'],
     ];
     for (const [method, path] of mutating) {
       const operation = document.paths[path]?.[method] as { parameters?: unknown[] } | undefined;

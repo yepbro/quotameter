@@ -301,19 +301,25 @@ describe('the §13 endpoint inventory through the production composition', () =>
     }
   });
 
-  it('answers the unbuilt §13 auth endpoints with the catch-all 404 — the U-041 boundary', async () => {
-    // The §15.3 mutation legs bind even unbuilt POST paths (the guards
-    // outrank the scope catch-all), so login/logout need the full legit
-    // client shape to reach today's honest answer: the 404 envelope.
+  it('serves the landed §13 auth endpoints through the composition — the U-041 boundary, updated', async () => {
+    // U-041 landed `POST /api/auth/login` and `POST /auth/logout` behind
+    // `ApiRoutesOptions.authRoutes` and the composition wires them: this
+    // composition carries no password, so D-122's totality guard answers
+    // every login attempt with the registry-default UNAUTHENTICATED 401
+    // (the D-134 notice signal), and a cookieless logout under the
+    // not-required §15.1 mode reaches the idempotent handler (`revoked:
+    // false`, D-126's clear twin still set). A route U-041 did NOT build
+    // keeps answering the scope catch-all's 404 envelope.
     const login = await api.call('POST', '/api/auth/login', { password: 'not-built-yet-123' });
-    expect(login.statusCode).toBe(404);
-    expect(login.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
+    expect(login.statusCode).toBe(401);
+    expect(login.json()).toMatchObject({ error: { code: 'UNAUTHENTICATED' } });
 
     const logout = await api.call('POST', '/api/auth/logout');
-    expect(logout.statusCode).toBe(404);
-    expect(logout.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
+    expect(logout.statusCode).toBe(200);
+    expect(logout.json()).toMatchObject({ revoked: false });
 
-    // A safe method needs no mutation legs at all.
+    // A safe method needs no mutation legs at all — and no such route
+    // exists: the inventory stays the two §13 auth operations.
     const session = await api.probe('GET', '/api/auth/session');
     expect(session.statusCode).toBe(404);
     expect(session.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });

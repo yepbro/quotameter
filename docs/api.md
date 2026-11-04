@@ -15,7 +15,8 @@ The artifact is produced by `scripts/generate-openapi.mjs` from
 - **the wire contracts** — the exported TypeBox schemas from
   [`src/schemas/api/`](../src/schemas/api/) (accounts, status — which owns the
   quota contracts —, providers, settings, history — which owns the events
-  contracts —, peak-hours, health, error), projected verbatim: what the
+  contracts —, peak-hours, auth — the login/logout contracts —, health,
+  error), projected verbatim: what the
   document shows is what the routes validate through (spec §13: "Define every
   request and response through TypeBox/JSON Schema. Generate and publish
   OpenAPI");
@@ -57,16 +58,23 @@ direction:
   and success responses must equal the projections of the schemas the routes
   actually declare — a route re-wired to a different contract fails even
   when its method and path still match;
-- a security-model mismatch: the public set (`GET /api/health` is the one
-  unauthenticated route, spec §13/§15.1) and the §15.3 mutation-header
-  requirement are pinned against the live route configurations.
+- a security-model mismatch: the public set (`GET /api/health` and
+  `POST /api/auth/login` are the unauthenticated routes, spec §13/§15.1 —
+  login declares it through the same public route config, D-121/D-146)
+  and the §15.3 mutation-header requirement are pinned against the live
+  route configurations.
 
 ## Reading the API through it
 
 - **Authentication** (spec §15.1): the document declares the session-cookie
   scheme globally. In `auth.mode: auto` direct loopback requests need no
   credential; behind a proxy indicator or in `required` mode, every
-  non-health operation is authenticated.
+  operation except the health probe and login is authenticated. Sessions
+  come from `POST /api/auth/login` (the wrong-password 401 answers the same
+  `UNAUTHENTICATED` code) and end at `POST /api/auth/logout`; the cookie's
+  `Max-Age` mirrors the session row's effective expiry, and refreshed
+  sightings do not re-issue it (D-146) — the row's §15.2 verdict is the
+  security boundary.
 - **State-changing requests** (spec §15.3): every `POST`/`PUT`/`PATCH`/
   `DELETE` operation documents the required `X-Quotameter-Request` header and
   (where a body is declared) the `application/json` content type. CORS is

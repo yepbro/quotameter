@@ -32,11 +32,12 @@
  *    and answers a clear wiring error before the app has started.
  *
  * Not wired here, on purpose (D-140 records them): SIGHUP → reload (the
- * D-024 readiness seam owns process-signal wiring), the sessions-backed
- * `isAuthenticated` (the login endpoints are the recorded D-125/D-126 plan
- * gap — the §15.1 layer stays fail-closed until they land), and the polling
+ * D-024 readiness seam owns process-signal wiring) and the polling
  * engine itself (its task owns polled-cycle dispatch; manual tests and
- * status reads keep working through this holder meanwhile).
+ * status reads keep working through this holder meanwhile). The
+ * sessions-backed `isAuthenticated` IS wired since task U-041 (D-146):
+ * `createSessionAuthenticator` over the lazy repository and the shared
+ * clock, beside the login/logout routes it pairs with.
  */
 
 import { loadConfigWithEnv } from '../config/env';
@@ -55,6 +56,7 @@ import { CONFIG_DEFAULTS, type AccountConfig, type Config } from '../schemas/con
 import { createSystemClock, type Clock } from '../util/clock';
 import { createLogger, type Logger } from '../util/logger';
 import type { LifecycleComponent } from './app';
+import { createSessionAuthenticator } from './api/auth-routes';
 import {
   createConfigFileAccountStore,
   createConfigFileOwner,
@@ -350,13 +352,17 @@ export async function composeApplication(
 
   // §5.6's last component: the HTTP listener with every landed route family
   // wired (the `auth` projection is D-121's documented 1:1 mapping; the
-  // sessions-backed `isAuthenticated` stays absent — see the module header).
+  // sessions-backed `isAuthenticated` is D-146's wiring — the §15.1 seam
+  // finally sees `authenticateSession`'s verdict, so protected routes
+  // enforce sessions behind it, and the login/logout routes answer through
+  // the same lazy repository and shared clock).
   const httpServer = createHttpServerComponent({
     host: config.server?.host ?? CONFIG_DEFAULTS.server.host,
     port: options.port ?? config.server?.port ?? CONFIG_DEFAULTS.server.port,
     auth: {
       mode: config.auth?.mode ?? CONFIG_DEFAULTS.auth.mode,
       passwordConfigured: () => reloader.current().config.auth?.passwordHash !== undefined,
+      isAuthenticated: createSessionAuthenticator({ repository, now }),
     },
     logger,
     routes: {
@@ -387,6 +393,13 @@ export async function composeApplication(
         schedules: () => currentConfig().providers ?? {},
         historyRetentionDays: () =>
           currentConfig().app.historyRetentionDays ?? CONFIG_DEFAULTS.app.historyRetentionDays,
+        now,
+      },
+      authRoutes: {
+        repository,
+        // §6.4/D-026: the hash is live — a `passwd` run or a settings PUT
+        // that changes it applies to the next login attempt, no restart.
+        passwordHash: () => reloader.current().config.auth?.passwordHash,
         now,
       },
     },

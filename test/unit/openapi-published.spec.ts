@@ -125,9 +125,9 @@ beforeAll(async () => {
   const schedules = refuse('schedules');
 
   // Every route family is wired — the `Required<...>` satisfaction is the
-  // future-family pin: a new optional member of `ApiRoutesOptions` (U-041's
-  // auth routes, say) left unwired here fails typecheck in this file, so a
-  // new family can never be silently invisible to every arm below.
+  // future-family pin: a new optional member of `ApiRoutesOptions` left
+  // unwired here fails typecheck in this file, so a new family can never
+  // be silently invisible to every arm below.
   const wiredRoutes = {
     accounts: { store, repository, registry: new ProviderRegistry(), now: never },
     status: {
@@ -147,6 +147,7 @@ beforeAll(async () => {
       historyRetentionDays: refuse('retention'),
       now: never,
     },
+    authRoutes: { repository, passwordHash: refuse('passwordHash'), now: never },
   } satisfies Required<Omit<ApiRoutesOptions, 'auth'>>;
 
   app = Fastify({ logger: false });

@@ -52,11 +52,12 @@
  * `GET /api/health` stays unauthenticated in every mode and state (§13,
  * task 147): it opts out through the route's `config` object
  * ({@link PUBLIC_AUTH_ROUTE_CONFIG}) rather than registration order —
- * explicit, method-scoped, and the same contract the future login route
- * (154+) uses to stay reachable for the client that has no session yet.
- * The frontend (static assets, SPA shell) stays outside this layer
- * entirely: the scope of the hook is `/api`, because the login page of
- * §14.6 must load before any credential can be presented (D-121).
+ * explicit, method-scoped, and the same contract `POST /api/auth/login`
+ * (task U-041, D-146) uses to stay reachable for the client that has no
+ * session yet. The frontend (static assets, SPA shell) stays outside
+ * this layer entirely: the scope of the hook is `/api`, because the
+ * login page of §14.6 must load before any credential can be presented
+ * (D-121).
  */
 
 import type { FastifyRequest } from 'fastify';
@@ -232,9 +233,11 @@ export function classifyAuthMode(facts: AuthModeFacts): AuthModeVerdict {
  * endpoints to spread into `reply.setCookie`.
  * Async by nature (the session store is), so the seam allows promises;
  * the guard awaits it and never inspects HOW a request authenticated.
- * Until the session tasks land, the default answers `false` for every
- * request — fail closed: a mode that demands credentials and a seam
- * that cannot verify them keeps the surface shut, never open.
+ * A construction that wires no seam keeps the fail-closed default —
+ * `false` for every request — so a mode that demands credentials and a
+ * seam that cannot verify them keeps the surface shut, never open; the
+ * production composition wires {@link createSessionAuthenticator}
+ * (`./auth-routes`, task U-041/D-146) since the login endpoints landed.
  */
 export type RequestAuthenticator = (request: FastifyRequest) => boolean | Promise<boolean>;
 

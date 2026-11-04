@@ -40,8 +40,9 @@ parse). Verification is fail-closed and never throws: an absent,
 malformed, or refused stored hash answers `false`, never an error and
 never an accept. The §15.2
 minimum-length rule stays with the `config-validation` boundary
-(`MIN_PASSWORD_LENGTH`); the login/session tasks (154+) consume the
-verifier at the login endpoint — requests carry session cookies, not
+(`MIN_PASSWORD_LENGTH`); the login endpoint (U-041, D-146,
+`src/server/api/auth-routes.ts`) consumes the
+verifier — requests carry session cookies, not
 passwords, so the §15.1 seam is not a consumer.
 
 Landed: [`sessions.ts`](./sessions.ts) — the §15.2 session-creation half
@@ -101,8 +102,9 @@ landed it (`revokeAllSessions` in `src/cli/passwd.ts` over the facade's
 call). Fake-clock tests pin both rules and both revocations over a
 behavioral stub (`test/unit/sessions.spec.ts`) and the canonical schema
 (`test/integration/sessions-authentication.spec.ts`); the login/logout
-endpoints and the cookie's wire attributes stay later tasks' scope (no
-plan task owns the login endpoint yet — a plan gap recorded in D-125).
+endpoints landed with task U-041 (`src/server/api/auth-routes.ts`,
+D-146) and the cookie's wire attributes with task 157
+(`session-cookie.ts` below).
 
 Landed: [`login-rate-limit.ts`](./login-rate-limit.ts) — the §15.2 login
 rate budget (task 156, decision D-125), the third §15.2 primitive of the
@@ -110,7 +112,7 @@ future `AuthService` beside the credential and session modules:
 `createLoginRateLimiter()` holds one in-process map from an **opaque
 source key** (never parsed — the endpoint decides what "source address"
 means on the wire) to that source's retained failure history, and answers
-the two questions the future login endpoint asks per attempt.
+the two questions the login endpoint (U-041, D-146) asks per attempt.
 `delayBeforeAttempt(source, now)` — read-only — is `0` while fewer than
 five failures sit inside the **sliding** 15-minute window (half-open: a
 failure exactly window-old is out, D-124's boundary discipline; a fixed
@@ -154,7 +156,9 @@ design). Fake-clock tables in `test/unit/login-rate-limit.spec.ts`
 exact doubling sequence and cap, the ±1 ms window edge, per-source
 isolation, the success reset, the retention exactness, the sweep, the
 clock discipline, and the zero-console pin; the login endpoint that
-composes this primitive is a later task (the `@fastify/rate-limit`
+composes this primitive landed with task U-041
+(`src/server/api/auth-routes.ts`, D-146 — check-budget → sleep → verify
+→ record, per-source serialized; the `@fastify/rate-limit`
 dependency is removed — D-143: the generic per-request 429 limiter
 cannot express a failed-attempt budget with increasing delays, and no
 other spec sentence asks for a per-request limit).
@@ -162,8 +166,9 @@ other spec sentence asks for a per-request limit).
 Landed: [`session-cookie.ts`](./session-cookie.ts) — the §15.2
 session-cookie attribute layer (task 157, decision D-126), the fourth
 §15.2 primitive of the future `AuthService` beside the credential,
-session, and rate-budget modules: everything the future login/logout
-endpoint needs to serialize the `Set-Cookie` header, as one frozen
+session, and rate-budget modules: everything the login/logout endpoints
+(task U-041, D-146 — `src/server/api/auth-routes.ts`) need to serialize
+the `Set-Cookie` header, as one frozen
 attribute object spread into `@fastify/cookie`'s `reply.setCookie`
 (the plugin task 146 registered for parsing). `SESSION_COOKIE_NAME`
 (`quotameter_session`) and `SESSION_COOKIE_PATH` (`/api` — §13's prefix;
@@ -188,14 +193,18 @@ transport, expiresAtMs, nowMs })` maps the row's effective expiry to
 cookie never dies before the row D-124's verdict judges; the server-side
 verdict stays the gate, and re-issuing the cookie on a refreshed sighting
 is the endpoint's documented composition (without it the cookie merely
-caps at 7 days — a re-login, never an out-of-bounds session). Fail-fast:
+caps at 7 days — a re-login, never an out-of-bounds session; U-041/D-146
+resolved the open point as the no-re-issue arm — the endpoints'
+`auth-routes.ts` never re-issues, the §15.2 verdict is the boundary).
+Fail-fast:
 a non-integer epoch-ms input throws a `TypeError` naming the field (the
 D-090/D-123 family), and `nowMs >= expiresAtMs` throws — an
 already-expired session gets its cookie **cleared** (`clearSessionCookieAttributes`,
 `Max-Age=0` with identical attributes, so the deletion addresses the
 cookie that was set), never set. The module owns **no endpoint** (the
-login/logout routes are the plan gap D-125 recorded — every composition
-above is documented, not wired) and **no logger** (nothing here can log a
+login/logout routes live in `src/server/api/auth-routes.ts`, U-041/D-146
+— every composition
+above is consumed there) and **no logger** (nothing here can log a
 token; the zero-console pin holds executably). The pure tables live in
 `test/unit/session-cookie.spec.ts`; the wire half — the attribute set
 serialized through the real `@fastify/cookie` on the task-146

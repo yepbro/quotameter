@@ -17,9 +17,11 @@ the manual-test lift, the registry with observation-wrapped adapters
 (`providers.ts`, task U-040), and a lazy repository facade bridging eager
 route registration to the storage component's start-time open (the data
 directory exists only after the lock's start, D-017). Deliberately unwired
-(D-140's loose ends): SIGHUP → reload (the D-024 readiness seam), the
-sessions-backed `isAuthenticated` (the login endpoints are the recorded
-D-125/D-126 gap), and the polling engine. The lifecycle skeleton `app.ts`
+(D-140's loose ends): SIGHUP → reload (the D-024 readiness seam) and the
+polling engine; the sessions-backed `isAuthenticated` is wired since task
+U-041 (D-146) — `createSessionAuthenticator` over the lazy repository and
+the shared clock, beside the login/logout routes it pairs with. The
+lifecycle skeleton `app.ts`
 (task 060) is where components
 start in registration order and stop in reverse, realizing the §5.6 shutdown
 sequence by construction. `single-instance.ts` (task 074) guards each data
@@ -62,8 +64,9 @@ stay unregistered (the no-half-wired rule and its 404 pins hold for the
 bare construction), present members wire exactly that family to the
 composition's stores; the cookie's
 §15.2 write-side flags are the services-layer primitive
-`src/services/session-cookie.ts` (157, D-126), which the future login/logout
-endpoints spread into `reply.setCookie` — the registered cookie plugin stays
+`src/services/session-cookie.ts` (157, D-126), which the login/logout
+endpoints (`auth-routes.ts`, U-041/D-146) spread into `reply.setCookie` —
+the registered cookie plugin stays
 parsing-only; the same
 factory wraps it as the `http-listener` lifecycle component the application
 shell starts and stops, and tests drive through `fastify.inject` without
@@ -135,20 +138,21 @@ answers §15.1's own 403-with-instructions; the two startup-refused
 shapes (`required`/non-loopback without a password, refused by the
 config layer) fail closed to 401 if ever constructed anyway. The
 `RequestAuthenticator` seam (default: nothing is authenticated, fail
-closed) is where the session tasks (154/155) plug request
-authentication in — requests carry session cookies, not passwords;
-task 153's scrypt verifier (`verifyPassword` in
-`services/password-hash.ts`, D-122) is consumed at the login endpoint
-that presents the password;
+closed) is where the session wiring plugs request authentication in —
+requests carry session cookies, not passwords: since U-041 (D-146) the
+composition passes `createSessionAuthenticator` (`auth-routes.ts`), the
+D-124 one-lambda verdict over the cookie; task 153's scrypt verifier
+(`verifyPassword` in `services/password-hash.ts`, D-122) is consumed at
+the login endpoint that presents the password;
 `GET /api/health` opts out through its public route config
 (`PUBLIC_AUTH_ROUTE_CONFIG`, inherited by the HEAD twin) — the same
-contract the future login endpoint uses. The frontend shell stays
+contract `POST /api/auth/login` takes. The frontend shell stays
 outside the layer: the §14.6 login page must load before credentials
 can be presented.
-Later: the remaining HTTP API routes and auth/session endpoints
-(159–163) — §15.2's login rate
+The login/logout endpoints themselves live in `auth-routes.ts` (U-041,
+D-146 — see its section below); §15.2's login rate
 limiting is not middleware here: it lives in
-`src/services/login-rate-limit.ts` (156, D-125), composed by the future
+`src/services/login-rate-limit.ts` (156, D-125), composed by the
 login endpoint. It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133, extended by
 task U-040) is that privilege's first
@@ -583,6 +587,106 @@ in `test/integration/composition.spec.ts` (the production construction
 answers the no-schedule arm and serves the configured §9.1 schedule's
 intervals). The three peak-hours-named specs join the §17.1 time-suite
 manifest, so CI runs them under all nine `TZ` cells.
+
+## The §13 login/logout endpoints (task U-041, spec §13, §15.1, §15.2, §14.6; decision D-146)
+
+`src/server/api/auth-routes.ts` registers the two auth routes inside the
+`/api` scope behind the D-128 optional-options rule
+(`ApiRoutesOptions.authRoutes` — the storage facade, the live stored-hash
+thunk, the clock, and optionally the login-delay sleep; absent, both
+paths answer the scope catch-all's 404). The contracts live in
+`src/schemas/api/auth.ts`; every §15.2 rule is composed from its landed
+primitive, never re-derived.
+
+- **`POST /api/auth/login`** — D-125's documented order
+  (`delayBeforeAttempt` → sleep-if-delayed → `verifyPassword` →
+  `recordAttempt`) inside a **per-source mutual-exclusion section**
+  keyed by `request.ip` (socket-derived — `trustProxy` is never enabled,
+  D-109 — and opaque, D-125): at most one attempt per source is in
+  flight, and a same-source newcomer is answered immediately with the
+  same 401 under `details.reason: 'source-busy'` without being verified
+  or recorded — the check-then-record race D-125 warned about is
+  structurally impossible, and neither a queue nor memory can grow with
+  hostile traffic (the review round's two P1s forced this shape over the
+  first design's unbounded same-source queue). The slept delay is
+  clamped to `MAX_LOGIN_DELAY_SLEEP_MS` (240 s) — comfortably inside the
+  construction's 300 s socket-inactivity bound (D-109), pinned against
+  it by a unit relation test — and the default sleep's timer is unref'd
+  so an in-flight delay never holds the loop open past §5.6's bounded
+  shutdown. The budget is **invisible on the wire**: an
+  over-budget attempt — failed or successful, the check precedes the
+  verify — answers the same envelope an under-budget one would; no
+  rate-limit code (D-125 retired `RATE_LIMITED`), no `Retry-After`. A
+  wrong password, or a passwordless configuration through D-122's
+  totality guard, answers the registry-default `UNAUTHENTICATED` 401
+  with `details.reason: 'invalid-credentials'` — the code the D-134 UI
+  notice branch intercepts — with exactly one credential-free `warn` per
+  failed attempt (`{ source, outcome: 'failure' }`; §15.4's marker
+  discipline pins the password out of every body and log line). Success
+  mints through `createSession` (D-123), sets the cookie with D-126's
+  attribute object (`Max-Age` mirroring the row's effective expiry,
+  `Secure` over the request's transport facts), and answers
+  `{ session: { expiresAt } }` (epoch-ms, the D-139 family rule). The
+  route is public per D-121's `PUBLIC_AUTH_ROUTE_CONFIG` — the
+  credential-presenting client has no session yet; the §15.3 guards
+  still bind it (a login POST is a mutation).
+- **`POST /api/auth/logout`** — session-bound (no opt-out: under
+  `required` a cookieless or dead-cookie logout answers the guard's 401
+  before the handler — the never-issued clear costs one dead client
+  cookie, D-126's documented hygiene lag) and bodiless (the §15.3
+  mutation header is its only extra requirement, D-117's bodiless rule).
+  Composes `revokeSession` + `clearSessionCookieAttributes` verbatim and
+  answers `{ revoked }` idempotently — the honest distinction between "a
+  row was deleted" and "nothing to delete", the clear twin sent either
+  way.
+- **The refreshed-sighting resolution (D-146)**: no re-issue. The §15.1
+  seam stays `(request) => boolean`; the wiring is D-124's predicted
+  one-lambda as the named factory `createSessionAuthenticator({ repository,
+now })` (missing/empty cookie → `false` without a storage read), so
+  valid sightings refresh the ROW (D-124's `touchSession`) while the
+  COOKIE keeps its mint-time 7-day `Max-Age` — an active owner
+  re-logs-in at most weekly, the orphaned row self-expires within the
+  30-day cap, and the verdict stays the sole security boundary. The
+  alignment-preserving alternative (the seam seeing the reply) is the
+  recorded successor path.
+
+The composition root (D-140) wires the family beside the factory as
+`auth.isAuthenticated` — closing the deliberately-unwired seam D-140
+recorded — over the lazy repository, the shared clock, and the
+reloader-read live `passwordHash` thunk (§6.4/D-026: a `passwd` run or a
+settings PUT applies to the next login, no restart), so a `required`-mode
+deployment authenticates from the first start. A login while already
+holding a session mints a fresh one (the old row is inert and
+self-expires); `GET /api/auth/session` (§13's third auth row) stays
+task 180's to design.
+
+**Error vocabulary** stays D-113-frozen: `UNAUTHENTICATED` (the
+invalid-credentials 401 — the registry's own message, so the D-144
+document's registry-derived descriptions stay exact), VALIDATION (the
+strict closed body), FORBIDDEN (the §15.3 guards), 415/413 on the
+body-carrying login (the content-type leg and the construction's 64 KiB
+limit), INTERNAL.
+
+**Tests:** `test/unit/auth-routes.spec.ts` (the authenticator's arms —
+missing/empty-cookie storage-call-freedom, verdict mapping, the exact
+refresh write — the D-126 transport resolution, the
+clamp-to-bound relation, and the unref'd-timer probe),
+`test/integration/auth-routes.spec.ts` (the full wire matrix: exact
+cookie attributes on HTTP and proxied-HTTPS legs, digest-only storage
+with the whole-database raw-token scan, every §13/§15.3 error arm, the
+live-hash flip, the §15.1 matrix with the `UNAUTHENTICATED` code as the
+D-134 signal, the no-re-issue pin, and the fake-clock budget — five
+undelayed failures, the doubling sequence, the over-budget success that
+still logs in, the half-open window release, the success reset,
+per-source isolation, the exclusion proof, and both §15.4
+markers — the correct password and the attempted candidate — absent
+from every body and log line), and
+`test/integration/composition-auth.spec.ts` (the production-construction
+proof over temp config + SQLite: login → protected 200 → logout → 401).
+The D-144 artifacts updated mechanically: both operations in
+`scripts/openapi-document.mjs` (login public; logout session-bound and
+bodiless), the `auth` tag, `docs/openapi.json` regenerated, and the
+drift guard's `Required<ApiRoutesOptions>` boot wiring the family.
 
 ## The composition stores and the config-sync (task U-040, spec §6.2–§6.4, §13, §15.2; decision D-140)
 

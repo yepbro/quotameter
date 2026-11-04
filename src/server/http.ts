@@ -296,13 +296,14 @@ export interface HttpServerOptions {
   readonly logger: Logger;
   /**
    * The route-family dependencies the composition root supplies (tasks
-   * 159–161, decisions D-128/D-130/D-139): the five optional
-   * `ApiRoutesOptions` members beside `auth`, which the construction
-   * derives above. Absent — the bare task-146 construction — the families
-   * stay unregistered and their paths answer the scope catch-all's 404 (the
-   * no-half-wired rule); passing a member wires exactly that family to the
-   * stores the composition owns. The composition root
-   * (`./composition.ts`, task U-040) is the production caller.
+   * 159–162, U-041; decisions D-128/D-130/D-139/D-142/D-146): the
+   * optional `ApiRoutesOptions` members beside `auth` (one per route
+   * family), which the construction derives above. Absent — the bare
+   * task-146 construction — the families stay unregistered and their
+   * paths answer the scope catch-all's 404 (the no-half-wired rule);
+   * passing a member wires exactly that family to the stores the
+   * composition owns. The composition root (`./composition.ts`, task
+   * U-040) is the production caller.
    */
   readonly routes?: Omit<ApiRoutesOptions, 'auth'>;
   /**

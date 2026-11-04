@@ -40,6 +40,7 @@ const accountSchemas = await jiti.import('../src/schemas/api/accounts.ts');
 const settingsSchemas = await jiti.import('../src/schemas/api/settings.ts');
 const historySchemas = await jiti.import('../src/schemas/api/history.ts');
 const peakHoursSchemas = await jiti.import('../src/schemas/api/peak-hours.ts');
+const authSchemas = await jiti.import('../src/schemas/api/auth.ts');
 const errorSchemas = await jiti.import('../src/schemas/api/error.ts');
 const { API_MUTATION_HEADER_NAME, STATE_CHANGING_METHODS } = await jiti.import(
   '../src/server/api/security.ts',
@@ -381,6 +382,57 @@ const OPERATIONS = [
       'INTERNAL',
     ],
   },
+  {
+    method: 'post',
+    path: '/api/auth/login',
+    operationId: 'login',
+    tag: 'auth',
+    summary: 'Log in with the password',
+    description:
+      'Composes §15.2 end to end: the per-source failed-attempt budget (increasing delays, never ' +
+      'rejections — an over-budget attempt is answered slowly with the same envelope, and the ' +
+      'slept delay is clamped to a transport-safe ceiling), scrypt verification, the session ' +
+      'mint, and the `Set-Cookie` header (HttpOnly, SameSite=Strict, Path=/api; Secure when the ' +
+      'client-facing leg is HTTPS). One attempt per source address runs at a time; a same-source ' +
+      'request arriving while another is in flight answers the same 401 under `source-busy` ' +
+      'without being verified. The route is public in the §15.1 sense (the credential-presenting ' +
+      'client has no session yet), so `UNAUTHENTICATED` here is the wrong-or-absent-password ' +
+      'verdict, not the mode guard’s demand. Repeated logins mint fresh sessions; a ' +
+      'passwordless configuration answers 401 fail-closed.',
+    public: true,
+    schema: {
+      body: authSchemas.LoginBodySchema,
+      response: { 200: authSchemas.LoginResponseSchema },
+    },
+    responseDescriptions: {
+      200: 'A session was established; the session cookie is set and `expiresAt` is its row’s effective expiry.',
+    },
+    errorCodes: [
+      'VALIDATION',
+      'UNAUTHENTICATED',
+      'FORBIDDEN',
+      'PAYLOAD_TOO_LARGE',
+      'UNSUPPORTED_MEDIA_TYPE',
+      'INTERNAL',
+    ],
+  },
+  {
+    method: 'post',
+    path: '/api/auth/logout',
+    operationId: 'logout',
+    tag: 'auth',
+    summary: 'Revoke the session and clear the cookie',
+    description:
+      'Session-bound and idempotent: revokes the session row named by the presented cookie and ' +
+      'answers the clear-cookie twin (`Max-Age=0`) whether or not a live row was deleted. Under a ' +
+      'password-demanding §15.1 verdict a request without a valid session answers 401 before the ' +
+      'handler. Carries no body, so the §15.3 mutation header is its only extra requirement.',
+    schema: { response: { 200: authSchemas.LogoutResponseSchema } },
+    responseDescriptions: {
+      200: 'Whether a live session was revoked; the cookie is cleared either way.',
+    },
+    errorCodes: ['VALIDATION', 'UNAUTHENTICATED', 'FORBIDDEN', 'INTERNAL'],
+  },
 ];
 
 /** The tag table (one per route family), in inventory order. */
@@ -397,6 +449,10 @@ const TAGS = [
   {
     name: 'settings',
     description: 'The safe settings view and runtime updates (spec §6.4, §14.5).',
+  },
+  {
+    name: 'auth',
+    description: 'Login and logout over the §15.2 session primitives (spec §15.2, §14.6).',
   },
 ];
 
@@ -493,7 +549,8 @@ export function buildOpenApiDocument(operations = OPERATIONS) {
           name: SESSION_COOKIE_NAME,
           description:
             'Session cookie of the password modes (spec §15.1/§15.2). Passwordless loopback access in ' +
-            '`auto` mode needs no credential; every non-health operation is otherwise authenticated.',
+            '`auto` mode needs no credential; every operation except the health probe and login is ' +
+            'otherwise authenticated.',
         },
       },
     },

@@ -45,6 +45,10 @@
     {
       "name": "settings",
       "description": "The safe settings view and runtime updates (spec §6.4, §14.5)."
+    },
+    {
+      "name": "auth",
+      "description": "Login and logout over the §15.2 session primitives (spec §15.2, §14.6)."
     }
   ],
   "paths": {
@@ -7584,6 +7588,725 @@
           }
         }
       }
+    },
+    "/api/auth/login": {
+      "post": {
+        "summary": "Log in with the password",
+        "description": "Composes §15.2 end to end: the per-source failed-attempt budget (increasing delays, never rejections — an over-budget attempt is answered slowly with the same envelope, and the slept delay is clamped to a transport-safe ceiling), scrypt verification, the session mint, and the `Set-Cookie` header (HttpOnly, SameSite=Strict, Path=/api; Secure when the client-facing leg is HTTPS). One attempt per source address runs at a time; a same-source request arriving while another is in flight answers the same 401 under `source-busy` without being verified. The route is public in the §15.1 sense (the credential-presenting client has no session yet), so `UNAUTHENTICATED` here is the wrong-or-absent-password verdict, not the mode guard’s demand. Repeated logins mint fresh sessions; a passwordless configuration answers 401 fail-closed.",
+        "operationId": "login",
+        "tags": ["auth"],
+        "security": [],
+        "parameters": [
+          {
+            "name": "X-Quotameter-Request",
+            "in": "header",
+            "required": true,
+            "description": "Required on every state-changing request (spec §15.3): a value with at least one non-whitespace character; not interpreted.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "type": "object",
+                "required": ["password"],
+                "properties": {
+                  "password": {
+                    "minLength": 1,
+                    "description": "The account password (write-only, never echoed).",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A session was established; the session cookie is set and `expiresAt` is its row’s effective expiry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["session"],
+                  "properties": {
+                    "session": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["expiresAt"],
+                      "properties": {
+                        "expiresAt": {
+                          "description": "The session row's effective expiry as epoch milliseconds — the instant from which the §15.2 verdict rejects the cookie (half-open, D-124).",
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION — Request validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "PAYLOAD_TOO_LARGE — Request body exceeds the 64 KiB limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE — Content-Type is not supported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL — Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "Revoke the session and clear the cookie",
+        "description": "Session-bound and idempotent: revokes the session row named by the presented cookie and answers the clear-cookie twin (`Max-Age=0`) whether or not a live row was deleted. Under a password-demanding §15.1 verdict a request without a valid session answers 401 before the handler. Carries no body, so the §15.3 mutation header is its only extra requirement.",
+        "operationId": "logout",
+        "tags": ["auth"],
+        "parameters": [
+          {
+            "name": "X-Quotameter-Request",
+            "in": "header",
+            "required": true,
+            "description": "Required on every state-changing request (spec §15.3): a value with at least one non-whitespace character; not interpreted.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether a live session was revoked; the cookie is cleared either way.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["revoked"],
+                  "properties": {
+                    "revoked": {
+                      "description": "Whether a live session row was deleted; the cookie is cleared either way (logout is idempotent).",
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION — Request validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL — Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7592,7 +8315,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "quotameter_session",
-        "description": "Session cookie of the password modes (spec §15.1/§15.2). Passwordless loopback access in `auto` mode needs no credential; every non-health operation is otherwise authenticated."
+        "description": "Session cookie of the password modes (spec §15.1/§15.2). Passwordless loopback access in `auto` mode needs no credential; every operation except the health probe and login is otherwise authenticated."
       }
     }
   }

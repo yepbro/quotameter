@@ -23,8 +23,9 @@
  * the two §15.3 guards — per request it decides whether authentication
  * is required (mode × bind × password presence × proxy indication) and
  * rejects through the envelope's 403-with-instructions and 401 classes,
- * with the health route opting out via its public route config; tasks
- * 153–155 the auth/session endpoints, and tasks 159–162 the remaining API
+ * with the health route opting out via its public route config; task
+ * U-041 (D-146) the login/logout endpoints (`./auth-routes`, composing
+ * the §15.2 primitives D-122–D-126), and tasks 159–162 the remaining API
  * endpoints; each registers inside this scope, so the server construction
  * itself never changes shape again. Task 159 (D-128) landed the accounts
  * endpoints (`./accounts`) as the first dependency-carrying plugin here —
@@ -37,6 +38,8 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import type { AuthRouteOptions } from './auth-routes';
+import { authRoutes } from './auth-routes';
 import type { AccountsRouteOptions } from './accounts';
 import { accountRoutes } from './accounts';
 import { createAuthModeGuard, type AuthModeGuardOptions } from './auth';
@@ -117,6 +120,16 @@ export interface ApiRoutesOptions {
    * 404 envelope until the composition wires real stores.
    */
   readonly peakHours?: PeakHoursRouteOptions;
+  /**
+   * The auth endpoints' dependencies (task U-041, D-146) — the storage
+   * facade, the live stored-hash reader, the clock, and (optionally) the
+   * login-delay sleep; registers `POST /api/auth/login` (public per
+   * D-121's opt-out) and `POST /api/auth/logout` (session-bound).
+   * Optional for the same reason as `accounts`: absent, both paths answer
+   * the scope catch-all's 404 envelope — the §15.2 primitives stay
+   * unwired and the §15.1 seam's fail-closed default holds.
+   */
+  readonly authRoutes?: AuthRouteOptions;
 }
 
 /**
@@ -199,6 +212,16 @@ export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, o
   // above.
   if (options.peakHours !== undefined) {
     await fastify.register(peakHoursRoutes, options.peakHours);
+  }
+
+  // Task U-041 (spec §13, §15.2, §14.6; decision D-146): the login/logout
+  // endpoints — the composition of the four landed §15.2 primitives the
+  // D-125/D-126 plan gap recorded. Same encapsulated-child registration
+  // and no-half-wired rule as the families above; login carries the
+  // D-121 public opt-out, logout is session-bound like every protected
+  // route.
+  if (options.authRoutes !== undefined) {
+    await fastify.register(authRoutes, options.authRoutes);
   }
 
   // Task 148 (D-113, post-verification fix): the scope's catch-all route,
