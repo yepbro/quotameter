@@ -7,7 +7,7 @@ import ApiErrorNotice from './ApiErrorNotice.vue';
 import { useApi, useApiCall } from '../api';
 import { formatEpochMs, formatQuotaNumber } from '../format';
 import { historyRangeIsoBounds, type HistoryRangeId } from '../history-range';
-import { useChartRuntime, type ChartHandle } from '../charts/runtime';
+import { useChartRuntime, type ChartDataZoomEvent, type ChartHandle } from '../charts/runtime';
 import {
   annotationsOf,
   peakBandsOf,
@@ -18,6 +18,7 @@ import {
   buildMetricChartOption,
   chartPlotWidthOf,
   chartSamplesOf,
+  CHART_X_ZOOM_ID,
   rangeNoticeOf,
   resolveViewMode,
   seriesAvailability,
@@ -25,6 +26,7 @@ import {
   type MetricChartOption,
   type MetricChartText,
 } from '../charts/series';
+import { zoomPercentOf, type ChartSync, type ChartZoomPercent } from '../charts/sync';
 import { chartTokensOf } from '../charts/tokens';
 import { chooseTickStep } from '../charts/ticks';
 import { useTheme } from '../theme';
@@ -50,6 +52,14 @@ import { useTheme } from '../theme';
 // The card re-styles live with the theme (D-133): the option computed
 // reads `resolvedTheme`, re-reads the `--qm-*` token cascade, and the
 // chart re-sets its option — no reload, no hardcoded colors.
+//
+// Task 178 (D-153) synchronizes the cursor and zoom across the page's
+// charts: the card joins its ECharts instance to the page's `connect`
+// group (the `sync` prop — cursor moves and zoom windows relay between
+// the group's instances by value/percent), feeds its own `dataZoom` events
+// back into the option (the tick ladder re-densifies over the zoom span
+// while the axes keep the requested bounds), and reports the zoom state
+// the page's reset affordance renders from.
 const { t } = useI18n();
 const api = useApi();
 const runtime = useChartRuntime();
@@ -68,6 +78,11 @@ const props = defineProps<{
   readonly timeZone: string;
   /** Bumped by the page's refresh affordance: re-anchor the rolling window. */
   readonly refreshToken: number;
+  /**
+   * The page's cursor/zoom coordinator (task 178, D-153): carries the
+   * connect group id and receives this chart's zoom reports.
+   */
+  readonly sync: ChartSync;
   /**
    * The account-level §12.2 timeline (the page's range-keyed load, task
    * 176): resets/gaps filter to this metric, error/stopped facts render
@@ -99,12 +114,75 @@ watch(data, (value) => {
 /** What renders: the live response, else the kept copy of the same query. */
 const displayData = computed(() => data.value ?? lastGood.value);
 
+/* ── The §14.4 zoom window (task 178, D-153) ───────────────────────────── */
+
+/**
+ * The active zoom as percent of the requested-bounds extent — `null` is
+ * the full range. Set by this chart's own `dataZoom` events (the user's
+ * gesture AND every window the connect group relayed onto this instance
+ * both fire here).
+ */
+const zoomPercent = ref<ChartZoomPercent | null>(null);
+
+/** Scales one percent window onto the card's requested bounds. */
+function zoomWindowOf(
+  percent: ChartZoomPercent,
+  window: ChartWindow,
+): { from: number; to: number } | null {
+  const span = window.to - window.from;
+  const from = window.from + (span * percent.start) / 100;
+  const to = window.from + (span * percent.end) / 100;
+  return from < to ? { from, to } : null;
+}
+
+/**
+ * The zoom window in instants — the span the tick ladder walks while the
+ * axes keep the requested bounds (the zoom relay's percent base).
+ */
+const zoomWindow = computed(() => {
+  const percent = zoomPercent.value;
+  const window = chartWindow.value;
+  if (percent === null || window === null) return null;
+  return zoomWindowOf(percent, window);
+});
+
+/**
+ * The chart's `dataZoom` event: normalize the percent window, keep it for
+ * the option's tick span, and report it to the page's coordinator (the
+ * reset affordance and the announcement state).
+ */
+function onDataZoom(payload: ChartDataZoomEvent): void {
+  const percent = zoomPercentOf(payload);
+  zoomPercent.value = percent;
+  const window = chartWindow.value;
+  const scaled = percent !== null && window !== null ? zoomWindowOf(percent, window) : null;
+  props.sync.reportZoom(percent === null || scaled === null ? null : { percent, window: scaled });
+}
+
+/** Resets this chart's zoom (the refresh re-anchor; see the watcher below). */
+function resetZoom(): void {
+  // An unzoomed card has nothing to reset — and its `null` report would
+  // claim the group is full-range while other cards still hold a window.
+  if (zoomPercent.value === null) return;
+  zoomPercent.value = null;
+  props.sync.reportZoom(null);
+  chart?.dispatchAction({ type: 'dataZoom', dataZoomId: CHART_X_ZOOM_ID, start: 0, end: 100 });
+}
+
 // Identity and range changes are fresh queries: the previous response
 // belongs to another window (or metric) and must not render for an
-// instant beside the new one — so the kept copy goes with the reset.
+// instant beside the new one — so the kept copy goes with the reset. The
+// zoom clears locally with the same identity (the next window's chart
+// starts unzoomed); the GROUP report happens only where this card held a
+// zoom — a fresh mount reporting `null` would wipe a window the other
+// cards still hold (the late-joiner case).
 watch(
   () => [props.accountId, props.metricKey, props.rangeId] as const,
   () => {
+    if (zoomPercent.value !== null) {
+      zoomPercent.value = null;
+      props.sync.reportZoom(null);
+    }
     lastGood.value = null;
     reset();
     void execute();
@@ -114,10 +192,15 @@ watch(
 
 // A refresh is the same query with fresh bounds: the last-good chart
 // stays rendered (D-135's keep-last-good rule) — on success until the
-// fresh data replaces it, on failure beside the notice.
+// fresh data replaces it, on failure beside the notice. The bounds moved,
+// so the previous zoom's percent would name DIFFERENT instants on the new
+// window — a zoomed card resets its own zoom before re-loading (every
+// zoomed card of the page runs the same reset through the same token; an
+// unzoomed card has nothing to reset and nothing to report).
 watch(
   () => props.refreshToken,
   () => {
+    resetZoom();
     void execute();
   },
 );
@@ -249,6 +332,9 @@ const option = computed<MetricChartOption | null>(() => {
       from: response.range.requestedFrom,
       to: response.range.requestedTo,
     },
+    // The active zoom span (D-153): the tick ladder re-densifies over it
+    // inside the builder; absent when the window is full-range.
+    ...(zoomWindow.value === null ? {} : { zoom: zoomWindow.value }),
     // The measured canvas width — the tick-density input (0 ⇒ the §14.1
     // floor inside the builder, until the host reports its real size).
     widthPx: chartWidth.value,
@@ -360,11 +446,34 @@ let resizeObserver: ResizeObserver | null = null;
 const chartWidth = ref(0);
 
 function releaseChart(): void {
+  if (chart !== null) {
+    // The detach precedes the dispose: an empty group forgets the shared
+    // zoom (D-153) while the instance is still a valid handle.
+    props.sync.detach(chart);
+    chart.off('dataZoom', onDataZoom);
+  }
+  syncAttached = false;
   resizeObserver?.disconnect();
   resizeObserver = null;
   chart?.dispose();
   chart = null;
 }
+
+/** Whether this card's live instance has joined the page's sync group. */
+let syncAttached = false;
+
+/**
+ * The option-update discipline (D-148's deferred follow-through, D-153):
+ * merge-mode `setOption` with `replaceMerge` over the four families whose
+ * COUNT varies (series, xAxis, yAxis, grid — annotation series and strip
+ * axes appear and disappear with the events/peaks props). Everything the
+ * option declares is re-set on every update, so no stale configuration
+ * survives (the old `notMerge` guarantee), while ECharts' own interaction
+ * state — the dataZoom window this task adds, a legend series toggle —
+ * persists across data, view, theme, and tick updates instead of being
+ * wiped by a full replace.
+ */
+const MERGE_REPLACE_FAMILIES = ['series', 'xAxis', 'yAxis', 'grid'] as const;
 
 // One effect owns the instance: it initializes when a host and an option
 // exist together, then re-sets the option on every change — new data, a
@@ -380,18 +489,20 @@ watchEffect(() => {
   const optionValue = option.value;
   if (element === null || optionValue === null) return;
   if (chart === null) {
-    chart = runtime.createChart(element);
+    chart = runtime.createChart(element, { syncGroup: props.sync.groupId });
+    chart.on('dataZoom', onDataZoom);
     resizeObserver = new ResizeObserver(() => {
       chart?.resize();
       const width = element.clientWidth;
       if (width <= 0) return;
       // The tick content depends on the width only through the chosen
-      // ladder step: while the step holds, a width change stretches the
-      // same instants (the resize above) and re-setting the whole option
-      // per observer frame would be wasted work (and would reset ECharts'
-      // interaction state under `notMerge`).
-      const window = chartWindow.value;
-      const span = window === null ? 0 : window.to - window.from;
+      // ladder step, and the ladder walks the ACTIVE tick window — the
+      // zoom span when one is live, else the requested window: while the
+      // step holds, a width change stretches the same instants (the
+      // resize above) and re-setting the whole option per observer frame
+      // would be wasted work.
+      const tickWindow = zoomWindow.value ?? chartWindow.value;
+      const span = tickWindow === null ? 0 : tickWindow.to - tickWindow.from;
       if (
         span <= 0 ||
         chooseTickStep(span, chartPlotWidthOf(chartWidth.value)) !==
@@ -402,12 +513,13 @@ watchEffect(() => {
     });
     resizeObserver.observe(element);
   }
-  // `notMerge` is deliberate: the option is rebuilt whole every time
-  // (data, view, theme), so no stale configuration can survive an
-  // update — at the cost of resetting ECharts' own interaction state
-  // (a legend-series toggle), which task 178's cursor/zoom work owns
-  // and will reconcile with its state-preserving updates.
-  chart.setOption(optionValue, { notMerge: true });
+  chart.setOption(optionValue, { replaceMerge: MERGE_REPLACE_FAMILIES });
+  // The group join follows the first `setOption`: a late joiner's
+  // catch-up dispatch must find the dataZoom id in the live option.
+  if (!syncAttached) {
+    syncAttached = true;
+    props.sync.attach(chart);
+  }
 });
 
 // The host unmounting (the card switched states) releases the instance —

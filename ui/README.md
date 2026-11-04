@@ -472,14 +472,15 @@ renders the §12.2/§9.3 annotations on the same charts: reset markers,
 peak/off-peak bands, gap/stopped hatch regions, and the failed-cycle
 strip.
 
-| Module                                  | Owns                                                                                                                                                                                                                                                        |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/charts/runtime.ts`                 | the ONLY module importing ECharts: modular `echarts/core` + the line/scatter/custom/grid/tooltip/legend/markLine/canvas pieces, the `ChartHandle` structural seam, the injectable `ChartRuntime` (`useChartRuntime()`), and the production `cssTokenReader` |
-| `src/charts/ticks.ts`                   | the pure §14.4 tick engine (task 177, D-150): local hour/day/month boundary walks in the configured display zone (DST-exact, `Intl`-only), the density ladder over the measured plot width, and the per-tick labels incl. the DST zone-name disambiguation  |
-| `src/charts/tokens.ts`                  | the pure `--qm-*` token → `ChartTokens` mapping (`chartTokensOf(read)`); the single list of token names all theme blocks must carry                                                                                                                         |
-| `src/charts/annotations.ts`             | the pure §12.2/§9.3 mapping: the account timeline → one metric's resets/gaps/errors/stopped (per-metric vs account-level split), the served peak intervals → bands, the outcome → symbol map                                                                |
-| `src/charts/series.ts`                  | the pure adapter: D-139 wire kinds → `ChartSample`s, availability/`resolveViewMode`, the D-147 sliver-thresholded `rangeNoticeOf`, and `buildMetricChartOption` (one mode, one unit, one value y-axis, the annotation series)                               |
-| `src/components/MetricHistoryChart.vue` | the card: its own per-metric `useApiCall`, the toggle (native radios, one group per card), the states, the ECharts instance lifecycle, the aria summary with the annotation counts                                                                          |
+| Module                                  | Owns                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/charts/runtime.ts`                 | the ONLY module importing ECharts: modular `echarts/core` + the line/scatter/custom/grid/tooltip/legend/markLine/dataZoom-inside/axisPointer/canvas pieces, the `ChartHandle` structural seam (incl. the sync-relevant `on`/`dispatchAction`), the injectable `ChartRuntime` (`useChartRuntime()`, `createChart(element, {syncGroup})` joins a `connect` group), and the production `cssTokenReader` |
+| `src/charts/sync.ts`                    | the §14.4 cursor/zoom coordinator (task 178, D-153): the page-minted `connect` group id, the shared zoom state (`zoomed`/`zoomWindow`), the empty-group-forgets and late-joiner-adopts identity rules, and the dispatch-to-every-handle reset — echarts-free                                                                                                                                         |
+| `src/charts/ticks.ts`                   | the pure §14.4 tick engine (task 177, D-150): local hour/day/month boundary walks in the configured display zone (DST-exact, `Intl`-only), the density ladder over the measured plot width, and the per-tick labels incl. the DST zone-name disambiguation                                                                                                                                           |
+| `src/charts/tokens.ts`                  | the pure `--qm-*` token → `ChartTokens` mapping (`chartTokensOf(read)`); the single list of token names all theme blocks must carry                                                                                                                                                                                                                                                                  |
+| `src/charts/annotations.ts`             | the pure §12.2/§9.3 mapping: the account timeline → one metric's resets/gaps/errors/stopped (per-metric vs account-level split), the served peak intervals → bands, the outcome → symbol map                                                                                                                                                                                                         |
+| `src/charts/series.ts`                  | the pure adapter: D-139 wire kinds → `ChartSample`s, availability/`resolveViewMode`, the D-147 sliver-thresholded `rangeNoticeOf`, and `buildMetricChartOption` (one mode, one unit, one value y-axis, the annotation series)                                                                                                                                                                        |
+| `src/components/MetricHistoryChart.vue` | the card: its own per-metric `useApiCall`, the toggle (native radios, one group per card), the states, the ECharts instance lifecycle, the aria summary with the annotation counts                                                                                                                                                                                                                   |
 
 - **ECharts.** A devDependency mirroring `vue`/`vue-i18n`/`vue-router`
   (the shipped tarball carries the prebuilt bundle; spec §3 keeps
@@ -537,13 +538,34 @@ false`); D-081 downsampling buckets render as their `first`/`last`
 - **The range report.** A `truncated` clamp within 60 s stays quiet (the
   D-147 clock-skew sliver); a real truncation names the retained
   window's start; a rejected range states that instead of a chart.
+- **Cursor and zoom are synchronized across the page's charts (task 178,
+  D-153).** Every chart card is created into one ECharts `connect` group
+  (a page-minted id): hovering one chart relays the hovered instant to
+  every other chart — each renders its own tooltip and axis pointer at
+  the same instant — and a zoom on one chart relays the same percent
+  window to all (the percent names identical instants because every
+  chart's x-extent is the same requested-bounds window). The zoom is an
+  `inside` dataZoom over both x-axes (drag to pan, Shift+wheel to zoom —
+  the plain wheel keeps scrolling the page), floored at a one-hour span
+  (the tick ladder's own floor), and it never widens past the loaded
+  range: the range radios stay the load authority, a refresh re-anchors
+  the window and resets the zoom, and a range switch starts the new
+  window unzoomed. While a zoom is live the charts header carries a
+  keyboard-operable **Reset zoom** button, and a polite live region
+  announces each transition (the applied window's instants in the
+  display zone, or the reset). Option updates merge
+  (`replaceMerge` over the series/axes/grids families) so the zoom and
+  legend interaction state survive data, theme, and tick updates —
+  D-148's deferred follow-through.
 - **Testing seam.** ECharts cannot boot under happy-dom (zrender
   measures text through a real canvas 2d context), so component tests
   inject a recording `ChartRuntime` through `useChartRuntime()` — every
   option the card builds is asserted through the fake handle, while the
   token reader stays the production one over live inline custom
   properties. The band renderer is a pure `renderItem` factory asserted
-  against a stubbed api. ECharts itself renders only in real browsers.
+  against a stubbed api. ECharts itself renders only in real browsers —
+  the e2e sync cell drives the real relay (Shift+wheel over one canvas)
+  but asserts only DOM state, never canvas pixels.
 
 ## Layout
 
@@ -577,8 +599,9 @@ false`); D-081 downsampling buckets render as their `first`/`last`
   §14.4 rolling-range vocabulary/boundary arithmetic and its control
   (task 174, D-147; see
   [The overview page (task 172)](#the-overview-page-task-172)).
-- `src/charts/` — the ECharts runtime seam, the token mapping, and the
-  pure series adapter/option builder (task 175, D-148), beside
+- `src/charts/` — the ECharts runtime seam, the token mapping, the pure
+  series adapter/option builder (task 175, D-148), the cursor/zoom
+  coordinator (task 178, D-153), beside
   `src/components/MetricHistoryChart.vue` — the per-metric chart card
   (see [The metric charts (task 175, decision
   D-148)](#the-metric-charts-task-175-decision-d-148)).

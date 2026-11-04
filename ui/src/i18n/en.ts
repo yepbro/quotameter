@@ -140,6 +140,14 @@ export const en = {
       errorAttempts: 'attempts: {count}',
       errorStatus: 'HTTP {status}',
       errorRetryAfter: 'retry after {seconds} s',
+      // The §14.4 cursor/zoom sync (task 178, D-153): the page-level reset
+      // (a keyboard-operable native button, rendered exactly while a zoom
+      // window is live) and the polite live region that announces the
+      // zoom transitions — one sentence per transition, never per wheel
+      // tick (§14.1).
+      resetZoom: 'Reset zoom',
+      zoomApplied: 'Charts zoomed to {from} – {to}.',
+      zoomReset: 'Zoom reset — charts show the full selected range.',
     },
     empty: {
       // The page-level no-accounts guidance (task 173, spec §14.3):

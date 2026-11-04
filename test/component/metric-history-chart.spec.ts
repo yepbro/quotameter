@@ -10,14 +10,22 @@ import type { PeakHoursResponse } from '../../src/schemas/api/peak-hours';
 import type { MetricUnit } from '../../src/schemas/metrics';
 import MetricHistoryChart from '../../ui/src/components/MetricHistoryChart.vue';
 import { createApiClientPlugin } from '../../ui/src/api';
+import { formatChartDate } from '../../ui/src/format';
 import { historyRangeIsoBounds } from '../../ui/src/history-range';
 import {
   CHART_RUNTIME_KEY,
   cssTokenReader,
+  type ChartDataZoomEvent,
+  type ChartDataZoomResetAction,
   type ChartHandle,
   type ChartRuntime,
 } from '../../ui/src/charts/runtime';
-import type { MetricChartOption } from '../../ui/src/charts/series';
+import {
+  CHART_X_ZOOM_ID,
+  MIN_ZOOM_SPAN_MS,
+  type MetricChartOption,
+} from '../../ui/src/charts/series';
+import { createChartSync, type ChartSync } from '../../ui/src/charts/sync';
 import { createAppI18n } from '../../ui/src/i18n';
 import { en } from '../../ui/src/i18n/en';
 import { createAppTheme, type ThemeController } from '../../ui/src/theme';
@@ -38,21 +46,32 @@ import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
  * flow into the option — this metric's resets only, the account-level
  * strip, the served peak bands — and the aria summary states the mark
  * counts as text.
+ *
+ * Task 178 (D-153): the card joins the page's cursor/zoom group (the
+ * `syncGroup` the create call carries), reports its `dataZoom` events to
+ * the coordinator, re-densifies its ticks over the zoom span while the
+ * axes keep the requested bounds, resets its own zoom on a refresh, and
+ * hands its handle to the coordinator after the first option lands.
  */
 
 /* ── The recording chart runtime ───────────────────────────────────────── */
 
 interface RecordedSetOption {
   readonly option: MetricChartOption;
-  readonly opts?: { readonly notMerge?: boolean };
+  readonly opts?: { readonly notMerge?: boolean; readonly replaceMerge?: readonly string[] };
 }
 
 class RecordingChartHandle implements ChartHandle {
   readonly setOptions: RecordedSetOption[] = [];
+  readonly actions: ChartDataZoomResetAction[] = [];
+  readonly dataZoomHandlers: Array<(payload: ChartDataZoomEvent) => void> = [];
   resized = 0;
   disposed = false;
 
-  setOption(option: MetricChartOption, opts?: { readonly notMerge?: boolean }): void {
+  setOption(
+    option: MetricChartOption,
+    opts?: { readonly notMerge?: boolean; readonly replaceMerge?: readonly string[] },
+  ): void {
     this.setOptions.push({ option, opts });
   }
 
@@ -63,16 +82,37 @@ class RecordingChartHandle implements ChartHandle {
   dispose(): void {
     this.disposed = true;
   }
+
+  on(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+    this.dataZoomHandlers.push(handler);
+  }
+
+  off(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+    const index = this.dataZoomHandlers.indexOf(handler);
+    if (index >= 0) this.dataZoomHandlers.splice(index, 1);
+  }
+
+  dispatchAction(action: ChartDataZoomResetAction): void {
+    this.actions.push(action);
+  }
+
+  /** Fires one `dataZoom` event the way the real runtime would. */
+  emitDataZoom(payload: ChartDataZoomEvent): void {
+    for (const handler of [...this.dataZoomHandlers]) handler(payload);
+  }
 }
 
 class RecordingChartRuntime implements ChartRuntime {
   readonly handles: RecordingChartHandle[] = [];
   readonly hosts: HTMLElement[] = [];
+  /** The sync group each created chart was asked to join (D-153). */
+  readonly syncGroups: (string | undefined)[] = [];
 
-  createChart(element: HTMLElement): ChartHandle {
+  createChart(element: HTMLElement, options?: { readonly syncGroup?: string }): ChartHandle {
     const handle = new RecordingChartHandle();
     this.handles.push(handle);
     this.hosts.push(element);
+    this.syncGroups.push(options?.syncGroup);
     return handle;
   }
 
@@ -207,6 +247,7 @@ interface MountOptions {
     rangeId: '24h' | '3d' | '7d' | '14d' | '30d';
     timeZone: string;
     refreshToken: number;
+    sync: ChartSync;
     events: EventsResponse | null;
     peaks: PeakHoursResponse | null;
   }>;
@@ -218,8 +259,10 @@ async function mountChart(options: MountOptions): Promise<{
   runtime: RecordingChartRuntime;
   calls: RecordedCall[];
   controller: ThemeController;
+  sync: ChartSync;
 }> {
   const runtime = new RecordingChartRuntime();
+  const sync = options.props?.sync ?? createChartSync();
   const controller =
     options.controller ??
     createAppTheme({ storage: new MemoryThemeStorage(), media: new FakeThemeMedia() });
@@ -233,6 +276,7 @@ async function mountChart(options: MountOptions): Promise<{
       rangeId: '7d',
       timeZone: 'UTC',
       refreshToken: 0,
+      sync,
       ...options.props,
     },
     global: {
@@ -242,7 +286,7 @@ async function mountChart(options: MountOptions): Promise<{
   });
   wrappers.push(wrapper);
   await settle();
-  return { wrapper, runtime, calls: fake.calls, controller };
+  return { wrapper, runtime, calls: fake.calls, controller, sync };
 }
 
 async function settle(): Promise<void> {
@@ -489,7 +533,9 @@ describe('metric chart: rendering and the percent/absolute toggle (§14.4)', () 
     const handle = runtime.handles[0]!;
     expect(handle.setOptions.length).toBeGreaterThan(0);
     const first = handle.setOptions[0]!;
-    expect(first.opts).toEqual({ notMerge: true });
+    // D-148's deferred follow-through (D-153): merge-mode updates — the
+    // count-varying families replace, the interaction state persists.
+    expect(first.opts).toEqual({ replaceMerge: ['series', 'xAxis', 'yAxis', 'grid'] });
 
     // The done-condition's construction: ONE value axis, one unit —
     // both series plot absolute credits fields.
@@ -884,7 +930,12 @@ describe('metric chart: the annotation props (task 176, D-149)', () => {
     });
 
     const option = runtime.handles[0]!.setOptions[0]!.option;
-    expect(option.series.find((series) => 'id' in series)).toBeUndefined();
+    expect(
+      option.series.find(
+        (series) =>
+          'id' in series && (series.id === 'qm-chart-bands' || series.id === 'qm-chart-errors'),
+      ),
+    ).toBeUndefined();
     expect(option.series).toHaveLength(2);
     expect(option.grid).toHaveLength(1);
     expect(option.legend.data).toEqual([
@@ -1026,5 +1077,255 @@ describe('metric chart: the axis ticks (task 177, D-150)', () => {
     await settle();
     expect(handle.setOptions).toHaveLength(2);
     expect(handle.resized).toBe(2);
+  });
+});
+
+/* ── Task 178: the cursor/zoom sync wiring (D-153) ────────────────────── */
+
+describe('metric chart: the cursor/zoom sync (task 178, D-153)', () => {
+  it('joins the page’s connect group and carries the shared zoom and cursor config', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const sync = createChartSync();
+    const instants = windowInstants();
+    const { runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { sync, events: eventsProp(instants) },
+    });
+
+    // The instance joins the coordinator's group — the connect relay's
+    // membership is the page-minted id, never a per-card one.
+    expect(runtime.syncGroups).toEqual([sync.groupId]);
+
+    const option = runtime.handles[0]!.setOptions[0]!.option;
+    // One inside zoom over every x-axis of THIS chart: the strip rides.
+    expect(option.dataZoom).toEqual([
+      {
+        type: 'inside',
+        id: CHART_X_ZOOM_ID,
+        xAxisIndex: [0, 1],
+        filterMode: 'weakFilter',
+        minValueSpan: MIN_ZOOM_SPAN_MS,
+        zoomOnMouseWheel: 'shift',
+      },
+    ]);
+    // The cursor's on-axis label formats the instant in the zone — never
+    // the raw epoch-ms number — and colors through the tooltip tokens
+    // (D-133; ECharts' defaults hardcode its built-in theme).
+    expect(option.axisPointer.label.formatter({ value: T0 })).toBe(formatChartDate(T0, 'UTC'));
+    expect(option.axisPointer.label.backgroundColor).toBe(LIGHT_TOKENS['--qm-color-background']);
+    expect(option.axisPointer.label.color).toBe(LIGHT_TOKENS['--qm-color-foreground']);
+    // The stable ids merge-mode matching relies on (D-153).
+    expect(option.series.map((series) => series.id)).toEqual([
+      'qm-series-used',
+      'qm-series-remaining',
+      'qm-chart-errors',
+    ]);
+    expect(option.xAxis.map((axis) => axis.id)).toEqual(['qm-x-main', 'qm-x-strip']);
+    expect(option.yAxis.map((axis) => axis.id)).toEqual(['qm-y-main', 'qm-y-strip']);
+    expect(option.grid.map((grid) => grid.id)).toEqual(['qm-grid-main', 'qm-grid-strip']);
+  });
+
+  it('a strip-less chart zooms its one axis (the degenerate axis list)', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+    });
+    const option = runtime.handles[0]!.setOptions[0]!.option;
+    expect(option.dataZoom[0]!.xAxisIndex).toEqual([0]);
+    expect(option.xAxis.map((axis) => axis.id)).toEqual(['qm-x-main']);
+  });
+
+  it('feeds a zoom event back: ticks over the zoom span, bounds untouched', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { runtime, sync } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+    });
+    const handle = runtime.handles[0]!;
+    const first = handle.setOptions[0]!.option;
+    const from = first.xAxis[0]!.min;
+    const to = first.xAxis[0]!.max;
+    const fullTicks = first.xAxis[0]!.axisLabel.customValues!;
+
+    // The zoom event ECharts fires on the user's gesture (batched shape).
+    handle.emitDataZoom({ batch: [{ dataZoomId: CHART_X_ZOOM_ID, start: 40, end: 60 }] });
+    await settle();
+
+    const zoomed = handle.setOptions.at(-1)!.option;
+    // The axes KEEP the requested bounds — the percent base the group's
+    // relay scales (the alignment invariant, D-153).
+    expect(zoomed.xAxis[0]!.min).toBe(from);
+    expect(zoomed.xAxis[0]!.max).toBe(to);
+    // The tick ladder walked the ZOOM span: every tick sits inside the
+    // zoomed middle fifth of the window (the un-recomputed full-window
+    // set would fail this — three of its four ticks sit outside).
+    const zoomFrom = from + ((to - from) * 40) / 100;
+    const zoomTo = from + ((to - from) * 60) / 100;
+    const zoomTicks = zoomed.xAxis[0]!.axisLabel.customValues!;
+    expect(zoomTicks.length).toBeGreaterThanOrEqual(2);
+    for (const tick of zoomTicks) {
+      expect(tick).toBeGreaterThanOrEqual(zoomFrom - 1);
+      expect(tick).toBeLessThanOrEqual(zoomTo);
+    }
+    // The coordinator holds the scaled window — the page's announcement
+    // source — with the exact card arithmetic.
+    expect(sync.zoomed.value).toBe(true);
+    expect(sync.zoomWindow.value).toEqual({ from: zoomFrom, to: zoomTo });
+
+    // A full-range event retires the zoom: the ladder walks the whole
+    // window again (the identical tick set) and the page state clears.
+    handle.emitDataZoom({ start: 0, end: 100 });
+    await settle();
+    expect(sync.zoomed.value).toBe(false);
+    expect(handle.setOptions.at(-1)!.option.xAxis[0]!.axisLabel.customValues).toEqual(fullTicks);
+  });
+
+  it('reports the zoom to the coordinator; a later card adopts the shared window', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const sync = createChartSync();
+    const { runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { sync },
+    });
+    runtime.handles[0]!.emitDataZoom({
+      batch: [{ dataZoomId: CHART_X_ZOOM_ID, start: 10, end: 30 }],
+    });
+    await settle();
+    expect(sync.zoomed.value).toBe(true);
+
+    // A card whose data lands later joins the already-zoomed group: the
+    // attach dispatches the shared percent to its fresh handle (after its
+    // first option landed, so the id resolves).
+    const { runtime: lateRuntime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { sync, metricKey: 'mcp-monthly' },
+    });
+    expect(lateRuntime.handles[0]!.actions).toEqual([
+      { type: 'dataZoom', dataZoomId: CHART_X_ZOOM_ID, start: 10, end: 30 },
+    ]);
+  });
+
+  it('a refresh re-anchors the window: the card resets its own zoom', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { wrapper, runtime, sync } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+    });
+    const handle = runtime.handles[0]!;
+    handle.emitDataZoom({ start: 20, end: 40 });
+    await settle();
+    expect(sync.zoomed.value).toBe(true);
+
+    await wrapper.setProps({ refreshToken: 1 });
+    await settle();
+
+    // The bounds moved with the fresh "now" — the old percent would name
+    // different instants, so the card dispatched its own reset and the
+    // page state followed.
+    expect(handle.actions).toEqual([
+      { type: 'dataZoom', dataZoomId: CHART_X_ZOOM_ID, start: 0, end: 100 },
+    ]);
+    expect(sync.zoomed.value).toBe(false);
+    // The same chart instance stays (the keep-last-good refresh path).
+    expect(handle.disposed).toBe(false);
+    expect(runtime.handles).toHaveLength(1);
+  });
+
+  it('a range switch clears the zoom with the identity — the fresh chart starts clean', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const sync = createChartSync();
+    const { wrapper, runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { sync },
+    });
+    runtime.handles[0]!.emitDataZoom({ start: 15, end: 45 });
+    await settle();
+    expect(sync.zoomed.value).toBe(true);
+
+    await wrapper.setProps({ rangeId: '3d' });
+    await settle();
+
+    // The old instance released with its host (detached from the group),
+    // and the fresh instance received NO catch-up dispatch — the previous
+    // window's zoom never applies to the new window.
+    expect(runtime.handles[0]!.disposed).toBe(true);
+    const fresh = runtime.handles[1]!;
+    expect(fresh.setOptions.length).toBeGreaterThan(0);
+    expect(fresh.actions).toEqual([]);
+    expect(sync.zoomed.value).toBe(false);
+  });
+
+  it('re-fits the tick ladder over the ZOOM span on resize (the review round’s P2)', async () => {
+    applyTokens(LIGHT_TOKENS);
+    // A controllable ResizeObserver (happy-dom's never fires; the
+    // component's callback reads the host's clientWidth).
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          observers.push(callback);
+        }
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      },
+    );
+    const { wrapper, runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+    });
+    const handle = runtime.handles[0]!;
+    const host = wrapper.find('[data-testid="chart-canvas"]').element as HTMLElement;
+
+    // Zoom to the middle fifth of the 7-day window, still at the §14.1
+    // floor width (plot 284 px — the ladder's 12-hour step).
+    handle.emitDataZoom({ start: 40, end: 60 });
+    await settle();
+    const zoomTicks = handle.setOptions.at(-1)!.option.xAxis[0]!.axisLabel.customValues!;
+    expect(handle.setOptions).toHaveLength(2); // the initial render + the zoom
+
+    // A width whose FULL-window step holds (2-day at both plot 284 and
+    // plot 447) but whose ZOOM-window step moves (12-hour → 6-hour): the
+    // re-fit gate must read the ACTIVE tick span, not the requested
+    // window — otherwise the zoomed chart keeps the stale density.
+    Object.defineProperty(host, 'clientWidth', { value: 523, configurable: true });
+    observers[0]!();
+    await settle();
+
+    // The re-fit re-set the option over the zoom span at the wider plot.
+    expect(handle.setOptions).toHaveLength(3);
+    const refitTicks = handle.setOptions.at(-1)!.option.xAxis[0]!.axisLabel.customValues!;
+    expect(refitTicks.length).toBeGreaterThan(zoomTicks.length);
+    expect(refitTicks.length).toBeGreaterThan(zoomTicks.length);
+    // The refit still walks the zoom span, and the bounds stay full.
+    const axis = handle.setOptions.at(-1)!.option.xAxis[0]!;
+    const full = handle.setOptions[0]!.option.xAxis[0]!;
+    expect(axis.min).toBe(full.min);
+    expect(axis.max).toBe(full.max);
+    for (const tick of refitTicks) {
+      expect(tick).toBeGreaterThanOrEqual(axis.min);
+      expect(tick).toBeLessThanOrEqual(axis.max);
+    }
+  });
+
+  it('unmount detaches the handle and drops the event subscription', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const sync = createChartSync();
+    const { wrapper, runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { sync },
+    });
+    const handle = runtime.handles[0]!;
+    runtime.handles[0]!.emitDataZoom({ start: 5, end: 50 });
+    await settle();
+    expect(sync.zoomed.value).toBe(true);
+    expect(handle.dataZoomHandlers.length).toBeGreaterThan(0);
+
+    wrapper.unmount();
+    wrappers.pop();
+
+    // The group forgot with its last chart, and the released handle is
+    // unsubscribed (a late fire could not resurrect the state).
+    expect(handle.disposed).toBe(true);
+    expect(handle.dataZoomHandlers).toHaveLength(0);
+    expect(sync.zoomed.value).toBe(false);
   });
 });

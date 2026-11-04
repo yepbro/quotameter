@@ -16,6 +16,8 @@ import MetricCard from '../components/MetricCard.vue';
 import MetricHistoryChart from '../components/MetricHistoryChart.vue';
 import { useApi, useApiCall } from '../api';
 import { useAccountSelection } from '../account-selection';
+import { createChartSync } from '../charts/sync';
+import { formatChartDate } from '../format';
 import {
   HISTORY_RANGE_DEFAULT,
   historyRangeIsoBounds,
@@ -273,6 +275,43 @@ const chartTargets = computed((): readonly { accountId: string; metricKey: strin
   const metrics = lastQuota.value?.metrics ?? [];
   return metrics.map((metric) => ({ accountId, metricKey: metric.metricKey }));
 });
+
+/* ── Task 178: the §14.4 cursor/zoom sync (decision D-153) ─────────────── */
+
+/**
+ * The charts' shared cursor/zoom coordinator: its `groupId` joins every
+ * chart card's ECharts instance to one `connect` group (cursor moves and
+ * zoom windows relay between them), and its zoom state is what this page
+ * renders — the reset affordance and the announcement below.
+ */
+const chartSync = createChartSync();
+/** Top-level bindings so the template unwraps them (`chartsZoomed`). */
+const chartsZoomed = chartSync.zoomed;
+
+/**
+ * The last zoom TRANSITION's announcement — `null` renders nothing. The
+ * sentence is SNAPSHOTTED at the transition (a plain string, not a
+ * computed over the live window): a polite live region re-announces on
+ * every text change, so the applied window is stated once per zoom-in —
+ * never per wheel tick (§14.1), and never again when the zone changes
+ * mid-zoom.
+ */
+const zoomStatusText = ref<string | null>(null);
+watch(chartsZoomed, (zoomed) => {
+  const window = chartSync.zoomWindow.value;
+  zoomStatusText.value =
+    zoomed && window !== null
+      ? t('overview.chart.zoomApplied', {
+          from: formatChartDate(window.from, timeZone.value),
+          to: formatChartDate(window.to, timeZone.value),
+        })
+      : t('overview.chart.zoomReset');
+});
+
+/** The shared zoom reset — every live chart, one dispatch each (D-153). */
+function resetChartZoom(): void {
+  chartSync.reset();
+}
 
 /**
  * The refresh epoch: bumped by the refresh affordance, watched by every
@@ -565,14 +604,37 @@ function optionText(account: AccountView): string {
           each owning its range-keyed series load — one compatible unit
           per chart, the percent/absolute toggle where the data carries
           both views. Keyed by account + metric so a selection switch is
-          a fresh card set (no per-account state leaks across). -->
+          a fresh card set (no per-account state leaks across). Task 178
+          (D-153): every card joins the shared cursor/zoom group; the
+          header's reset appears exactly while a zoom window is live and
+          the live region below announces the transitions. -->
         <section
           v-if="chartTargets.length > 0"
           class="charts"
           data-testid="overview-charts"
           aria-labelledby="overview-charts-title"
         >
-          <h3 id="overview-charts-title">{{ t('overview.chart.regionTitle') }}</h3>
+          <div class="charts-header">
+            <h3 id="overview-charts-title">{{ t('overview.chart.regionTitle') }}</h3>
+            <button
+              v-if="chartsZoomed"
+              type="button"
+              data-testid="chart-zoom-reset"
+              @click="resetChartZoom"
+            >
+              {{ t('overview.chart.resetZoom') }}
+            </button>
+          </div>
+          <!-- The zoom announcement (a polite live region): one sentence
+            per transition, never per wheel tick (§14.1). -->
+          <p
+            v-if="zoomStatusText !== null"
+            class="status zoom-status"
+            role="status"
+            data-testid="chart-zoom-status"
+          >
+            {{ zoomStatusText }}
+          </p>
           <MetricHistoryChart
             v-for="target in chartTargets"
             :key="`${target.accountId}\u0000${target.metricKey}`"
@@ -582,6 +644,7 @@ function optionText(account: AccountView): string {
             :range-id="selectedRange"
             :time-zone="timeZone"
             :refresh-token="historyRefreshToken"
+            :sync="chartSync"
             :events="displayEvents"
             :peaks="displayPeaks"
           />
@@ -710,9 +773,30 @@ function optionText(account: AccountView): string {
   margin-top: 1rem;
 }
 
-.charts h3 {
+.charts-header {
   grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+}
+
+.charts-header h3 {
   margin: 0;
   font-size: 1.125rem;
+}
+
+.charts-header button {
+  color: var(--qm-color-foreground);
+  background-color: var(--qm-color-background);
+  border: 1px solid var(--qm-color-muted);
+  border-radius: 4px;
+  font: inherit;
+  padding: 0.125rem 0.625rem;
+}
+
+.zoom-status {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 </style>

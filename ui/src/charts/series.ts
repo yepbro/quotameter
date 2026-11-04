@@ -47,6 +47,26 @@
  *   style, and hatch direction; the reset markers carry an on-line "Reset"
  *   label; the error markers differ by symbol shape and join the legend by
  *   name.
+ * - **The §14.4 cursor/zoom (task 178, D-153).** Every component the option
+ *   declares carries a STABLE ID, and the page's charts share one ECharts
+ *   `connect` group: the group relays the value-carrying `updateAxisPointer`
+ *   events (the cursor) and the percent-based `dataZoom` actions (the zoom)
+ *   between the separately-instantiated charts. The zoom is ONE inside
+ *   dataZoom over BOTH x-axes (the strip rides the window), percent-based
+ *   over the requested-bounds extent — the extent every chart of the page
+ *   shares, so percent windows mean the same instants everywhere; its id
+ *   (`CHART_X_ZOOM_ID`) is what the group's relay and the page's reset
+ *   target. The zoom window never widens past the loaded range (a zoom
+ *   re-queries nothing — D-147's radios stay the load authority) and never
+ *   narrows below {@link MIN_ZOOM_SPAN_MS}: D-150's tick ladder starts at
+ *   the hour, so a narrower window would render unlabeled axes; sub-hour
+ *   rungs stay D-150's recorded follow-up. When a zoom window is active the
+ *   builder walks its ticks over the ZOOM span (`zoom` input) while the
+ *   axes' `min`/`max` STAY the requested bounds — the percent base the
+ *   relay's arithmetic depends on. The axis-pointer label formats through
+ *   the display zone (ECharts' default renders the raw epoch-ms number) and
+ *   colors through the tooltip tokens (the default hardcodes ECharts'
+ *   built-in theme colors — D-133's rule).
  * - **The D-147 residual.** A `truncated` range report whose clamp is a
  *   sub-tolerance sliver is NOT surfaced as a truncation —
  *   {@link TRUNCATION_NOTICE_MS} thresholds it.
@@ -232,6 +252,12 @@ export interface ChartMarkLineOption {
 /** One line series (a subset of ECharts' series option). */
 export interface ChartSeriesOption {
   readonly type: 'line';
+  /**
+   * Stable across every option of every chart (D-153): merge-mode updates
+   * match components by id first, and the index-stable pair must never
+   * reshuffle when annotation series appear or disappear.
+   */
+  readonly id: string;
   readonly name: string;
   readonly xAxisIndex: number;
   readonly yAxisIndex: number;
@@ -346,6 +372,8 @@ export interface ChartErrorSeriesOption {
 /** One x-axis of the chart (the main plot, or the strip). */
 export interface ChartXAxisOption {
   readonly type: 'value';
+  /** Stable id — merge-mode matching (D-153; see `ChartSeriesOption.id`). */
+  readonly id?: string;
   /** Which grid the axis belongs to — the strip's pair carries `1`. */
   readonly gridIndex?: number;
   readonly min: number;
@@ -371,6 +399,8 @@ export interface ChartXAxisOption {
 /** One y-axis of the chart (the value axis, or a hidden band/strip axis). */
 export interface ChartYAxisOption {
   readonly type: 'value';
+  /** Stable id — merge-mode matching (D-153; see `ChartSeriesOption.id`). */
+  readonly id?: string;
   /** Which grid the axis belongs to — the strip's pair carries `1`. */
   readonly gridIndex?: number;
   readonly name: string;
@@ -388,11 +418,49 @@ export interface ChartYAxisOption {
   readonly splitLine?: { readonly lineStyle: { readonly color: string } };
 }
 
+/**
+ * The §14.4 zoom (task 178, D-153): one inside dataZoom over the chart's
+ * x-axes. Percent-based over the requested-bounds extent — the base every
+ * chart of the page shares — so the group's relay (and the page's reset)
+ * move every chart to the same instants. `weakFilter` keeps the datum that
+ * partially spans the window (a band or strip marker straddling the zoom
+ * edge stays, clipped by the grid) while the y-axis re-scales to what
+ * remains; the wheel zoom needs a modifier so the page keeps scrolling
+ * (§14.1 "suitable for continuous use").
+ */
+export interface ChartXZoomOption {
+  readonly type: 'inside';
+  /** {@link CHART_X_ZOOM_ID} — the relay's and the reset's target. */
+  readonly id: string;
+  /** Every x-axis of the chart — the strip rides the zoom window. */
+  readonly xAxisIndex: readonly number[];
+  readonly filterMode: 'weakFilter';
+  /** {@link MIN_ZOOM_SPAN_MS}. */
+  readonly minValueSpan: number;
+  readonly zoomOnMouseWheel: 'shift';
+}
+
+/**
+ * The cursor's on-axis label (task 178, D-153): ECharts' default renders
+ * the raw scale value (an epoch-ms number) in its built-in theme colors;
+ * the label formats through the display zone and colors through the
+ * tooltip tokens (D-133).
+ */
+export interface ChartAxisPointerOption {
+  readonly label: {
+    readonly formatter: (params: { readonly value: number }) => string;
+    readonly color: string;
+    readonly backgroundColor: string;
+  };
+}
+
 /** The metric chart's ECharts option (the structural subset the builder emits). */
 export interface MetricChartOption {
   readonly animation: boolean;
   readonly textStyle: { readonly fontFamily: string };
   readonly grid: readonly {
+    /** Stable id — merge-mode matching (D-153; see `ChartSeriesOption.id`). */
+    readonly id: string;
     readonly left: number;
     readonly right: number;
     readonly top?: number;
@@ -412,6 +480,10 @@ export interface MetricChartOption {
     readonly textStyle: { readonly color: string };
     readonly formatter: (params: readonly ChartTooltipParam[]) => string;
   };
+  /** The §14.4 cursor label (task 178, D-153). */
+  readonly axisPointer: ChartAxisPointerOption;
+  /** The §14.4 zoom (task 178, D-153) — exactly one entry. */
+  readonly dataZoom: readonly ChartXZoomOption[];
   readonly xAxis: readonly ChartXAxisOption[];
   readonly yAxis: readonly ChartYAxisOption[];
   readonly series: readonly (ChartSeriesOption | ChartBandSeriesOption | ChartErrorSeriesOption)[];
@@ -457,6 +529,14 @@ export interface MetricChartOptionInput {
   /** The x window: the range report's requested bounds (shared per page). */
   readonly window: ChartWindow;
   /**
+   * The active zoom window in instants (task 178, D-153; default: none —
+   * no zoom). The tick ladder walks THIS span while the axes keep the
+   * requested bounds: ECharts renders the `customValues` that fall inside
+   * the live (zoomed) extent, so the ticks re-densify with the zoom and
+   * the percent base stays the full window.
+   */
+  readonly zoom?: ChartWindow;
+  /**
    * The chart canvas's width in CSS pixels — the tick density input (the
    * component measures its host; §14.1's 360 px viewport is the floor for
    * an unmeasured mount).
@@ -470,6 +550,21 @@ export interface MetricChartOptionInput {
     readonly scheduleZone: string | null;
   };
 }
+
+/**
+ * The §14.4 zoom's stable id (task 178, D-153): the connect group's relay
+ * targets the dataZoom component by id, so every chart of the page — and
+ * the page's reset — must agree on this one string.
+ */
+export const CHART_X_ZOOM_ID = 'qm-chart-x-zoom';
+
+/**
+ * The narrowest zoom window (task 178, D-153): D-150's tick ladder starts
+ * at the hour, so a narrower window would render unlabeled axes; the span
+ * floor keeps every zoom inside the ladder's vocabulary (sub-hour rungs
+ * stay D-150's recorded follow-up).
+ */
+export const MIN_ZOOM_SPAN_MS = 3_600_000;
 
 /** The series' density under which point symbols render (sparse series need them). */
 const SYMBOL_DENSITY_LIMIT = 80;
@@ -794,8 +889,13 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
   // The task-177 ticks (D-150): local hour/day/month boundary instants in
   // the display zone at a density the measured canvas carries. Both x-axes
   // share the SAME instants — D-149's fixed insets keep the grids aligned,
-  // the shared customValues keep the axes' labels aligned with them.
-  const ticks = chartTicks(input.window, timeZone, chartPlotWidthOf(input.widthPx));
+  // the shared customValues keep the axes' labels aligned with them. The
+  // ladder walks the ZOOM window when one is active (D-153): ECharts
+  // renders the customValues inside the live extent, so the ticks
+  // re-densify with the zoom while the axes' bounds below stay the
+  // requested window — the percent base the zoom relay scales.
+  const tickWindow = input.zoom ?? input.window;
+  const ticks = chartTicks(tickWindow, timeZone, chartPlotWidthOf(input.widthPx));
   const tickValues = ticks.map((tick) => tick.at);
   const tickLabels = new Map(ticks.map((tick) => [tick.at, tick.label] as const));
   const tickLabel = (value: number): string =>
@@ -847,6 +947,7 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
   const yAxis: ChartYAxisOption[] = [
     {
       type: 'value',
+      id: 'qm-y-main',
       name: percent ? '%' : unitLabel,
       nameTextStyle: { color: tokens.axisLabel },
       // Percentages are bounded by definition (§8.4); the absolute axis
@@ -869,6 +970,7 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
       ? [
           {
             type: 'value',
+            id: 'qm-y-bands',
             name: '',
             nameTextStyle: { color: tokens.axisLabel },
             show: false,
@@ -885,6 +987,7 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
             // The strip's own grid — without the explicit binding every
             // axis would attach to grid 0 and the strip would render
             // inside the main plot.
+            id: 'qm-y-strip',
             gridIndex: 1,
             name: '',
             nameTextStyle: { color: tokens.axisLabel },
@@ -900,6 +1003,10 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
   const xAxis: ChartXAxisOption[] = [
     {
       type: 'value',
+      id: 'qm-x-main',
+      // The zoom's percent base: the REQUESTED bounds, never the zoom
+      // window — every chart of the page shares them (D-148), which is
+      // what makes the group's relayed percents the same instants (D-153).
       min: input.window.from,
       max: input.window.to,
       // With the strip present its x-axis carries the date labels — a
@@ -916,6 +1023,7 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
           {
             type: 'value',
             // The strip's own grid (see the strip y-axis above).
+            id: 'qm-x-strip',
             gridIndex: 1,
             min: input.window.from,
             max: input.window.to,
@@ -936,6 +1044,7 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
   const series: (ChartSeriesOption | ChartBandSeriesOption | ChartErrorSeriesOption)[] = [
     {
       type: 'line',
+      id: 'qm-series-used',
       name: text.used,
       xAxisIndex: 0,
       yAxisIndex: 0,
@@ -966,6 +1075,7 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
     },
     {
       type: 'line',
+      id: 'qm-series-remaining',
       name: text.remaining,
       xAxisIndex: 0,
       yAxisIndex: 0,
@@ -1028,6 +1138,7 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
     // the main plot and the strip align by construction.
     grid: [
       {
+        id: 'qm-grid-main',
         left: AXIS_LEFT,
         right: AXIS_RIGHT,
         top: MAIN_TOP,
@@ -1038,7 +1149,15 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
         bottom: hasStrip ? LABEL_HEIGHT + STRIP_HEIGHT + STRIP_GAP : LABEL_HEIGHT,
       },
       ...(hasStrip
-        ? [{ left: AXIS_LEFT, right: AXIS_RIGHT, height: STRIP_HEIGHT, bottom: LABEL_HEIGHT }]
+        ? [
+            {
+              id: 'qm-grid-strip',
+              left: AXIS_LEFT,
+              right: AXIS_RIGHT,
+              height: STRIP_HEIGHT,
+              bottom: LABEL_HEIGHT,
+            },
+          ]
         : []),
     ],
     legend: {
@@ -1056,6 +1175,28 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
       textStyle: { color: tokens.tooltipText },
       formatter: tooltipFormatter,
     },
+    // The cursor's on-axis label (D-153): the default renders the raw
+    // epoch-ms scale value in ECharts' built-in theme colors.
+    axisPointer: {
+      label: {
+        formatter: (params: { readonly value: number }) => dateLabel(params.value),
+        color: tokens.tooltipText,
+        backgroundColor: tokens.tooltipBackground,
+      },
+    },
+    // The §14.4 zoom (D-153): percent-based over the requested-bounds
+    // extent, shared by id with the page's group and reset.
+    dataZoom: [
+      {
+        type: 'inside',
+        id: CHART_X_ZOOM_ID,
+        xAxisIndex: hasStrip ? [0, 1] : [0],
+        filterMode: 'weakFilter',
+        minValueSpan: MIN_ZOOM_SPAN_MS,
+        // The wheel stays the page's scroll; shift+wheel zooms (§14.1).
+        zoomOnMouseWheel: 'shift',
+      },
+    ],
     xAxis,
     yAxis,
     series,

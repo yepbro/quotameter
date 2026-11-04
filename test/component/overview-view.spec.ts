@@ -17,6 +17,16 @@ import { accountAttentionOf, type AccountAttention } from '../../ui/src/account-
 import type { ApiFetchResponse } from '../../ui/src/api/client';
 import { createAccountSelection } from '../../ui/src/account-selection';
 import { createApiClientPlugin } from '../../ui/src/api';
+import { formatChartDate } from '../../ui/src/format';
+import {
+  CHART_RUNTIME_KEY,
+  cssTokenReader,
+  type ChartDataZoomEvent,
+  type ChartDataZoomResetAction,
+  type ChartHandle,
+  type ChartRuntime,
+} from '../../ui/src/charts/runtime';
+import { CHART_X_ZOOM_ID } from '../../ui/src/charts/series';
 import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
 import { createAppTheme } from '../../ui/src/theme';
@@ -129,6 +139,12 @@ class FakeOverviewBackend {
   quotaByAccount: Map<string, QuotaResponse>;
   /** The retention the settings answer carries (task 174). */
   historyRetentionDays: number;
+  /**
+   * When set, `/api/history` serves two dual-view points inside each
+   * requested window (task 178's sync cells need charts that actually
+   * instantiate — the healthy empty body renders the empty state).
+   */
+  historyWithPoints: boolean;
   /** While set, the settings route waits for this promise (the late-arrival arm). */
   settingsGate: Promise<void> | null = null;
   /** One-shot per-URL refusals (the failure arms); value = HTTP status. */
@@ -141,6 +157,7 @@ class FakeOverviewBackend {
       status?: StatusResponse;
       quotaByAccount?: Map<string, QuotaResponse>;
       historyRetentionDays?: number;
+      historyWithPoints?: boolean;
     } = {},
   ) {
     this.accounts = options.accounts ?? [account()];
@@ -152,6 +169,7 @@ class FakeOverviewBackend {
     };
     this.quotaByAccount = options.quotaByAccount ?? new Map();
     this.historyRetentionDays = options.historyRetentionDays ?? 365;
+    this.historyWithPoints = options.historyWithPoints ?? false;
     this.fake = new FakeFetch((call) => Promise.resolve(this.route(call)));
   }
 
@@ -212,7 +230,8 @@ class FakeOverviewBackend {
       return jsonResponse(200, body);
     }
     if (method === 'GET' && input.startsWith('/api/history?')) {
-      return jsonResponse(200, healthyHistoryBody(input));
+      if (!this.historyWithPoints) return jsonResponse(200, healthyHistoryBody(input));
+      return jsonResponse(200, pointsHistoryBody(input));
     }
     if (method === 'GET' && input.startsWith('/api/events?')) {
       return jsonResponse(200, healthyEventsBody(input));
@@ -228,16 +247,80 @@ class FakeOverviewBackend {
 
 const wrappers: VueWrapper[] = [];
 
+/**
+ * The recording chart runtime for the task-178 cells (the card suite's
+ * pattern, self-contained here): charts never boot under happy-dom, so
+ * the page's zoom wiring is asserted through the recorded handles — the
+ * create-time sync group, the `dataZoom` event fire, and the reset
+ * dispatches.
+ */
+class RecordingChartHandle implements ChartHandle {
+  readonly setOptions: {
+    readonly option: unknown;
+    readonly opts?: { readonly notMerge?: boolean; readonly replaceMerge?: readonly string[] };
+  }[] = [];
+  readonly actions: ChartDataZoomResetAction[] = [];
+  readonly dataZoomHandlers: Array<(payload: ChartDataZoomEvent) => void> = [];
+  disposed = false;
+
+  setOption(
+    option: never,
+    opts?: { readonly notMerge?: boolean; readonly replaceMerge?: readonly string[] },
+  ): void {
+    this.setOptions.push({ option, opts });
+  }
+
+  resize(): void {}
+
+  dispose(): void {
+    this.disposed = true;
+  }
+
+  on(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+    this.dataZoomHandlers.push(handler);
+  }
+
+  off(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+    const index = this.dataZoomHandlers.indexOf(handler);
+    if (index >= 0) this.dataZoomHandlers.splice(index, 1);
+  }
+
+  dispatchAction(action: ChartDataZoomResetAction): void {
+    this.actions.push(action);
+  }
+
+  /** Fires one `dataZoom` event the way the real runtime would. */
+  emitDataZoom(payload: ChartDataZoomEvent): void {
+    for (const handler of [...this.dataZoomHandlers]) handler(payload);
+  }
+}
+
+class RecordingChartRuntime implements ChartRuntime {
+  readonly handles: RecordingChartHandle[] = [];
+  readonly syncGroups: (string | undefined)[] = [];
+
+  createChart(element: HTMLElement, options?: { readonly syncGroup?: string }): ChartHandle {
+    const handle = new RecordingChartHandle();
+    this.handles.push(handle);
+    this.syncGroups.push(options?.syncGroup);
+    return handle;
+  }
+
+  readToken = cssTokenReader;
+}
+
 async function mountView(
   backend: FakeOverviewBackend,
   storage: MemoryThemeStorage = new MemoryThemeStorage(),
+  runtime?: RecordingChartRuntime,
 ): Promise<VueWrapper> {
   const selection = createAccountSelection({ storage });
   // Task 173: the view renders RouterLinks (the empty state's and the
   // attention notice's CTAs), so the mount carries a memory-history
   // router (the app-shell precedent). Task 175: the metric charts read
   // the theme controller (D-133's restyle trigger), so the mount carries
-  // the theme plugin too — the shell always installs both.
+  // the theme plugin too — the shell always installs both. Task 178:
+  // the sync cells inject the recording chart runtime the same way.
   const router = createAppRouter(createMemoryHistory());
   const wrapper = mount(OverviewView, {
     attachTo: document.body,
@@ -249,6 +332,7 @@ async function mountView(
         createAppTheme({ storage, media: new FakeThemeMedia() }),
         createApiClientPlugin({ fetchImpl: backend.impl }),
       ],
+      ...(runtime === undefined ? {} : { provide: { [CHART_RUNTIME_KEY as symbol]: runtime } }),
     },
   });
   wrappers.push(wrapper);
@@ -1758,5 +1842,172 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
         .map((call) => rangeParamsOf(call).metric)
         .sort(),
     ).toEqual(metricsBefore);
+  });
+});
+
+/* ── Task 178: the §14.4 cursor/zoom sync surface (D-153) ─────────────── */
+
+/**
+ * A points-bearing `/api/history` body (task 178's sync cells): two
+ * dual-view points inside the requested window, so the chart cards
+ * actually instantiate their (recorded) charts — the healthy empty body
+ * renders the empty state and never creates one.
+ */
+function pointsHistoryBody(input: string): unknown {
+  const params = new URLSearchParams(input.slice('/api/history?'.length));
+  const requestedFrom = Date.parse(params.get('from') ?? '');
+  const requestedTo = Date.parse(params.get('to') ?? '');
+  const span = requestedTo - requestedFrom;
+  const pointAt = (at: number) => ({
+    kind: 'point',
+    collectedAt: at,
+    used: 120_000,
+    remaining: 30_000,
+    limit: 150_000,
+    percentUsed: 80,
+    percentRemaining: 20,
+    resetsAt: null,
+    isValid: true,
+    invalidReason: null,
+  });
+  return {
+    accountId: params.get('accountId') ?? '',
+    metric: params.get('metric') ?? '',
+    unit: 'CREDITS',
+    limitType: 'ROLLING_WINDOW',
+    range: {
+      outcome: 'ok',
+      requestedFrom,
+      requestedTo,
+      effectiveFrom: requestedFrom,
+      effectiveTo: requestedTo,
+      retentionHorizon: null,
+    },
+    downsampled: false,
+    resolutionMs: null,
+    sourcePointCount: 2,
+    points: [
+      pointAt(requestedFrom + Math.floor(span / 4)),
+      pointAt(requestedFrom + Math.floor((span * 3) / 4)),
+    ],
+  };
+}
+
+describe('overview: the §14.4 cursor/zoom sync (task 178, D-153)', () => {
+  /** A two-metric backend whose charts instantiate under the recording runtime. */
+  function syncBackend(metrics: number): FakeOverviewBackend {
+    const rows =
+      metrics === 2
+        ? [metric({ metricKey: 'mcp-monthly', collectedAt: 1 }), metric({ collectedAt: 1 })]
+        : [metric({ collectedAt: 1 })];
+    return new FakeOverviewBackend({
+      historyWithPoints: true,
+      quotaByAccount: new Map([['acc-1', quota({ collectedAt: 1, metrics: rows })]]),
+    });
+  }
+
+  it('renders no zoom affordance while the charts are unzoomed', async () => {
+    const runtime = new RecordingChartRuntime();
+    const wrapper = await mountView(syncBackend(2), new MemoryThemeStorage(), runtime);
+    expect(runtime.handles).toHaveLength(2);
+    expect(wrapper.find('[data-testid="chart-zoom-reset"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="chart-zoom-status"]').exists()).toBe(false);
+  });
+
+  it('every chart of the page joins ONE connect group (the relay membership)', async () => {
+    const runtime = new RecordingChartRuntime();
+    await mountView(syncBackend(2), new MemoryThemeStorage(), runtime);
+    expect(runtime.syncGroups).toHaveLength(2);
+    const [first, second] = runtime.syncGroups;
+    expect(first).toBeDefined();
+    expect(second).toBe(first);
+  });
+
+  it('a zoomed chart surfaces the reset affordance; the click resets every chart', async () => {
+    const runtime = new RecordingChartRuntime();
+    const wrapper = await mountView(syncBackend(2), new MemoryThemeStorage(), runtime);
+    // The user zooms one chart; the connect relay moves the others — every
+    // chart's own `dataZoom` event lands on its own handle (both simulated).
+    const [firstChart, secondChart] = runtime.handles;
+    firstChart!.emitDataZoom({ batch: [{ dataZoomId: CHART_X_ZOOM_ID, start: 10, end: 30 }] });
+    secondChart!.emitDataZoom({ batch: [{ dataZoomId: CHART_X_ZOOM_ID, start: 10, end: 30 }] });
+    await settle();
+
+    const reset = wrapper.find('[data-testid="chart-zoom-reset"]');
+    expect(reset.exists()).toBe(true);
+    expect(reset.text()).toBe(en.overview.chart.resetZoom);
+    expect(wrapper.find('[data-testid="chart-zoom-status"]').attributes('role')).toBe('status');
+
+    // One click, one dispatch per live chart — deterministic, not relayed.
+    await reset.trigger('click');
+    const expectedReset = { type: 'dataZoom', dataZoomId: CHART_X_ZOOM_ID, start: 0, end: 100 };
+    expect(firstChart!.actions).toEqual([expectedReset]);
+    expect(secondChart!.actions).toEqual([expectedReset]);
+
+    // echarts fires the events back; the affordance retires and the
+    // announcement switches to the reset wording.
+    firstChart!.emitDataZoom({ start: 0, end: 100 });
+    secondChart!.emitDataZoom({ start: 0, end: 100 });
+    await settle();
+    expect(wrapper.find('[data-testid="chart-zoom-reset"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="chart-zoom-status"]').text()).toBe(
+      en.overview.chart.zoomReset,
+    );
+  });
+
+  it('announces the applied window with zone-formatted times', async () => {
+    const runtime = new RecordingChartRuntime();
+    const backend = syncBackend(1);
+    const wrapper = await mountView(backend, new MemoryThemeStorage(), runtime);
+    const chart = runtime.handles[0]!;
+
+    chart.emitDataZoom({ start: 10, end: 30 });
+    await settle();
+
+    // The exact instants: the card's own requested bounds (the served
+    // body echoes the request) scaled by the percent — rendered through
+    // the display zone (UTC, the settings body's answer).
+    const { from, to } = rangeParamsOf(backend.historyCalls[0]!);
+    const fromMs = Date.parse(from);
+    const toMs = Date.parse(to);
+    const zoomFrom = fromMs + ((toMs - fromMs) * 10) / 100;
+    const zoomTo = fromMs + ((toMs - fromMs) * 30) / 100;
+    expect(wrapper.find('[data-testid="chart-zoom-status"]').text()).toBe(
+      en.overview.chart.zoomApplied
+        .replace('{from}', formatChartDate(zoomFrom, 'UTC'))
+        .replace('{to}', formatChartDate(zoomTo, 'UTC')),
+    );
+
+    // The sentence is snapshotted at the transition: further wheel ticks
+    // inside the SAME zoom (the window moves, the live region must not
+    // re-announce per tick — the review round's P1).
+    chart.emitDataZoom({ start: 20, end: 40 });
+    await settle();
+    expect(wrapper.find('[data-testid="chart-zoom-status"]').text()).toBe(
+      en.overview.chart.zoomApplied
+        .replace('{from}', formatChartDate(zoomFrom, 'UTC'))
+        .replace('{to}', formatChartDate(zoomTo, 'UTC')),
+    );
+  });
+
+  it('the degenerate single chart syncs with itself: zoom, reset, retire', async () => {
+    const runtime = new RecordingChartRuntime();
+    const wrapper = await mountView(syncBackend(1), new MemoryThemeStorage(), runtime);
+    expect(runtime.handles).toHaveLength(1);
+    const chart = runtime.handles[0]!;
+    expect(chart.dataZoomHandlers.length).toBeGreaterThan(0);
+
+    chart.emitDataZoom({ start: 40, end: 60 });
+    await settle();
+    const reset = wrapper.find('[data-testid="chart-zoom-reset"]');
+    expect(reset.exists()).toBe(true);
+
+    await reset.trigger('click');
+    expect(chart.actions).toEqual([
+      { type: 'dataZoom', dataZoomId: CHART_X_ZOOM_ID, start: 0, end: 100 },
+    ]);
+    chart.emitDataZoom({ start: 0, end: 100 });
+    await settle();
+    expect(wrapper.find('[data-testid="chart-zoom-reset"]').exists()).toBe(false);
   });
 });

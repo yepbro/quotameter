@@ -19,7 +19,9 @@ import {
 import {
   buildMetricChartOption,
   chartSamplesOf,
+  CHART_X_ZOOM_ID,
   DEFAULT_CHART_WIDTH_PX,
+  MIN_ZOOM_SPAN_MS,
   rangeNoticeOf,
   resolveViewMode,
   seriesAvailability,
@@ -1262,5 +1264,123 @@ describe('bandRenderItem (the custom-series element, stubbed api)', () => {
     const bands = seriesOfId(option, 'qm-chart-bands');
     if (!('renderItem' in bands)) throw new Error('unreachable');
     expect(bands.renderItem({ dataIndex: 0 }, api)).toBeNull();
+  });
+});
+
+/* ── Task 178: the cursor/zoom option surface (D-153) ─────────────────── */
+
+describe('buildMetricChartOption: the §14.4 zoom and cursor (task 178, D-153)', () => {
+  it('declares one inside zoom over every x-axis, percent-based and span-floored', () => {
+    const plain = buildOption();
+    expect(plain.dataZoom).toEqual([
+      {
+        type: 'inside',
+        id: CHART_X_ZOOM_ID,
+        xAxisIndex: [0],
+        filterMode: 'weakFilter',
+        minValueSpan: MIN_ZOOM_SPAN_MS,
+        zoomOnMouseWheel: 'shift',
+      },
+    ]);
+    // With the strip present the zoom covers BOTH x-axes (the strip rides
+    // the window); the y-axis count grows by the strip's hidden pair.
+    const withStrip = buildOption({
+      samples: ANNOTATION_SAMPLES,
+      annotations: {
+        resets: [],
+        gaps: [],
+        stopped: [],
+        errors: [
+          {
+            at: T1,
+            outcome: 'timeout',
+            httpStatus: null,
+            message: '',
+            attempts: 1,
+            retryAfterSeconds: null,
+          },
+        ],
+      },
+    });
+    expect(withStrip.dataZoom[0]!.xAxisIndex).toEqual([0, 1]);
+  });
+
+  it('formats the cursor label in the display zone and colors it through the tokens', () => {
+    const option = buildOption({ timeZone: 'UTC' });
+    expect(option.axisPointer.label.formatter({ value: T0 })).toBe(formatChartDate(T0, 'UTC'));
+    expect(option.axisPointer.label.color).toBe('#tip-text');
+    expect(option.axisPointer.label.backgroundColor).toBe('#tip-bg');
+  });
+
+  it('walks the tick ladder over the zoom span while the axes keep the requested bounds', () => {
+    // A six-hour window at a desktop width: hourly ticks throughout.
+    const window = { from: T0, to: T0 + 6 * 3_600_000 };
+    const full = buildOption({ window });
+    const fullTicks = full.xAxis[0]!.axisLabel.customValues!;
+    expect(full.xAxis[0]!.min).toBe(window.from);
+    expect(full.xAxis[0]!.max).toBe(window.to);
+    expect(fullTicks.length).toBeGreaterThanOrEqual(6);
+
+    // A zoom window over the middle two hours.
+    const zoom = buildOption({
+      window,
+      zoom: { from: T0 + 3_600_000, to: T0 + 3 * 3_600_000 },
+    });
+    // The percent base is untouched — the axes still bound the requested
+    // window (the relay's arithmetic, D-153).
+    expect(zoom.xAxis[0]!.min).toBe(window.from);
+    expect(zoom.xAxis[0]!.max).toBe(window.to);
+    // The ticks walked the zoom span: every instant inside it — an
+    // unrecomputed full-window set would carry T0's midnight-hour
+    // neighbors outside the zoom span.
+    const zoomTicks = zoom.xAxis[0]!.axisLabel.customValues!;
+    expect(zoomTicks.length).toBeGreaterThanOrEqual(2);
+    for (const tick of zoomTicks) {
+      expect(tick).toBeGreaterThanOrEqual(T0 + 3_600_000);
+      expect(tick).toBeLessThanOrEqual(T0 + 3 * 3_600_000);
+    }
+    expect(zoomTicks).not.toEqual(fullTicks);
+  });
+
+  it('carries the stable ids merge-mode matching relies on, across shapes', () => {
+    const plain = buildOption();
+    expect(plain.series.map((series) => series.id)).toEqual([
+      'qm-series-used',
+      'qm-series-remaining',
+    ]);
+    expect(plain.xAxis.map((axis) => axis.id)).toEqual(['qm-x-main']);
+    expect(plain.yAxis.map((axis) => axis.id)).toEqual(['qm-y-main']);
+    expect(plain.grid.map((grid) => grid.id)).toEqual(['qm-grid-main']);
+
+    const full = buildOption({
+      samples: ANNOTATION_SAMPLES,
+      annotations: {
+        resets: [],
+        gaps: [{ from: T0, to: T1, elapsedMs: 3_600_000, thresholdMs: 900_000 }],
+        stopped: [],
+        errors: [
+          {
+            at: T1,
+            outcome: 'timeout',
+            httpStatus: null,
+            message: '',
+            attempts: 1,
+            retryAfterSeconds: null,
+          },
+        ],
+      },
+    });
+    // Every shape names the same families: the counts differ, the ids do
+    // not — an annotation disappearing removes its component, never a
+    // neighbor's identity (the y-axis index shift bands used to cause).
+    expect(full.series.map((series) => series.id)).toEqual([
+      'qm-series-used',
+      'qm-series-remaining',
+      'qm-chart-bands',
+      'qm-chart-errors',
+    ]);
+    expect(full.xAxis.map((axis) => axis.id)).toEqual(['qm-x-main', 'qm-x-strip']);
+    expect(full.yAxis.map((axis) => axis.id)).toEqual(['qm-y-main', 'qm-y-bands', 'qm-y-strip']);
+    expect(full.grid.map((grid) => grid.id)).toEqual(['qm-grid-main', 'qm-grid-strip']);
   });
 });
