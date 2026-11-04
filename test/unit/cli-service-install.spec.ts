@@ -1064,19 +1064,24 @@ describe('production seams', () => {
     expect(h.out()).toContain('\n  quotameter run');
   });
 
-  it('both handlers resolve the owner and capabilities from their production defaults', async () => {
-    // No injection at all: the real uid/user database/environment decide —
-    // on the systemd-less test container that is the regular-user owner and
-    // the systemd-absent route, so install refuses and uninstall no-ops
-    // without side effects (the integration suite pins the same through the
-    // real launcher; this run adds the default-seam arms in-process).
+  it('both handlers resolve the owner from its production default (probe pinned absent)', async () => {
+    // The owner seam is the real production default (uid/user
+    // database/environment); the capability probe is pinned to the absent
+    // class — no hosted CI environment deterministically produces it since
+    // the runner-image migration (D-160), and the real probe's live
+    // behavior is the integration suite's territory. On that route
+    // install refuses and uninstall no-ops without side effects.
     const installHandle = context(['service', 'install']);
-    const installCode = await runServiceInstallCommand()(installHandle.ctx);
+    const installCode = await runServiceInstallCommand({
+      probeCapabilities: async () => caps(false, false),
+    })(installHandle.ctx);
     expect(installCode).toBe(1);
     expect(installHandle.err()).toContain('quotameter service install: systemd is not available');
 
     const uninstallHandle = context(['service', 'uninstall']);
-    const uninstallCode = await runServiceUninstallCommand()(uninstallHandle.ctx);
+    const uninstallCode = await runServiceUninstallCommand({
+      probeCapabilities: async () => caps(false, false),
+    })(uninstallHandle.ctx);
     expect(uninstallCode).toBe(0);
     expect(uninstallHandle.out()).toContain('nothing to do');
   });

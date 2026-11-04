@@ -548,10 +548,18 @@ describe('production default seams (task-137/139 pattern)', () => {
    * entered, before any gate decides whether a command actually runs.
    */
 
-  it('no injection at all resolves the real owner and probes the real disk', async () => {
+  it('the default owner and disk seams carry the start refusal (probe pinned absent)', async () => {
+    // Every seam is the production default except the capability probe,
+    // pinned to the absent class: CI hosts ship a live user systemd since
+    // the runner-image migration (D-160), so no hosted environment
+    // deterministically produces the absent class anymore — the real
+    // probe's live behavior is the integration suite's territory. Here
+    // the absent route proves the remaining defaults (owner, disk)
+    // resolve and refuse honestly.
     const h = harness();
-    // Drop every injected seam: the production defaults must carry the run.
-    const code = await runServiceControlCommand('start')(h.ctx);
+    const code = await runServiceControlCommand('start', {
+      probeCapabilities: async () => caps(false, false),
+    })(h.ctx);
     expect(code).toBe(1);
     expect(h.err()).toBe('quotameter start: no systemd service is installed — nothing to start\n');
     expect(h.out()).toContain('quotameter service install');
@@ -570,6 +578,7 @@ describe('production default seams (task-137/139 pattern)', () => {
       const h = harness();
       const code = await runServiceControlCommand('stop', {
         resolveOwner: () => ({ state: 'ok', context: owner }),
+        probeCapabilities: async () => caps(false, false),
       })({ ...h.ctx, commandPath: ['stop'] });
       expect(code).toBe(1); // the systemd-less test environments
       expect(h.err()).toBe(
@@ -590,6 +599,7 @@ describe('production default seams (task-137/139 pattern)', () => {
     const code = await runServiceControlCommand('restart', {
       resolveOwner: () => ({ state: 'ok', context: HELD }),
       unitFileExists: (installPath) => installPath === SYSTEM_UNIT_INSTALL_PATH,
+      probeCapabilities: async () => caps(false, false),
     })({ ...h.ctx, commandPath: ['restart'] });
     expect(code).toBe(1);
     expect(h.err()).toBe(
