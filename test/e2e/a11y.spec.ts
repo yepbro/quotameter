@@ -1,5 +1,10 @@
 import { expect, test, type Route } from '@playwright/test';
-import { healthyEventsBody, healthyHistoryBody, healthySettingsBody } from '../helpers/api';
+import {
+  healthyEventsBody,
+  healthyHistoryBody,
+  healthyPeakHoursBody,
+  healthySettingsBody,
+} from '../helpers/api';
 import { assertNoAccessibilityViolations } from './helpers/a11y';
 
 /**
@@ -337,6 +342,10 @@ async function fulfillOverviewBody(
     // intercepted window back as the healthy range report.
     '/api/events': healthyEventsBody(`${pathname}${search}`),
     '/api/history': healthyHistoryBody(`${pathname}${search}`),
+    // Task 176: the page's third range-keyed load — the no-schedule arm
+    // (the scenario providers above carry `peakHours: null`), so the
+    // chart surface renders its stated no-schedule state, never an error.
+    '/api/peak-hours': healthyPeakHoursBody(`${pathname}${search}`),
     ...overrides,
   };
   const answer = body[pathname];
