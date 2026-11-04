@@ -475,6 +475,7 @@ strip.
 | Module                                  | Owns                                                                                                                                                                                                                                                        |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/charts/runtime.ts`                 | the ONLY module importing ECharts: modular `echarts/core` + the line/scatter/custom/grid/tooltip/legend/markLine/canvas pieces, the `ChartHandle` structural seam, the injectable `ChartRuntime` (`useChartRuntime()`), and the production `cssTokenReader` |
+| `src/charts/ticks.ts`                   | the pure §14.4 tick engine (task 177, D-150): local hour/day/month boundary walks in the configured display zone (DST-exact, `Intl`-only), the density ladder over the measured plot width, and the per-tick labels incl. the DST zone-name disambiguation  |
 | `src/charts/tokens.ts`                  | the pure `--qm-*` token → `ChartTokens` mapping (`chartTokensOf(read)`); the single list of token names all theme blocks must carry                                                                                                                         |
 | `src/charts/annotations.ts`             | the pure §12.2/§9.3 mapping: the account timeline → one metric's resets/gaps/errors/stopped (per-metric vs account-level split), the served peak intervals → bands, the outcome → symbol map                                                                |
 | `src/charts/series.ts`                  | the pure adapter: D-139 wire kinds → `ChartSample`s, availability/`resolveViewMode`, the D-147 sliver-thresholded `rangeNoticeOf`, and `buildMetricChartOption` (one mode, one unit, one value y-axis, the annotation series)                               |
@@ -522,10 +523,17 @@ false`); D-081 downsampling buckets render as their `first`/`last`
   cascade and re-sets the option live (D-133).
 - **The x-axis** is the numeric epoch-ms axis §14.4 prescribes (ECharts'
   time axis is local/UTC only) with `Intl.DateTimeFormat` labels in the
-  configured display zone (`formatChartDate` in `src/format.ts`); tick
-  PLACEMENT (hour/day boundaries, DST days) is task 177's. Both grids
-  share fixed left/right insets (no `containLabel`), so the main plot
-  and the strip align by construction.
+  configured display zone. Tick PLACEMENT (task 177, D-150) is computed
+  by the pure `src/charts/ticks.ts` engine: instants aligned to LOCAL
+  hour/day/month boundaries of the configured zone — DST transition days
+  included (a 23-hour day's skipped wall hour has no tick; a 25-hour
+  day's duplicated hour ticks twice, zone-suffixed "1 AM EDT"/"1 AM
+  EST"), a +05:45 zone's hours align at their own :15 phase, and a
+  ±30-minute zone (Lord Howe) follows its actual offsets — delivered
+  through ECharts' `axisLabel`/`axisTick` `customValues` on BOTH x-axes,
+  at a density chosen from the measured canvas width (§14.1's 360 px is
+  the unmeasured floor). Both grids share fixed left/right insets (no
+  `containLabel`), so the main plot and the strip align by construction.
 - **The range report.** A `truncated` clamp within 60 s stays quiet (the
   D-147 clock-skew sliver); a real truncation names the retained
   window's start; a rejected range states that instead of a chart.

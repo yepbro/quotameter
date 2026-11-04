@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatChartDate,
+  formatChartDay,
   formatChartDuration,
+  formatChartMonth,
+  formatChartTime,
+  formatChartZoneTime,
   formatEpochMs,
   formatQuotaNumber,
   formatRelative,
@@ -53,6 +57,29 @@ describe('formatChartDate (§14.4 chart ticks and tooltips)', () => {
   it('honors a zone with a non-whole-hour offset', () => {
     const instant = Date.UTC(2026, 10, 4, 18, 45, 0);
     expect(formatChartDate(instant, 'Asia/Kathmandu')).toBe('Nov 5, 12:30 AM');
+  });
+});
+
+describe('the task-177 tick label formatters (§14.4 axis, D-150)', () => {
+  it('formatChartTime renders the wall-clock hour only', () => {
+    const instant = Date.UTC(2026, 10, 4, 14, 0, 0);
+    expect(formatChartTime(instant, 'UTC')).toBe('2 PM');
+    expect(formatChartTime(Date.UTC(2026, 10, 4), 'UTC')).toBe('12 AM');
+    expect(formatChartTime(Date.UTC(2026, 10, 4, 18, 15), 'Asia/Kathmandu')).toBe('12 AM');
+  });
+
+  it('formatChartZoneTime suffixes the short zone name — the DST pair reads apart', () => {
+    // The duplicated wall hour of New York's 2026-11-01 (25-hour day).
+    expect(formatChartZoneTime(Date.UTC(2026, 10, 1, 5), 'America/New_York')).toBe('1 AM EDT');
+    expect(formatChartZoneTime(Date.UTC(2026, 10, 1, 6), 'America/New_York')).toBe('1 AM EST');
+  });
+
+  it('formatChartDay renders the month and day; formatChartMonth adds the year', () => {
+    const instant = Date.UTC(2026, 10, 4);
+    expect(formatChartDay(instant, 'UTC')).toBe('Nov 4');
+    expect(formatChartDay(Date.UTC(2026, 10, 4, 5), 'America/New_York')).toBe('Nov 4');
+    expect(formatChartMonth(instant, 'UTC')).toBe('Nov 2026');
+    expect(formatChartMonth(Date.UTC(2027, 0), 'UTC')).toBe('Jan 2027');
   });
 });
 

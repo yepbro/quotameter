@@ -16,6 +16,7 @@ import {
 } from '../charts/annotations';
 import {
   buildMetricChartOption,
+  chartPlotWidthOf,
   chartSamplesOf,
   rangeNoticeOf,
   resolveViewMode,
@@ -25,6 +26,7 @@ import {
   type MetricChartText,
 } from '../charts/series';
 import { chartTokensOf } from '../charts/tokens';
+import { chooseTickStep } from '../charts/ticks';
 import { useTheme } from '../theme';
 
 // One metric's §14.4 history chart (task 175; decision D-148): the card
@@ -247,6 +249,9 @@ const option = computed<MetricChartOption | null>(() => {
       from: response.range.requestedFrom,
       to: response.range.requestedTo,
     },
+    // The measured canvas width — the tick-density input (0 ⇒ the §14.1
+    // floor inside the builder, until the host reports its real size).
+    widthPx: chartWidth.value,
     annotations: annotations.value,
     peak: peak.value ?? undefined,
   });
@@ -345,6 +350,15 @@ const canvasHost = ref<HTMLDivElement | null>(null);
 let chart: ChartHandle | null = null;
 let resizeObserver: ResizeObserver | null = null;
 
+/**
+ * The measured canvas width — the tick-density input (task 177, D-150):
+ * 0 until the host exists (the builder then assumes §14.1's 360 px floor),
+ * the real CSS width at chart creation, and on container resize only when
+ * the change moves the ladder to a different step (within a step the same
+ * instants just stretch — `resize()` alone covers that).
+ */
+const chartWidth = ref(0);
+
 function releaseChart(): void {
   resizeObserver?.disconnect();
   resizeObserver = null;
@@ -357,12 +371,34 @@ function releaseChart(): void {
 // view switch, or a theme flip all arrive here as a new option value.
 watchEffect(() => {
   const element = canvasHost.value;
+  // Measured BEFORE the option read: an effect does not re-run on its own
+  // write (Vue 3.5), so a creation-time measure taken after `option.value`
+  // would be discarded until the observer's first callback.
+  if (element !== null && chart === null && element.clientWidth > 0) {
+    chartWidth.value = element.clientWidth;
+  }
   const optionValue = option.value;
   if (element === null || optionValue === null) return;
   if (chart === null) {
     chart = runtime.createChart(element);
     resizeObserver = new ResizeObserver(() => {
       chart?.resize();
+      const width = element.clientWidth;
+      if (width <= 0) return;
+      // The tick content depends on the width only through the chosen
+      // ladder step: while the step holds, a width change stretches the
+      // same instants (the resize above) and re-setting the whole option
+      // per observer frame would be wasted work (and would reset ECharts'
+      // interaction state under `notMerge`).
+      const window = chartWindow.value;
+      const span = window === null ? 0 : window.to - window.from;
+      if (
+        span <= 0 ||
+        chooseTickStep(span, chartPlotWidthOf(chartWidth.value)) !==
+          chooseTickStep(span, chartPlotWidthOf(width))
+      ) {
+        chartWidth.value = width;
+      }
     });
     resizeObserver.observe(element);
   }

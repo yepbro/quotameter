@@ -21,7 +21,10 @@
  * - **The numeric epoch-ms axis.** §14.4: ECharts' time axis is local or
  *   UTC only, so the x-axis is a `value` axis over epoch milliseconds with
  *   `Intl.DateTimeFormat` labels in the configured display zone. Tick
- *   PLACEMENT (hour/day boundaries, DST days) is task 177's; the window
+ *   PLACEMENT is task 177's (D-150): the instants come from the pure
+ *   `./ticks` engine — local hour/day/month boundaries in the display zone,
+ *   DST-transition days included — delivered through ECharts'
+ *   `customValues` on BOTH the main and the strip x-axis; the window
  *   bounds come from the range report's REQUESTED bounds, which every
  *   per-metric chart of one page load shares — so the charts' axes align
  *   even where retention truncated the data.
@@ -66,6 +69,7 @@ import {
   type ResetMark,
   type StoppedMark,
 } from './annotations';
+import { chartTicks } from './ticks';
 import type { ChartTokens } from './tokens';
 
 /* ── View modes and availability ───────────────────────────────────────── */
@@ -351,7 +355,15 @@ export interface ChartXAxisOption {
     readonly show?: boolean;
     readonly color: string;
     readonly formatter: (value: number) => string;
+    /** The task-177 tick instants — ECharts renders exactly these (D-150). */
+    readonly customValues?: readonly number[];
   };
+  /**
+   * The tick marks, aligned to the same instants as the labels — without
+   * this the marks would stay on ECharts' own uniform ladder while the
+   * labels moved to the local boundaries.
+   */
+  readonly axisTick?: { readonly customValues: readonly number[] };
   readonly axisLine: { readonly lineStyle: { readonly color: string } };
   readonly splitLine: { readonly show: false };
 }
@@ -444,6 +456,12 @@ export interface MetricChartOptionInput {
   readonly timeZone: string;
   /** The x window: the range report's requested bounds (shared per page). */
   readonly window: ChartWindow;
+  /**
+   * The chart canvas's width in CSS pixels — the tick density input (the
+   * component measures its host; §14.1's 360 px viewport is the floor for
+   * an unmeasured mount).
+   */
+  readonly widthPx: number;
   /** The §12.2 events mapped onto this metric (task 176; default: none). */
   readonly annotations?: MetricAnnotations;
   /** The §9.3 peak bands and the schedule zone name (task 176; default: none). */
@@ -473,6 +491,23 @@ const LABEL_HEIGHT = 28;
 const STRIP_HEIGHT = 28;
 /** The gap between the main plot and the strip. */
 const STRIP_GAP = 6;
+
+/**
+ * The canvas width assumed before the host is measured (§14.1's minimum
+ * viewport): the honest worst case for tick density — a wider measurement
+ * replaces it on the first resize callback.
+ */
+export const DEFAULT_CHART_WIDTH_PX = 360;
+
+/**
+ * The plot width a canvas measurement leaves for the x-axis — the one
+ * geometry source for the builder's density choice and the component's
+ * resize gate (they must agree on the floor and the insets).
+ */
+export function chartPlotWidthOf(widthPx: number): number {
+  const canvas = widthPx > 0 ? widthPx : DEFAULT_CHART_WIDTH_PX;
+  return Math.max(canvas - AXIS_LEFT - AXIS_RIGHT, 1);
+}
 
 /** The width under which a band's on-band label would be unreadable. */
 const BAND_LABEL_MIN_WIDTH = 64;
@@ -756,6 +791,19 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
 
   const dateLabel = (value: number): string => formatChartDate(value, timeZone);
 
+  // The task-177 ticks (D-150): local hour/day/month boundary instants in
+  // the display zone at a density the measured canvas carries. Both x-axes
+  // share the SAME instants — D-149's fixed insets keep the grids aligned,
+  // the shared customValues keep the axes' labels aligned with them.
+  const ticks = chartTicks(input.window, timeZone, chartPlotWidthOf(input.widthPx));
+  const tickValues = ticks.map((tick) => tick.at);
+  const tickLabels = new Map(ticks.map((tick) => [tick.at, tick.label] as const));
+  const tickLabel = (value: number): string =>
+    // The map holds every customValue this option renders; the fallback
+    // covers a re-format racing an option swap (ECharts may format the
+    // outgoing ticks once more mid-transition) — a full date, never blank.
+    tickLabels.get(value) ?? dateLabel(value);
+
   const tooltipFormatter = (params: readonly ChartTooltipParam[]): string => {
     const first = params[0];
     if (first === undefined) return '';
@@ -857,8 +905,9 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
       // With the strip present its x-axis carries the date labels — a
       // stacked pair of label rows would double the same axis.
       axisLabel: hasStrip
-        ? { show: false, color: tokens.axisLabel, formatter: dateLabel }
-        : { color: tokens.axisLabel, formatter: dateLabel },
+        ? { show: false, color: tokens.axisLabel, formatter: tickLabel, customValues: tickValues }
+        : { color: tokens.axisLabel, formatter: tickLabel, customValues: tickValues },
+      axisTick: { customValues: tickValues },
       axisLine: { lineStyle: { color: tokens.splitLine } },
       splitLine: { show: false },
     },
@@ -871,7 +920,8 @@ export function buildMetricChartOption(input: MetricChartOptionInput): MetricCha
             min: input.window.from,
             max: input.window.to,
             name: text.errorsSeries,
-            axisLabel: { color: tokens.axisLabel, formatter: dateLabel },
+            axisLabel: { color: tokens.axisLabel, formatter: tickLabel, customValues: tickValues },
+            axisTick: { customValues: tickValues },
             axisLine: { lineStyle: { color: tokens.splitLine } },
             splitLine: { show: false },
           } satisfies ChartXAxisOption,

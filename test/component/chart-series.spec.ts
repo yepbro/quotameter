@@ -19,6 +19,7 @@ import {
 import {
   buildMetricChartOption,
   chartSamplesOf,
+  DEFAULT_CHART_WIDTH_PX,
   rangeNoticeOf,
   resolveViewMode,
   seriesAvailability,
@@ -191,6 +192,9 @@ function buildOption(
     text: TEXT,
     timeZone: 'UTC',
     window: { from: T0, to: T2 },
+    // A desktop-wide canvas by default: the two-hour UTC window carries
+    // hourly ticks; the density arms below override it.
+    widthPx: 900,
     ...overrides,
   });
 }
@@ -469,9 +473,78 @@ describe('buildMetricChartOption (one unit per axis, by construction)', () => {
     expect(option.xAxis[0]!.splitLine.show).toBe(false);
   });
 
+  it('places ticks on local hour boundaries in the zone and formats each (D-150)', () => {
+    // The default fixture: a two-hour UTC window on a 900 px canvas —
+    // hourly ticks at whole local (UTC) hours, half-open [from, to).
+    const option = buildOption();
+    expect(option.xAxis[0]!.axisLabel.customValues).toEqual([T0, T1]);
+    expect(option.xAxis[0]!.axisTick!.customValues).toBe(option.xAxis[0]!.axisLabel.customValues);
+    expect(option.xAxis[0]!.axisLabel.formatter!(T0)).toBe('12 PM');
+    expect(option.xAxis[0]!.axisLabel.formatter!(T1)).toBe('1 PM');
+  });
+
+  it("aligns a non-whole-hour zone to ITS hour boundaries, not UTC's", () => {
+    // Asia/Kathmandu (+05:45): local hours sit at :15 UTC-minutes — a
+    // uniform epoch ladder can never hit them.
+    const option = buildOption({ timeZone: 'Asia/Kathmandu' });
+    expect(option.xAxis[0]!.axisLabel.customValues).toEqual([
+      Date.UTC(2026, 10, 4, 12, 15),
+      Date.UTC(2026, 10, 4, 13, 15),
+    ]);
+    expect(option.xAxis[0]!.axisLabel.formatter!(Date.UTC(2026, 10, 4, 12, 15))).toBe('6 PM');
+  });
+
+  it('coarsens the ladder to the measured canvas width', () => {
+    const from = Date.UTC(2026, 10, 4, 0);
+    const window = { from, to: from + 24 * 3_600_000 };
+    // 900 px → an 824 px plot → 3-hour ticks (00/03/06/… local).
+    expect(buildOption({ window }).xAxis[0]!.axisLabel.customValues).toEqual(
+      Array.from({ length: 8 }, (_unused, index) => from + index * 3 * 3_600_000),
+    );
+    // §14.1's 360 px floor → a 284 px plot → 12-hour ticks.
+    expect(buildOption({ window, widthPx: 360 }).xAxis[0]!.axisLabel.customValues).toEqual([
+      from,
+      from + 12 * 3_600_000,
+    ]);
+  });
+
+  it('treats an unmeasured canvas as the 360 px floor', () => {
+    const from = Date.UTC(2026, 10, 4, 0);
+    const window = { from, to: from + 24 * 3_600_000 };
+    // Whole-option equality is function-identity-blocked (each build owns
+    // its formatter closures); the tick output is the observable surface.
+    const unmeasured = buildOption({ window, widthPx: 0 }).xAxis[0]!.axisLabel.customValues;
+    expect(unmeasured).toEqual(
+      buildOption({ window, widthPx: DEFAULT_CHART_WIDTH_PX }).xAxis[0]!.axisLabel.customValues,
+    );
+    expect(unmeasured).toEqual([from, from + 12 * 3_600_000]);
+  });
+
+  it('keeps the strip x-axis on the same tick instants (the D-149 pair)', () => {
+    const option = annotatedOption();
+    expect(option.xAxis[1]!.axisLabel.customValues).toEqual(
+      option.xAxis[0]!.axisLabel.customValues,
+    );
+    expect(option.xAxis[1]!.axisTick!.customValues).toEqual(
+      option.xAxis[0]!.axisTick!.customValues,
+    );
+    // The hidden main axis carries the instants too — its tick marks.
+    expect(option.xAxis[0]!.axisLabel.customValues).toEqual([T0, T1]);
+  });
+
+  it('falls back to the full chart date for a value outside the tick set', () => {
+    // Not a rendered tick (mid-hour): the fallback keeps a racing
+    // re-format of outgoing ticks honest instead of blank.
+    const option = buildOption();
+    const offTick = T0 + 60_000;
+    expect(option.xAxis[0]!.axisLabel.formatter!(offTick)).toBe(formatChartDate(offTick, 'UTC'));
+  });
+
   it('formats axis ticks and tooltip dates in the configured display zone', () => {
     const option = buildOption({ timeZone: 'Asia/Kathmandu' });
-    expect(option.xAxis[0]!.axisLabel.formatter!(T0)).toBe(formatChartDate(T0, 'Asia/Kathmandu'));
+    // A real tick instant (local 18:00 = 12:15Z in +05:45) renders the
+    // hour word, not the full fallback date.
+    expect(option.xAxis[0]!.axisLabel.formatter!(Date.UTC(2026, 10, 4, 12, 15))).toBe('6 PM');
     expect(option.tooltip.formatter([])).toBe('');
     const text = option.tooltip.formatter([
       { seriesName: 'Used', value: [T0, 120_000], axisValue: T0 },

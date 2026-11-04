@@ -41,10 +41,10 @@ const chartDateFormats = new Map<string, Intl.DateTimeFormat>();
 
 /**
  * Formats one UTC epoch-milliseconds timestamp as a compact chart date
- * ("Nov 4, 2:00 PM") in `timeZone` — the §14.4 tooltip and axis-label
- * rendering. Task 177 owns tick PLACEMENT (local hour/day boundaries in
- * the display zone, DST-aware); this helper owns only the text of one
- * tick, which that task keeps consuming.
+ * ("Nov 4, 2:00 PM") in `timeZone` — since task 177 the §14.4 TOOLTIP
+ * header (and the axis-label fallback for a value outside the tick set);
+ * the axis tick text itself lives in the four tick-label formatters
+ * below.
  */
 export function formatChartDate(epochMs: number, timeZone: string): string {
   let format = chartDateFormats.get(timeZone);
@@ -59,6 +59,77 @@ export function formatChartDate(epochMs: number, timeZone: string): string {
     chartDateFormats.set(timeZone, format);
   }
   return format.format(epochMs);
+}
+
+/* ── Chart tick labels (§14.4 axis rendering, task 177; D-150) ─────────── */
+
+/** The wall-clock-hour tick label — "2 PM". */
+const chartTimeFormats = new Map<string, Intl.DateTimeFormat>();
+/** The wall-clock-hour tick label with its zone name — "1 AM EST". */
+const chartZoneTimeFormats = new Map<string, Intl.DateTimeFormat>();
+/** The day tick label — "Nov 4". */
+const chartDayFormats = new Map<string, Intl.DateTimeFormat>();
+/** The month tick label — "Nov 2026". */
+const chartMonthFormats = new Map<string, Intl.DateTimeFormat>();
+
+function cachedFormat(
+  cache: Map<string, Intl.DateTimeFormat>,
+  timeZone: string,
+  create: () => Intl.DateTimeFormat,
+): Intl.DateTimeFormat {
+  let format = cache.get(timeZone);
+  if (format === undefined) {
+    format = create();
+    cache.set(timeZone, format);
+  }
+  return format;
+}
+
+/**
+ * Formats one tick's wall-clock time — "2 PM" — in `timeZone`: the label
+ * of an hour-granularity tick (task 177). Time only: the full date stays
+ * in the tooltip (an hour-granularity axis can span days).
+ */
+export function formatChartTime(epochMs: number, timeZone: string): string {
+  return cachedFormat(
+    chartTimeFormats,
+    timeZone,
+    () => new Intl.DateTimeFormat('en', { timeZone, hour: 'numeric' }),
+  ).format(epochMs);
+}
+
+/**
+ * Formats one tick's wall-clock time with its short zone name — "1 AM EST":
+ * the disambiguated label for a tick on a duplicated wall hour (a 25-hour
+ * day reads "1 AM" twice; the offsets are the honest difference, §14.4).
+ */
+export function formatChartZoneTime(epochMs: number, timeZone: string): string {
+  return cachedFormat(
+    chartZoneTimeFormats,
+    timeZone,
+    () => new Intl.DateTimeFormat('en', { timeZone, hour: 'numeric', timeZoneName: 'short' }),
+  ).format(epochMs);
+}
+
+/** Formats one day-granularity tick — "Nov 4" — in `timeZone`. */
+export function formatChartDay(epochMs: number, timeZone: string): string {
+  return cachedFormat(
+    chartDayFormats,
+    timeZone,
+    () => new Intl.DateTimeFormat('en', { timeZone, month: 'short', day: 'numeric' }),
+  ).format(epochMs);
+}
+
+/**
+ * Formats one month-granularity tick — "Nov 2026": the year rides along
+ * because a month-step axis spans more than one month (task 177).
+ */
+export function formatChartMonth(epochMs: number, timeZone: string): string {
+  return cachedFormat(
+    chartMonthFormats,
+    timeZone,
+    () => new Intl.DateTimeFormat('en', { timeZone, month: 'short', year: 'numeric' }),
+  ).format(epochMs);
 }
 
 /** Formats one quota value (§14.3: explicit numbers via `Intl`). */

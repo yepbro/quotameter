@@ -1,5 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   EventsResponse,
   HistoryPointItem,
@@ -256,6 +256,7 @@ afterEach(() => {
   for (const name of Object.keys(LIGHT_TOKENS)) {
     document.documentElement.style.removeProperty(name);
   }
+  vi.unstubAllGlobals();
 });
 
 const ISO_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
@@ -913,5 +914,117 @@ describe('metric chart: the annotation props (task 176, D-149)', () => {
     expect(
       option.series.find((series) => 'id' in series && series.id === 'qm-chart-bands'),
     ).toBeUndefined();
+  });
+});
+
+describe('metric chart: the axis ticks (task 177, D-150)', () => {
+  /** Reads an instant's wall minute/second in a zone — the alignment oracle. */
+  function wallMinuteSecondOf(at: number, zone: string): { minute: number; second: number } {
+    const parts = new Intl.DateTimeFormat('en', {
+      timeZone: zone,
+      hourCycle: 'h23',
+      minute: 'numeric',
+      second: 'numeric',
+    }).formatToParts(at);
+    const read: Record<string, number> = {};
+    for (const part of parts) {
+      if (part.type !== 'literal') read[part.type] = Number(part.value);
+    }
+    return { minute: read.minute ?? 0, second: read.second ?? 0 };
+  }
+
+  it('places every tick on a local boundary of the configured zone, inside the window', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const { runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { timeZone: 'Asia/Kathmandu' },
+    });
+
+    const axis = runtime.handles[0]!.setOptions[0]!.option.xAxis[0]!;
+    const values = axis.axisLabel.customValues ?? [];
+    expect(values.length).toBeGreaterThan(1);
+    // Every tick sits on the zone's own hour/day boundary (a +05:45 zone
+    // aligns at :15 UTC-minutes — never the machine's or UTC's phase) and
+    // inside the half-open window.
+    for (const value of values) {
+      expect(wallMinuteSecondOf(value, 'Asia/Kathmandu')).toEqual({ minute: 0, second: 0 });
+      expect(value).toBeGreaterThanOrEqual(axis.min);
+      expect(value).toBeLessThan(axis.max);
+    }
+    // The labels are the tick words (time, day, or month) — a tick label
+    // never carries the full date's colon (the fallback would).
+    for (const value of values) {
+      expect(axis.axisLabel.formatter!(value)).not.toContain(':');
+    }
+    // The tick marks ride the same instants.
+    expect(axis.axisTick!.customValues).toBe(values);
+  });
+
+  it('the strip x-axis carries the same instants as the main axis (the D-149 pair)', async () => {
+    applyTokens(LIGHT_TOKENS);
+    const instants = windowInstants();
+    const { runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+      props: { events: eventsProp(instants), peaks: peaksProp(instants) },
+    });
+
+    const option = runtime.handles[0]!.setOptions[0]!.option;
+    const [main, strip] = option.xAxis as [(typeof option.xAxis)[0], (typeof option.xAxis)[0]];
+    expect(strip!.axisLabel.customValues).toEqual(main!.axisLabel.customValues);
+    expect(strip!.axisTick!.customValues).toEqual(main!.axisTick!.customValues);
+    // The main axis hides its label row (the strip owns it below) but
+    // keeps the instants for its tick marks.
+    expect(main!.axisLabel.show).toBe(false);
+    expect(strip!.axisLabel.show).toBeUndefined();
+  });
+
+  it('re-fits the tick ladder when the host reports its real width', async () => {
+    applyTokens(LIGHT_TOKENS);
+    // A controllable ResizeObserver (happy-dom's never fires; the
+    // component's callback reads the host's clientWidth, so the entries
+    // it receives are irrelevant to the behavior under test).
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          observers.push(callback);
+        }
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      },
+    );
+    const { wrapper, runtime } = await mountChart({
+      serve: (input) => ({ body: historyBody(input, { points: DUAL_POINTS }) }),
+    });
+
+    const handle = runtime.handles[0]!;
+    // The unmeasured mount builds at the §14.1 floor (the host's
+    // clientWidth is 0 under happy-dom) — the 7-day window at a 284 px
+    // plot carries the 2-day step.
+    const firstTicks = handle.setOptions[0]!.option.xAxis[0]!.axisLabel.customValues!;
+    expect(firstTicks.length).toBeGreaterThanOrEqual(3);
+    expect(firstTicks.length).toBeLessThanOrEqual(4);
+
+    // A wide host re-fits: the observer fires, the ladder moves to the
+    // 1-day step, and the option re-sets with more ticks.
+    const host = wrapper.find('[data-testid="chart-canvas"]').element as HTMLElement;
+    Object.defineProperty(host, 'clientWidth', { value: 1200, configurable: true });
+    observers[0]!();
+    await settle();
+    expect(handle.setOptions).toHaveLength(2);
+    const wideTicks = handle.setOptions[1]!.option.xAxis[0]!.axisLabel.customValues!;
+    expect(wideTicks.length).toBeGreaterThan(firstTicks.length);
+    expect(handle.resized).toBe(1);
+
+    // A width change that keeps the ladder step is stretch-only: the
+    // canvas resizes, the option does not re-set (the review round's
+    // per-frame-rebuild gate).
+    Object.defineProperty(host, 'clientWidth', { value: 1199, configurable: true });
+    observers[0]!();
+    await settle();
+    expect(handle.setOptions).toHaveLength(2);
+    expect(handle.resized).toBe(2);
   });
 });
