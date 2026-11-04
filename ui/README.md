@@ -47,9 +47,12 @@ without server-side route tables.
 | any other   | —          | redirect to `/` (decision D-131) | —                       |
 
 The route table and the `createAppRouter(history)` factory (memory-history
-seam for component tests) live in `src/router/index.ts`. The `/login`
-route has no navigation guard yet — task 180 adds the auth-state
-handling, and the login nav entry with it.
+seam for component tests) live in `src/router/index.ts`. The route table
+itself carries no navigation guard: the session handling (task 180,
+decision D-159) installs its guard through `installSessionRouting` from
+`src/session.ts` in the composition root, so the factory stays pure
+routing and component tests mount it guard-free — see [Login, logout,
+and the session layer (task 180)](#login-logout-and-the-session-layer-task-180).
 
 ## Building
 
@@ -177,14 +180,17 @@ errors are handled consistently across pages, through the one surface.
 The accounts page (task 170) is the first real consumer — see
 [The accounts page (task 170)](#the-accounts-page-task-170).
 
-Future families join as methods on the client: `peakHours` (162) and
-`auth` (180) — the `history`/`events` families landed with task 174
-(the range-bearing GETs: ISO-8601 `from`/`to` boundaries, D-139's
-grammar). **The task-180 seam:**
-`ApiErrorNotice`'s `UNAUTHENTICATED` branch is where the login redirect
-(the named `login` route) hooks in; the error object's `code` field is the
-programmatic signal, so the guard can intercept `code === 'UNAUTHENTICATED'`
-before presentation.
+Future families join as methods on the client — the `history`/`events`
+families landed with task 174 (the range-bearing GETs: ISO-8601
+`from`/`to` boundaries, D-139's grammar) and the `auth` family with
+task 180 (see below). **The session signal (task 180, D-159):** the
+`onUnauthenticated` client option fires whenever a response is
+classified as the §13 envelope with `code === 'UNAUTHENTICATED'` — at
+the taxonomy's own boundary, so every request reports it whatever
+dispatched it. `ApiErrorNotice`'s `UNAUTHENTICATED` branch remains the
+_presentation_ of such an answer while the session layer's redirect
+takes the page away (the error object's `code` field is still the
+programmatic signal for anyone who needs it).
 
 ### `vite preview` note
 
@@ -628,6 +634,101 @@ D-124/D-126 consequence is stated before the change (the hint) and as
 the success notice: changing the password revokes every session,
 including the one that made it.
 
+## Login, logout, and the session layer (task 180)
+
+Spec §14.6/§15.1/§15.2; decision D-159. The `/login` page is the §14.6
+password form and the shell header carries the sign-out button; both are
+driven by `src/session.ts`.
+
+### Mode-agnostic by construction
+
+The UI never learns the §15.1 auth mode: the only mode-fact surface
+(`/api/settings`) is itself protected under `required` (chicken-and-egg
+for the visitor the login page exists for), and `GET /api/auth/session`
+stays unwired (D-146 left it to this task's consumer, but the task's
+carve-out froze `src/**` — and the tri-state below needs no probe: the
+session cookie rides every request, so the first protected load
+discovers the truth with no extra round trip). The session state is a
+tri-state, in-memory only (the cookie is the session's only truth; a
+reload honestly restarts at `unknown`):
+
+- `unknown` — no signal this SPA lifetime. Protected pages render and
+  load optimistically; in `auto` + loopback no 401 ever arrives, nothing
+  forces `/login`, and the login page stays reachable by URL — exactly
+  §14.6/§15.1's semantics for the mode that requires no password.
+- `authenticated` — a login succeeded this SPA lifetime.
+- `unauthenticated` — the wire answered the §13 envelope's
+  `UNAUTHENTICATED` code (through the client's `onUnauthenticated`
+  hook, fired at the classification boundary so every session-bearing
+  request reports it — an error whose notice never mounts still flips
+  the state; the login arm alone is exempt: its 401s judge the
+  candidate password, never the session, so a mistype cannot demote
+  navigation in the passwordless `auto`-loopback world).
+- `signOut()` sets `unknown`, not `unauthenticated`: under
+  `auto`-loopback the overview keeps working after a sign-out.
+
+### Redirects and destination preservation
+
+`installSessionRouting(router, session)` — called in the composition
+root before the initial navigation — installs a `beforeEach` guard plus
+a reactive watcher on the state:
+
+- an **authenticated** visit to `/login` bounces to the preserved
+  destination (or `/`) as a string location — vue-router parses query
+  and hash out of string locations but drops them from a `{ path }`
+  object, and a preserved destination may carry either;
+- an **unauthenticated** navigation to a protected target redirects to
+  `/login?redirect=<fullPath>` — no API round trip, no flash of the
+  protected page;
+- a flip to `unauthenticated` while a protected page is already rendered
+  navigates the same way, never from the login route itself;
+- `loginReturnTarget(redirect)` validates the `redirect` query (attacker-
+  influenceable like any URL input): same-origin paths only — leading
+  `/`, no `//` (the protocol-relative open-redirect escape), no
+  backslash (browsers normalize `\` to `/` — the same escape's twin),
+  nothing resolving onto the login route in any casing or slash form;
+  everything else collapses to `/`.
+
+### The login form
+
+Deliberately **load-free** (zero fetch on mount — the §14.6 page must
+render before any credential exists; the csp-shell e2e deep link stands
+on this). The password field is write-only (§15.4): masked, never
+prefilled, cleared AT DISPATCH (the request body is built synchronously,
+so the attempted candidate never lingers in the field through the
+possibly minutes-long pending window), sent verbatim — never trimmed
+(§15.2's 12-character minimum binds whoever _sets_ a password, never
+the verifier). Failures are catalog sentences selected
+by the envelope's `details.reason` — `invalid-credentials` and
+`source-busy` (D-146's two distinguishable arms) get their own
+sentences, anything else the generic failure; the payload never renders
+(D-134). §15.2's budget delays are invisible on the wire (delays, never
+rejections), so the form states the behavior up front and the request
+carries its own deadline — `LOGIN_TIMEOUT_MS` (250 s, above the
+server's 240 s sleep clamp, below the 300 s socket bound, pinned by
+test) — so the honest verdict is waited out, not raced into a
+doubled-delay retry.
+
+### Sign-out
+
+The header button is visible unless the wire said `unauthenticated` or
+the current route is the login page (an authenticated visitor never sits
+there — the guard bounces them — so on that page the control would be
+noise about an unproven session). A failed sign-out's shared notice is
+cleared on the next completed navigation: the shell persists across
+routes, and the notice belongs to the sign-out interaction (a retry
+re-presents a condition that still holds).
+A successful logout resets the store and **reloads the document** to
+`/` — a router push would be deduped when the current route already is
+`/` (no remount, no fresh loads, no 401 to drive the redirect under
+`required`), while the reload restarts the SPA at `unknown` and the
+next wire answers decide the world: under `required` the fresh overview
+load's 401 redirects to `/login?redirect=/`; under `auto`-loopback the
+overview simply renders. Every in-memory artifact of the authenticated
+session dies with the document. A 401 logout answer needs no notice
+(the hook fires and the watcher navigates); other failures ride the
+shared `ApiErrorNotice` in the shell.
+
 ## Layout
 
 - `index.html` — document shell (language, viewport, color-scheme, mount
@@ -680,10 +781,12 @@ including the one that made it.
   `useTheme()`, the storage key, and the validation guard (see
   [Theming](#theming)).
 - `src/App.vue` — application shell: site header (title, primary nav,
-  theme control) and the single `main` landmark the router renders into.
-- `src/views/*.vue` — routed page components (the login placeholder until
-  task 180; every other page is implemented — overview 172+, accounts
-  170, settings 179).
+  theme control, sign-out button) and the single `main` landmark the
+  router renders into.
+- `src/views/*.vue` — routed page components (every page is implemented —
+  overview 172+, accounts 170, settings 179, login 180).
+- `src/session.ts` — the session state plugin and its routing (task 180);
+  see [Login, logout, and the session layer (task 180)](#login-logout-and-the-session-layer-task-180).
 - `src/assets/base.css` — design tokens (`--qm-*` custom properties; the
   single color source) and document-level base styles; the theme blocks
   are described under [Theming](#theming).

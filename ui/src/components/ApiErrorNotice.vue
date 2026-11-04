@@ -30,9 +30,12 @@ defineProps<{
   >
     <template v-if="error.kind === 'rejected'">
       <template v-if="error.code === 'VALIDATION'">{{ t('errors.codes.validation') }}</template>
-      <!-- Task 180's seam: the UNAUTHENTICATED branch is where the login
-        redirect (the named `login` route) hooks in; the error's `code`
-        field is the programmatic signal. -->
+      <!-- Task 180 (D-159): this branch is the PRESENTATION an
+        UNAUTHENTICATED answer keeps while the session layer's redirect
+        (installed by the client's `onUnauthenticated` hook — the one
+        path every request takes, so an error whose notice never mounts
+        still redirects) takes the page to the named `login` route with
+        the destination preserved. -->
       <template v-else-if="error.code === 'UNAUTHENTICATED'">{{
         t('errors.codes.unauthenticated')
       }}</template>

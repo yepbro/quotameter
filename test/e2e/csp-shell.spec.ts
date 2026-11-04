@@ -112,10 +112,10 @@ test('the shell loads and renders under the served CSP — no violations', async
   // and this construction wires no data-bearing routes — the §13 scope's
   // catch-all answers their honest 404 envelopes, which Chromium logs as
   // console noise unrelated to the policy under test. The shell + policy
-  // surface is therefore probed on the login placeholder (whose only
-  // load is the wired public health probe); restoring `/` here is the
-  // composition task's seam (wire the API into the construction) — the
-  // same move the task-170 deep link made for `/accounts`.
+  // surface is therefore probed on the login page — which task 180 kept
+  // deliberately load-free (the §14.6 form is mode-agnostic: nothing is
+  // fetched on mount, the exact property this cell needs); the predicted
+  // displacement of 179's hand-off did not materialize by design.
   const response = await page.goto(`${baseUrl}/login`);
   expect(response?.status()).toBe(200);
   expect(response?.headers()['content-security-policy']).toBe(CSP_WIRE_VALUE);
@@ -131,15 +131,14 @@ test('the shell loads and renders under the served CSP — no violations', async
 test('a SPA deep link serves the shell under the same policy', async ({ page }) => {
   const assertNoViolations = await expectNoCspViolations(page);
   // Task 179 made `/settings` an API-loading page (the settings view and
-  // the providers listing), and this construction wires no data-bearing
-  // routes — the §13 scope's catch-all answers their honest 404
-  // envelopes, which Chromium logs as console noise unrelated to the
-  // policy under test. The deep link under test is the SPA fallback +
-  // the policy, so it uses the one page whose only load this
-  // construction serves (the wired public health probe); task 180 will
-  // displace `/login` the same way, and serving a data page here means
-  // wiring the composition (the same move the task-170 deep link made
-  // for `/accounts`).
+  // the providers listing), task 172 made `/` one, and this construction
+  // wires no data-bearing routes — the §13 scope's catch-all answers
+  // their honest 404 envelopes, which Chromium logs as console noise
+  // unrelated to the policy under test. The deep link under test is the
+  // SPA fallback + the policy, so it uses the one page that loads
+  // nothing (task 180's login form renders before any credential
+  // exists — 179's report expected this cell to be displaced again; the
+  // load-free design keeps it here).
   const response = await page.goto(`${baseUrl}/login`);
   expect(response?.status()).toBe(200);
   expect(response?.headers()['content-security-policy']).toBe(CSP_WIRE_VALUE);

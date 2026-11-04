@@ -1,23 +1,25 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory } from 'vue-router';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import App from '../../ui/src/App.vue';
 import { createAccountSelection } from '../../ui/src/account-selection';
 import { createApiClientPlugin } from '../../ui/src/api';
 import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
+import { createSession } from '../../ui/src/session';
 import { createAppTheme } from '../../ui/src/theme';
 import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
 import { FakeFetch, jsonResponse, healthyApiBody } from '../helpers/api';
 
 /**
- * The application shell (spec §14.1; decisions D-131, D-132, D-133): the
- * layout the router renders into — the site header with the application
- * title, the primary navigation, and the theme control, and the main
- * landmark carrying the routed view. Each test mounts a fresh router,
- * i18n, theme, and API-client instance (a fake fetch answering a healthy
- * §13 health response, so the views' shared error wiring stays silent —
- * its failure presentation is pinned by `api-error-wiring.spec.ts`) and
+ * The application shell (spec §14.1; decisions D-131, D-132, D-133):
+ * the layout the router renders into — the site header with the
+ * application title, the primary navigation, the theme control, and
+ * (task 180) the §14.6 sign-out control; the main landmark carries the
+ * routed view. Each test mounts a fresh router, i18n, theme, session,
+ * and API-client instance (a fake fetch answering a healthy §13 body
+ * per route, so the views' shared error wiring stays silent — its
+ * failure presentation is pinned by `api-error-wiring.spec.ts`) and
  * starts it at the given path (direct navigation), so no state leaks
  * between cases. The rendered-string assertions run the whole catalog →
  * `t()` → render pipeline, not just static markup.
@@ -46,19 +48,20 @@ async function mountShell(initial: string = '/') {
     storage: new MemoryThemeStorage(),
     media: new FakeThemeMedia(),
   });
-  const api = createApiClientPlugin({
-    fetchImpl: new FakeFetch((call) =>
-      Promise.resolve(jsonResponse(200, healthyApiBody(call.input))),
-    ).impl,
-  });
-  // Task 170: the accounts view consumes the selection store; every
-  // shell mount installs one (the composition root does the same).
+  const session = createSession();
+  const fake = new FakeFetch((call) =>
+    Promise.resolve(jsonResponse(200, healthyApiBody(call.input))),
+  );
+  const api = createApiClientPlugin({ fetchImpl: fake.impl });
+  // Task 170: the accounts view consumes the selection store; task 180:
+  // the shell's sign-out consumes the session store; every shell mount
+  // installs both (the composition root does the same).
   const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
   const wrapper = mount(App, {
-    global: { plugins: [router, createAppI18n(), theme, api, selection] },
+    global: { plugins: [router, createAppI18n(), theme, api, selection, session] },
   });
   await settleNavigation();
-  return wrapper;
+  return { wrapper, router, session, fake };
 }
 
 describe('App shell', () => {
@@ -66,7 +69,7 @@ describe('App shell', () => {
   // task 177) — the D-087/D-094 lesson from 177's landing: the default
   // 5 s budget flakes under parallel-worktree load. 30 s house value.
   it('renders the application title in the site header', { timeout: 30_000 }, async () => {
-    const wrapper = await mountShell();
+    const { wrapper } = await mountShell();
     expect(wrapper.find('h1').text()).toBe('Quotameter');
   });
 
@@ -74,7 +77,7 @@ describe('App shell', () => {
     'renders the overview page with its no-accounts guidance block (task 173)',
     { timeout: 30_000 },
     async () => {
-      const wrapper = await mountShell();
+      const { wrapper } = await mountShell();
       expect(wrapper.find('h2').text()).toBe('Overview');
       // The healthy empty backend: the no-accounts guidance block with
       // its CTA link — never a blank or broken page.
@@ -87,10 +90,10 @@ describe('App shell', () => {
   );
 
   it(
-    'navigates with the three primary sections only (login is task 180)',
+    'navigates with the three primary sections only (no login nav entry — §14.6 asks for a page)',
     { timeout: 30_000 },
     async () => {
-      const wrapper = await mountShell();
+      const { wrapper } = await mountShell();
       const links = wrapper.findAll('nav a');
       expect(links.map((link) => link.text())).toEqual(['Overview', 'Accounts', 'Settings']);
     },
@@ -100,7 +103,7 @@ describe('App shell', () => {
     'direct navigation renders the settings view (task 179: real content)',
     { timeout: 30_000 },
     async () => {
-      const wrapper = await mountShell('/settings');
+      const { wrapper } = await mountShell('/settings');
       expect(wrapper.find('h2').text()).toBe('Settings');
       // The settings page's real surface against the healthy backend:
       // the general form beside the facts (the providers listing answers
@@ -111,17 +114,27 @@ describe('App shell', () => {
     },
   );
 
-  it('direct navigation renders the /login view', { timeout: 30_000 }, async () => {
-    const wrapper = await mountShell('/login');
-    expect(wrapper.find('h2').text()).toBe('Login');
-    expect(wrapper.find('[data-testid="page-status"]').text()).toBe('Not implemented yet.');
-  });
+  it(
+    'direct navigation renders the /login view (task 180: the real form)',
+    { timeout: 30_000 },
+    async () => {
+      const { wrapper } = await mountShell('/login');
+      expect(wrapper.find('h2').text()).toBe('Sign in');
+      // The mode-agnostic password form, first paint with no request.
+      expect(wrapper.find('[data-testid="login-form"]').exists()).toBe(true);
+      expect(wrapper.find('label[for="login-password"]').text()).toBe('Password');
+      // The sign-out control is hidden on the login route (the review
+      // round's P3-4): an authenticated visitor never sits here, so
+      // the control would be noise about an unproven session.
+      expect(wrapper.find('[data-testid="session-signout"]').exists()).toBe(false);
+    },
+  );
 
   it(
     'direct navigation renders the accounts view (task 170: real content)',
     { timeout: 30_000 },
     async () => {
-      const wrapper = await mountShell('/accounts');
+      const { wrapper } = await mountShell('/accounts');
       expect(wrapper.find('h2').text()).toBe('Accounts');
       // The management page's honest empty state against the empty list.
       expect(wrapper.find('[data-testid="accounts-empty"]').exists()).toBe(true);
@@ -129,7 +142,7 @@ describe('App shell', () => {
   );
 
   it('navigates between sections through the nav links', { timeout: 30_000 }, async () => {
-    const wrapper = await mountShell();
+    const { wrapper } = await mountShell();
     const accountsLink = wrapper.findAll('nav a').at(1);
     expect(accountsLink?.text()).toBe('Accounts');
 
@@ -145,7 +158,7 @@ describe('App shell', () => {
     'renders the theme control with the three modes, system by default',
     { timeout: 30_000 },
     async () => {
-      const wrapper = await mountShell();
+      const { wrapper } = await mountShell();
       const select = wrapper.find('[data-testid="theme-select"]');
       expect(select.exists()).toBe(true);
       // The label is the select's accessible name (label[for] pairing).
@@ -163,7 +176,7 @@ describe('App shell', () => {
     'selecting a mode applies it live through the data-theme attribute',
     { timeout: 30_000 },
     async () => {
-      const wrapper = await mountShell();
+      const { wrapper } = await mountShell();
       const select = wrapper.find('[data-testid="theme-select"]');
 
       await select.setValue('dark');
@@ -174,6 +187,96 @@ describe('App shell', () => {
       await select.setValue('system');
       await settleNavigation();
       expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    },
+  );
+
+  // The §14.6 session control (task 180, D-159).
+  it(
+    'renders the sign-out control from the unknown session state',
+    { timeout: 30_000 },
+    async () => {
+      const { wrapper } = await mountShell();
+      const button = wrapper.find('[data-testid="session-signout"]');
+      expect(button.exists()).toBe(true);
+      expect(button.text()).toBe('Sign out');
+    },
+  );
+
+  it(
+    'sign-out POSTs /api/auth/logout and reloads the document to /',
+    { timeout: 30_000 },
+    async () => {
+      const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
+      const { wrapper, fake, session } = await mountShell('/settings');
+      await wrapper.find('[data-testid="session-signout"]').trigger('click');
+      await settleNavigation();
+      // The wire pin: the bodiless §15.3 POST to the logout endpoint (the
+      // healthy-body fallback satisfies the trusted cast's shape).
+      const logout = fake.calls.find((call) => call.input === '/api/auth/logout');
+      expect(logout).toBeDefined();
+      expect(logout?.method).toBe('POST');
+      expect(logout?.body).toBeUndefined();
+      // The post-sign-out routing is a DOCUMENT reload, not a router push
+      // (a same-route push would be deduped — no remount, no fresh loads,
+      // no 401 to drive the redirect under `required`): the SPA restarts
+      // honestly at 'unknown' and the next wire answers decide the world.
+      expect(assign).toHaveBeenCalledTimes(1);
+      expect(assign).toHaveBeenCalledWith('/');
+      expect(session.state.value).toBe('unknown');
+      assign.mockRestore();
+    },
+  );
+
+  it(
+    'hides the sign-out control once the wire says unauthenticated',
+    { timeout: 30_000 },
+    async () => {
+      const { wrapper, session } = await mountShell();
+      expect(wrapper.find('[data-testid="session-signout"]').exists()).toBe(true);
+      session.markUnauthenticated();
+      await settleNavigation();
+      expect(wrapper.find('[data-testid="session-signout"]').exists()).toBe(false);
+    },
+  );
+
+  it(
+    'a failed sign-out notice clears on the next completed navigation (P3-3)',
+    { timeout: 30_000 },
+    async () => {
+      // The service dies for the logout alone (not a 401 — that arm
+      // redirects instead): the shared notice renders in the shell,
+      // which persists across routes.
+      const flaky = new FakeFetch((call) =>
+        call.input === '/api/auth/logout'
+          ? Promise.reject(new Error('Failed to fetch'))
+          : Promise.resolve(jsonResponse(200, healthyApiBody(call.input))),
+      );
+      const router = createAppRouter(createMemoryHistory());
+      await router.push('/');
+      await router.isReady();
+      const wrapper = mount(App, {
+        global: {
+          plugins: [
+            router,
+            createAppI18n(),
+            createAppTheme({ storage: new MemoryThemeStorage(), media: new FakeThemeMedia() }),
+            createApiClientPlugin({ fetchImpl: flaky.impl }),
+            createAccountSelection({ storage: new MemoryThemeStorage() }),
+            createSession(),
+          ],
+        },
+      });
+      await settleNavigation();
+      await wrapper.find('[data-testid="session-signout"]').trigger('click');
+      await settleNavigation();
+      expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(true);
+      // The user abandons the interaction and navigates: the notice
+      // belongs to the sign-out attempt, not to the destination (the
+      // review round's P3-3 — without the reset a stale "unreachable"
+      // line would ride along until the next sign-out attempt).
+      await router.push('/settings');
+      await settleNavigation();
+      expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
     },
   );
 });

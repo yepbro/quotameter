@@ -312,6 +312,24 @@ test('the overview fits the 360 px viewport without horizontal overflow (task 17
   expect(overflow, 'no horizontal overflow at 360 px').toBeLessThanOrEqual(0);
 });
 
+test('login page has no WCAG violations in either theme (task 180)', async ({ page }) => {
+  // The §14.6 sign-in form — the one page that needs no interception:
+  // it fires nothing on mount (the mode-agnostic form renders before
+  // any credential exists; the csp-shell cells stand on the same
+  // property), so the preview server's missing API costs it nothing.
+  // The blank-guard sentence and the arm sentences share the failure
+  // presentation's tone, pinned at the component level; here the
+  // resting form goes through axe with its tokens applied per mode.
+  await page.goto('/login');
+  await expect(page.getByRole('heading', { name: 'Sign in', level: 2 })).toBeVisible();
+  await expect(page.getByTestId('login-form')).toBeVisible();
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
 test('settings page has no WCAG violations in either theme (task 179)', async ({ page }) => {
   // The settings page's populated surface through route interception:
   // the annotated settings view (a restart-requiring trio, a configured

@@ -7,10 +7,14 @@
  * the server's own TypeBox contracts through **type-only imports**: the
  * imports are erased at build time, so the browser bundle carries neither
  * the schema modules nor `@sinclair/typebox`/fastify behind them — the
- * coupling is compile-time truth, zero runtime weight. The auth family
- * (task 180) joins as new methods here, the same pattern; the
+ * coupling is compile-time truth, zero runtime weight. The
  * history/events families landed with task 174 and peak-hours with task
- * 176 (D-139's grammar: ISO-8601 request boundaries, epoch-ms responses).
+ * 176 (D-139's grammar: ISO-8601 request boundaries, epoch-ms
+ * responses); the auth family (task 180, D-146's endpoints) joins the
+ * same way — plus the per-request deadline it introduces (login's long
+ * wait over §15.2's budget delays) and the
+ * {@link ApiClientOptions.onUnauthenticated} hook that feeds the
+ * session layer (D-159).
  *
  * Success bodies are trusted casts, not re-validated: the same-origin
  * server serializes through the same closed schemas (the D-111/D-128
@@ -53,6 +57,7 @@ import type {
   UpdateSettingsBody,
   UpdateSettingsResponse,
 } from '../../../src/schemas/api/settings';
+import type { LoginBody, LoginResponse, LogoutResponse } from '../../../src/schemas/api/auth';
 import type { QuotaResponse, StatusResponse } from '../../../src/schemas/api/status';
 import { ApiClientError, parseApiErrorEnvelope } from './error';
 
@@ -82,6 +87,22 @@ const API_BASE_URL = '/api';
  * per-client override exists for the heavier future families (161/162).
  */
 export const API_DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * The login request's own deadline, overriding the client default: the
+ * server deliberately slows an over-budget sign-in attempt (§15.2's
+ * "increasing delays"), sleeping up to its 240 s transport clamp before
+ * answering (D-146's `MAX_LOGIN_DELAY_SLEEP_MS` — invisible on the
+ * wire: same envelope, no Retry-After). Racing it with the 15 s default
+ * would abort before the honest answer arrives and goad the user into
+ * an immediate retry that pays a doubled delay — the client would be
+ * working against §15.2's own mechanism. 250 s sits above the clamp
+ * with margin while staying under the construction's 300 s
+ * socket-inactivity bound, so the real verdict always arrives first.
+ * Kept as a UI-local constant for the D-134 reason (no runtime import
+ * of the server module graph), pinned above the clamp by test.
+ */
+export const LOGIN_TIMEOUT_MS = 250_000;
 
 /** §13's state-changing methods — the §15.3 header/content-type set. */
 const MUTATION_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -119,6 +140,19 @@ export interface ApiClientOptions {
   readonly baseUrl?: string;
   /** Per-request deadline; defaults to {@link API_DEFAULT_TIMEOUT_MS}. */
   readonly timeoutMs?: number;
+  /**
+   * Fired whenever a response is classified as the §13 envelope with
+   * `code === 'UNAUTHENTICATED`' (task 180, D-159): the one signal the
+   * wire gives about the session, observed at the taxonomy's own
+   * boundary so every request — whatever page or composable dispatched
+   * it — reports it (the login family alone opts out: its 401s judge
+   * the candidate password, never the session). The composition root
+   * wires this to the session store's `markUnauthenticated()`; the hook
+   * receives nothing and its return value is ignored (a presentation
+   * concern, never a pipeline one: the error still throws exactly as
+   * without the hook).
+   */
+  readonly onUnauthenticated?: () => void;
 }
 
 /** One request as the endpoint helpers declare it. */
@@ -131,6 +165,18 @@ interface RequestSpec {
   readonly body?: unknown;
   /** Caller cancellation, composed with the client's own deadline. */
   readonly signal?: AbortSignal;
+  /** Per-request deadline override (the login family's long wait). */
+  readonly timeoutMs?: number;
+  /**
+   * Whether an `UNAUTHENTICATED` envelope answer may fire
+   * {@link ApiClientOptions.onUnauthenticated} (default `true`). The
+   * login arm alone passes `false` (the review round's P2-2): a
+   * rejected candidate is a statement about the candidate, not about
+   * the session — in the passwordless `auto`-loopback deployment every
+   * login 401s, and letting one flip the session state would brick SPA
+   * navigation until a reload.
+   */
+  readonly reportUnauthenticated?: boolean;
 }
 
 /** Builds the request URL: base + path + serialized query. */
@@ -236,6 +282,18 @@ export interface ApiClient {
       signal?: AbortSignal,
     ): Promise<PeakHoursResponse>;
   };
+  /**
+   * The §13 auth family (task 180, D-146's endpoints): login presents
+   * the password (§15.1's one credential) and carries the long
+   * {@link LOGIN_TIMEOUT_MS} deadline — the server's §15.2 budget
+   * delays answer slowly, and the honest verdict must be waited out,
+   * not raced; logout is bodiless (the cookie is the credential — the
+   * session-bound POST clears it server-side, idempotently).
+   */
+  readonly auth: {
+    login(body: LoginBody, signal?: AbortSignal): Promise<LoginResponse>;
+    logout(signal?: AbortSignal): Promise<LogoutResponse>;
+  };
 }
 
 /**
@@ -248,6 +306,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const fetchImpl: ApiFetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
   const baseUrl = options.baseUrl ?? API_BASE_URL;
   const timeoutMs = options.timeoutMs ?? API_DEFAULT_TIMEOUT_MS;
+  const onUnauthenticated = options.onUnauthenticated;
 
   /**
    * The three-way transport-failure discrimination, shared by the fetch
@@ -298,7 +357,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, timeoutMs);
+    }, spec.timeoutMs ?? timeoutMs);
     const onCallerAbort = (): void => controller.abort();
     spec.signal?.addEventListener('abort', onCallerAbort);
 
@@ -330,6 +389,17 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     }
     const envelope = parseApiErrorEnvelope(parsed);
     if (envelope !== undefined) {
+      // The session signal (task 180, D-159): the one code the wire
+      // uses to say "no valid session presented" — observed here, at
+      // the classification boundary, so every request reports it
+      // whatever dispatched it. The login family opts out (see
+      // RequestSpec.reportUnauthenticated): its 401s judge the
+      // candidate password, not the browser's session, and treating
+      // them as session evidence locks navigation in the passwordless
+      // `auto`-loopback world where every attempt 401s.
+      if (envelope.error.code === 'UNAUTHENTICATED' && spec.reportUnauthenticated !== false) {
+        onUnauthenticated?.();
+      }
       // The §13 envelope — whatever the status said, the body is an
       // error answer: classify `rejected` with the facts carried.
       throw new ApiClientError({
@@ -436,6 +506,22 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
           },
           signal,
         }),
+    },
+    auth: {
+      // The long deadline is the request's own (see LOGIN_TIMEOUT_MS):
+      // §15.2's budget delays answer slowly by design. The session
+      // signal is opted out (see RequestSpec.reportUnauthenticated):
+      // the arm's 401 judges the candidate, never the session.
+      login: (body, signal) =>
+        request<LoginResponse>({
+          method: 'POST',
+          path: '/auth/login',
+          body,
+          signal,
+          timeoutMs: LOGIN_TIMEOUT_MS,
+          reportUnauthenticated: false,
+        }),
+      logout: (signal) => request<LogoutResponse>({ method: 'POST', path: '/auth/logout', signal }),
     },
   };
 }

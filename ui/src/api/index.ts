@@ -19,7 +19,7 @@ import { isApiClientError, type ApiClientError } from './error';
 
 export { createApiClient } from './client';
 export type { ApiClient, ApiClientOptions, ApiFetch, ApiFetchResponse } from './client';
-export { API_DEFAULT_TIMEOUT_MS, API_MUTATION_HEADER } from './client';
+export { API_DEFAULT_TIMEOUT_MS, API_MUTATION_HEADER, LOGIN_TIMEOUT_MS } from './client';
 export { ApiClientError, isApiClientError, parseApiErrorEnvelope } from './error';
 export type { ApiClientErrorKind, ApiErrorEnvelope } from './error';
 

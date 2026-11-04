@@ -8,6 +8,7 @@ import { createApiClientPlugin, useApi, useApiCall } from '../../ui/src/api';
 import { ApiClientError } from '../../ui/src/api/error';
 import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
+import { createSession } from '../../ui/src/session';
 import { createAppTheme } from '../../ui/src/theme';
 import { en } from '../../ui/src/i18n/en';
 import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
@@ -19,7 +20,9 @@ import { FakeFetch, jsonResponse, networkFailure, healthyApiBody } from '../help
  * shared wiring (useApi + useApiCall + ApiErrorNotice), and whichever
  * way the API answers, every page presents it through the one surface.
  * The vue-router navigation settle pattern is `app.spec.ts`'s
- * (macrotask hop under happy-dom).
+ * (macrotask hop under happy-dom). Since task 180 the login page is
+ * load-free (the §14.6 form renders before any credential exists), so
+ * it carries its own cell below instead of the per-route probe cells.
  */
 
 async function settleNavigation(): Promise<void> {
@@ -35,9 +38,10 @@ async function mountShell(initial: string, fetchImpl: FakeFetch['impl']): Promis
   await router.isReady();
   const theme = createAppTheme({ storage: new MemoryThemeStorage(), media: new FakeThemeMedia() });
   const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
+  const session = createSession();
   const api = createApiClientPlugin({ fetchImpl });
   const wrapper = mount(App, {
-    global: { plugins: [router, createAppI18n(), theme, selection, api] },
+    global: { plugins: [router, createAppI18n(), theme, selection, session, api] },
   });
   await settleNavigation();
   return wrapper;
@@ -51,7 +55,7 @@ async function mountShell(initial: string, fetchImpl: FakeFetch['impl']): Promis
  */
 const healthyBody = healthyApiBody;
 
-const ROUTES = ['/', '/accounts', '/settings', '/login'] as const;
+const ROUTES = ['/', '/accounts', '/settings'] as const;
 
 describe('shared error wiring across pages (task 169, D-134)', () => {
   // Shell mounts carry the full overview pipeline (charts seam included,
@@ -88,17 +92,29 @@ describe('shared error wiring across pages (task 169, D-134)', () => {
       expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
       // Real page content rendered beside the wiring: the overview's
       // honest empty state (task 172), the accounts page's empty state
-      // (task 170), the settings page's general form (task 179), or the
-      // remaining placeholder's status line.
+      // (task 170), or the settings page's general form (task 179).
       expect(
         wrapper
           .find(
-            '[data-testid="page-status"], [data-testid="overview-empty"], [data-testid="accounts-empty"], [data-testid="settings-general"]',
+            '[data-testid="overview-empty"], [data-testid="accounts-empty"], [data-testid="settings-general"]',
           )
           .exists(),
       ).toBe(true);
     },
   );
+
+  it('the login page (task 180) renders its form with zero requests and no notice', async () => {
+    // The load-free §14.6 page: unlike every other route it fires
+    // nothing on mount — the csp-shell e2e cells stand on this — so an
+    // unreachable API costs it nothing; the form is the whole surface
+    // until a credential is presented.
+    const fake = new FakeFetch(networkFailure());
+    const wrapper = await mountShell('/login', fake.impl);
+    expect(fake.calls).toHaveLength(0);
+    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="login-form"]').exists()).toBe(true);
+    expect(wrapper.find('h2').text()).toBe(en.login.title);
+  });
 
   it('every page presents an envelope rejection through the same surface', async () => {
     // A hostile/other responder answering the §13 envelope: the pages

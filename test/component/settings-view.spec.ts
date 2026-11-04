@@ -13,6 +13,7 @@ import { createApiClientPlugin } from '../../ui/src/api';
 import { createAppI18n } from '../../ui/src/i18n';
 import { en } from '../../ui/src/i18n/en';
 import { createAppRouter } from '../../ui/src/router';
+import { createSession } from '../../ui/src/session';
 import {
   MIN_PASSWORD_LENGTH,
   POLLING_INTERVAL_MAX_SECONDS,
@@ -932,6 +933,9 @@ describe('settings page: the theme row agrees with the header control (D-133)', 
     await router.isReady();
     const theme = createAppTheme({ storage, media: new FakeThemeMedia() });
     const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
+    // Task 180: the shell's sign-out control consumes the session store
+    // (the composition root installs it; every shell mount does the same).
+    const session = createSession();
     const wrapper = mount(App, {
       attachTo: document.body,
       global: {
@@ -940,6 +944,7 @@ describe('settings page: the theme row agrees with the header control (D-133)', 
           createAppI18n(),
           theme,
           selection,
+          session,
           createApiClientPlugin({ fetchImpl: backend.impl }),
         ],
       },

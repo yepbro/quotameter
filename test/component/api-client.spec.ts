@@ -3,6 +3,7 @@ import {
   API_DEFAULT_TIMEOUT_MS,
   API_MUTATION_HEADER,
   createApiClient,
+  LOGIN_TIMEOUT_MS,
   type ApiFetchResponse,
 } from '../../ui/src/api/client';
 import { isApiClientError, parseApiErrorEnvelope } from '../../ui/src/api/error';
@@ -299,6 +300,33 @@ describe('API client (task 169, D-134)', () => {
       expect(lastCall().body).toBe(JSON.stringify({ app: { timezone: 'UTC' } }));
     });
 
+    it('auth.login POSTs the typed body and resolves the session fact (task 180)', async () => {
+      const body = { session: { expiresAt: 1_762_400_000_000 } } as const;
+      const { client, lastCall } = clientWith(() => Promise.resolve(jsonResponse(200, body)));
+      await expect(client.auth.login({ password: 'the-password' })).resolves.toEqual(body);
+      const call = lastCall();
+      expect(call.method).toBe('POST');
+      expect(call.input).toBe('/api/auth/login');
+      expect(call.body).toBe(JSON.stringify({ password: 'the-password' }));
+      expect(call.headers['Content-Type']).toBe('application/json');
+      expect(call.headers[API_MUTATION_HEADER]).toBe('1');
+    });
+
+    it('auth.logout POSTs bodiless to /api/auth/logout (task 180)', async () => {
+      const { client, lastCall } = clientWith(() =>
+        Promise.resolve(jsonResponse(200, { revoked: true })),
+      );
+      await expect(client.auth.logout()).resolves.toEqual({ revoked: true });
+      const call = lastCall();
+      expect(call.method).toBe('POST');
+      expect(call.input).toBe('/api/auth/logout');
+      // The bodiless §15.3 shape (the pipeline's documented "future
+      // logout"): the mutation header alone, no content type, no body.
+      expect(call.body).toBeUndefined();
+      expect(call.headers[API_MUTATION_HEADER]).toBe('1');
+      expect(call.headers['Content-Type']).toBeUndefined();
+    });
+
     it('honors a custom baseUrl (tolerating a trailing slash)', async () => {
       const { client, lastCall } = clientWith(
         () => Promise.resolve(jsonResponse(200, { status: 'ok' })),
@@ -486,6 +514,47 @@ describe('API client (task 169, D-134)', () => {
       }
     });
 
+    it('a per-request deadline overrides the client default (login waits §15.2 delays out)', async () => {
+      // Task 180 (D-159): the server's budget-delayed login answers
+      // slowly by design (D-146's 240 s clamp, invisible on the wire);
+      // the login arm must wait it out instead of racing the client's
+      // own short deadline. A client pinned to 50 ms dispatching a login
+      // that answers at 150 ms therefore SUCCEEDS — the request's own
+      // deadline is the one that arms (had the client default applied,
+      // the request would have aborted into `timeout` at 50 ms).
+      vi.useFakeTimers();
+      try {
+        const { client } = clientWith(
+          () =>
+            new Promise<ApiFetchResponse>((resolve) => {
+              setTimeout(() => resolve(jsonResponse(200, { session: { expiresAt: 1 } })), 150);
+            }),
+          { timeoutMs: 50 },
+        );
+        let settled = false;
+        const pending = client.auth.login({ password: 'candidate' }).finally(() => {
+          settled = true;
+        });
+        await vi.advanceTimersByTimeAsync(149);
+        expect(settled, 'still waiting at 149 ms — past the client-level deadline').toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(pending).resolves.toEqual({ session: { expiresAt: 1 } });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the login deadline constant sits above the server delay clamp and under the socket bound', () => {
+      // D-146's `MAX_LOGIN_DELAY_SLEEP_MS` is 240 s and the
+      // construction's `HTTP_CONNECTION_TIMEOUT_MS` is 300 s (D-109):
+      // the honest answer always arrives before both the client's
+      // deadline and the transport's own bound. The relation is pinned
+      // here as constants (a runtime import of the server module would
+      // drag its graph into the browser bundle — the D-134 rule).
+      expect(LOGIN_TIMEOUT_MS).toBeGreaterThan(240_000);
+      expect(LOGIN_TIMEOUT_MS).toBeLessThan(300_000);
+    });
+
     it('a stalled body after the headers is bounded by the same deadline (timeout)', async () => {
       // The review round's P1: `fetch` resolves at headers, so the body
       // read must stay inside the deadline — a responder that stalls the
@@ -558,6 +627,86 @@ describe('API client (task 169, D-134)', () => {
       expect(parseApiErrorEnvelope({ error: { code: 'NOT_FOUND', message: 'Not found' } })).toEqual(
         { error: { code: 'NOT_FOUND', message: 'Not found', details: undefined } },
       );
+    });
+  });
+
+  describe('the UNAUTHENTICATED signal (task 180, D-159)', () => {
+    /** Builds a client whose UNAUTHENTICATED answers are counted. */
+    function clientWithHook(body: () => unknown) {
+      const seen: number[] = [];
+      const fake = new FakeFetch(() => Promise.resolve(jsonResponse(401, body())));
+      const client = createApiClient({
+        fetchImpl: fake.impl,
+        onUnauthenticated: () => {
+          seen.push(1);
+        },
+      });
+      return { client, count: () => seen.length };
+    }
+
+    it('fires once per UNAUTHENTICATED envelope answer on session-bearing requests', async () => {
+      const envelope = () => ({
+        error: { code: 'UNAUTHENTICATED', message: 'Authentication required', details: null },
+      });
+      const { client, count } = clientWithHook(envelope);
+      await rejectionOf(client.settings.get());
+      await rejectionOf(client.status.get());
+      expect(count()).toBe(2);
+    });
+
+    it('the login arm is exempt: its 401s judge the candidate, never the session (P2-2)', async () => {
+      // In the passwordless `auto`-loopback deployment every login
+      // 401s; letting one flip the session state would lock SPA
+      // navigation onto the login page until a reload — and a
+      // valid-cookie visitor's mistype would demote a session the
+      // guard then prevents the proving loads from ever disproving.
+      const { client, count } = clientWithHook(() => ({
+        error: { code: 'UNAUTHENTICATED', message: 'Authentication required', details: null },
+      }));
+      await rejectionOf(client.auth.login({ password: 'x' }));
+      expect(count()).toBe(0);
+      // Logout stays a session signal (a dead-cookie logout 401 is the
+      // honest "no session" — the control hides).
+      await rejectionOf(client.auth.logout());
+      expect(count()).toBe(1);
+    });
+
+    it('does not fire for other codes, successes, or transport failures', async () => {
+      const { client, count } = clientWithHook(() => ({
+        error: { code: 'FORBIDDEN', message: 'no', details: null },
+      }));
+      await rejectionOf(client.settings.get());
+      expect(count()).toBe(0);
+      const ok = new FakeFetch(() => Promise.resolve(jsonResponse(200, { status: 'ok' })));
+      const okClient = createApiClient({
+        fetchImpl: ok.impl,
+        onUnauthenticated: () => {
+          throw new Error('must not fire');
+        },
+      });
+      await expect(okClient.health.get()).resolves.toEqual({ status: 'ok' });
+      const down = new FakeFetch(networkFailure());
+      const downClient = createApiClient({
+        fetchImpl: down.impl,
+        onUnauthenticated: () => {
+          throw new Error('must not fire');
+        },
+      });
+      await rejectionOf(downClient.health.get());
+    });
+
+    it('the error still throws exactly as without the hook', async () => {
+      const { client } = clientWithHook(() => ({
+        error: {
+          code: 'UNAUTHENTICATED',
+          message: 'm',
+          details: { reason: 'invalid-credentials' },
+        },
+      }));
+      const error = await rejectionOf(client.auth.login({ password: 'x' }));
+      expect(error.kind).toBe('rejected');
+      expect(error.code).toBe('UNAUTHENTICATED');
+      expect(error.serverDetails).toEqual({ reason: 'invalid-credentials' });
     });
   });
 });

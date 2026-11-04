@@ -25,6 +25,11 @@ export const en = {
       light: 'Light',
       dark: 'Dark',
     },
+    // The header's session control (§14.6; task 180, D-159).
+    session: {
+      signOut: 'Sign out',
+      signOutPending: 'Signing out…',
+    },
   },
   nav: {
     ariaLabel: 'Primary',
@@ -431,9 +436,26 @@ export const en = {
       data: 'Data directory',
     },
   },
+  // The §14.6 login page (task 180, spec §15.1/§15.2; decision D-159):
+  // the mode-agnostic password form. The three failure sentences are
+  // the login endpoint's own wire arms (D-146) selected by the
+  // envelope's `details.reason` — catalog-only presentation (D-134);
+  // the delay hint states §15.2's own budget behavior, which the wire
+  // deliberately does not distinguish (delays are invisible: the answer
+  // is simply slow).
   login: {
-    title: 'Login',
-    status: 'Not implemented yet.',
+    title: 'Sign in',
+    field: 'Password',
+    errorBlank: 'Enter the password.',
+    submit: 'Sign in',
+    pending: 'Signing in…',
+    delayHint:
+      'After several failed attempts the service deliberately slows each sign-in — if this takes a while, wait rather than retry.',
+    errors: {
+      incorrect: 'That password is incorrect.',
+      busy: 'Another sign-in attempt from your address is still in progress. Wait for it to finish, then try again.',
+      failed: 'Sign-in failed. Try again.',
+    },
   },
   // The shared error surface (task 169, D-134): every key is rendered by
   // ApiErrorNotice.vue's explicit branches — kind messages for transport
@@ -449,9 +471,11 @@ export const en = {
     aborted: 'The request was cancelled.',
     codes: {
       validation: 'The request was rejected as invalid.',
-      // Task 180's seam: the UNAUTHENTICATED branch is where the login
-      // redirect (the named `login` route) will hook in; until then this
-      // message is the branch's whole presentation.
+      // Task 180 (D-159): this branch is the presentation an
+      // UNAUTHENTICATED answer keeps WHILE the session layer's redirect
+      // (the named `login` route, destination preserved) takes the page
+      // away — the interception itself lives in the client's
+      // `onUnauthenticated` hook, the one path every request takes.
       unauthenticated: 'Sign-in is required to use this page.',
       forbidden: 'The request was refused.',
       notFound: 'The requested item was not found.',

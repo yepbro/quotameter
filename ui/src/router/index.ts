@@ -7,6 +7,13 @@ import {
 } from 'vue-router';
 
 /**
+ * The login route's name — the one route name the session layer
+ * (`ui/src/session.ts`, task 180) keys its guard and redirect on, kept
+ * here so the route table stays the single owner of the vocabulary.
+ */
+export const LOGIN_ROUTE_NAME = 'login';
+
+/**
  * Route table and router factory for the web UI (spec §14; decision
  * D-131).
  *
@@ -17,6 +24,11 @@ import {
  * each view becomes an external hashed chunk under `script-src 'self'`,
  * never an inline payload.
  *
+ * The table itself carries no navigation guard: task 180's session
+ * handling (§14.6/§15.1) installs its guard through
+ * `installSessionRouting` from `ui/src/session.ts`, so the factory
+ * stays pure routing and component tests mount it guard-free.
+ *
  * The catch-all redirects to the overview: §14 prescribes no not-found
  * screen, so an unknown client path lands where the SPA fallback itself
  * lands (§14.1) — the overview page.
@@ -25,9 +37,7 @@ export const routes: RouteRecordRaw[] = [
   { path: '/', name: 'overview', component: () => import('../views/OverviewView.vue') },
   { path: '/accounts', name: 'accounts', component: () => import('../views/AccountsView.vue') },
   { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },
-  // The login route carries no navigation guard yet: task 180 owns the
-  // auth-state handling (§14.6, §15.1) and plugs it in behind this name.
-  { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
+  { path: '/login', name: LOGIN_ROUTE_NAME, component: () => import('../views/LoginView.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 
