@@ -33,11 +33,7 @@ jobs:
     # node container too — the deterministic systemd-less class per job
     # (D-160 and its successor correction in DECISIONS.md).
     runs-on: ubuntu-latest
-    container:
-      image: node:22.13.0
-      options: --user node
-    env:
-      HOME: /home/node
+    container: node:22.13.0
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,7 +46,12 @@ jobs:
       - name: Run mutation tests
         id: stryker
         continue-on-error: true
-        run: npm run test:mutation
+        # Non-root execution — the same §6.3 permission-arm requirement as
+        # CI's test job (see ci.yml's note); setpriv avoids PAM.
+        run: |
+          chown -R node:node "$GITHUB_WORKSPACE"
+          setpriv --reuid=node --regid=node --init-groups \
+            env HOME=/home/node npm run test:mutation
 
       - name: Retain mutation report artifact
         if: always()

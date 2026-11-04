@@ -82,15 +82,7 @@ jobs:
     # (D-103) the suite's outcome pins assume. The image tag carries the
     # matrix's Node version; no setup-node is needed inside the container.
     runs-on: ubuntu-latest
-    container:
-      image: node:${{ matrix.node }}
-      # Non-root: the permission-refusal arms (§6.3's 0700/0600 enforcement,
-      # EACCES paths) are meaningless for root, which bypasses file modes.
-      # The image's own `node` user and its /home/node keep ownership
-      # in-image — no mounted-home games.
-      options: --user node
-    env:
-      HOME: /home/node
+    container: node:${{ matrix.node }}
     strategy:
       fail-fast: false
       # Spec §4.4/§17.2: cover Node.js 22 including the declared minimum
@@ -107,7 +99,17 @@ jobs:
         run: npm ci
 
       - name: Run unit, integration, and component tests
-        run: npm run test:ci
+        # Non-root execution: the permission-refusal arms (§6.3's 0700/0600
+        # enforcement, EACCES paths) are meaningless for root, which
+        # bypasses file modes — but the job container itself must stay
+        # root for the runner's /__w plumbing (state files, checkout).
+        # setpriv drops to the image's node user without PAM; the chown
+        # makes the workspace (node_modules, reports, coverage) writable
+        # for it.
+        run: |
+          chown -R node:node "$GITHUB_WORKSPACE"
+          setpriv --reuid=node --regid=node --init-groups \
+            env HOME=/home/node npm run test:ci
 
       - name: Set up Playwright browser
         if: matrix.node == '22'
