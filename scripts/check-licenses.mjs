@@ -8,7 +8,7 @@
  * exits non-zero when a dependency is unapproved or its license is unknown.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -36,11 +36,22 @@ const ALLOWED = new Set([
   'CC-BY-3.0',
 ]);
 
+/**
+ * The package name of a license-checker key: every package is reported as
+ * `name@version`, and scoped names carry their own leading `@`
+ * (`@scope/pkg@1.2.3`) — the name is everything before the LAST `@`. Keys
+ * without a version part are returned unchanged.
+ */
+function packageNameOf(key) {
+  const at = key.lastIndexOf('@');
+  return at > 0 ? key.slice(0, at) : key;
+}
+
 /** Normalizes the various shapes license-checker emits. */
 function collectLicenses(json, excludeNames) {
   const findings = [];
   for (const [name, meta] of Object.entries(json)) {
-    if (excludeNames.has(name)) continue;
+    if (excludeNames.has(packageNameOf(name))) continue;
     const licenses = Array.isArray(meta.licenses) ? meta.licenses : [meta.licenses];
     findings.push({ name, licenses: licenses.map(String) });
   }
@@ -73,8 +84,13 @@ const REPORTS_DIR = process.env.REPORTS_DIR ?? 'reports';
 
 mkdirSync(REPORTS_DIR, { recursive: true });
 // The repository package itself is not a dependency; license-checker reports
-// it as UNLICENSED because the package is private.
-const SELF = new Set(['quotameter@0.0.0']);
+// it as UNLICENSED because the package is private. The exclusion matches by
+// NAME, read from package.json at runtime (decision D-155, task U-032): the
+// former version-qualified pin went stale at the first release version bump
+// and failed the gate on the project's own package.
+const SELF = new Set([
+  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name,
+]);
 const scopes = [
   { label: 'production', args: ['--production'] },
   { label: 'development', args: ['--development'] },
