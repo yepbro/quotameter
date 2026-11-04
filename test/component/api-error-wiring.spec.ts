@@ -88,11 +88,12 @@ describe('shared error wiring across pages (task 169, D-134)', () => {
       expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
       // Real page content rendered beside the wiring: the overview's
       // honest empty state (task 172), the accounts page's empty state
-      // (task 170), or the remaining placeholders' status line.
+      // (task 170), the settings page's general form (task 179), or the
+      // remaining placeholder's status line.
       expect(
         wrapper
           .find(
-            '[data-testid="page-status"], [data-testid="overview-empty"], [data-testid="accounts-empty"]',
+            '[data-testid="page-status"], [data-testid="overview-empty"], [data-testid="accounts-empty"], [data-testid="settings-general"]',
           )
           .exists(),
       ).toBe(true);

@@ -96,18 +96,26 @@ describe('App shell', () => {
     },
   );
 
-  it.each([
-    ['/settings', 'Settings'],
-    ['/login', 'Login'],
-  ] as const)(
-    'direct navigation renders the %s view',
+  it(
+    'direct navigation renders the settings view (task 179: real content)',
     { timeout: 30_000 },
-    async (path, heading) => {
-      const wrapper = await mountShell(path);
-      expect(wrapper.find('h2').text()).toBe(heading);
-      expect(wrapper.find('[data-testid="page-status"]').text()).toBe('Not implemented yet.');
+    async () => {
+      const wrapper = await mountShell('/settings');
+      expect(wrapper.find('h2').text()).toBe('Settings');
+      // The settings page's real surface against the healthy backend:
+      // the general form beside the facts (the providers listing answers
+      // the registry-empty build, so the schedule states that honestly).
+      expect(wrapper.find('[data-testid="settings-general"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="settings-facts"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="settings-schedule-none"]').exists()).toBe(true);
     },
   );
+
+  it('direct navigation renders the /login view', { timeout: 30_000 }, async () => {
+    const wrapper = await mountShell('/login');
+    expect(wrapper.find('h2').text()).toBe('Login');
+    expect(wrapper.find('[data-testid="page-status"]').text()).toBe('Not implemented yet.');
+  });
 
   it(
     'direct navigation renders the accounts view (task 170: real content)',

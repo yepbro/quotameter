@@ -312,6 +312,127 @@ test('the overview fits the 360 px viewport without horizontal overflow (task 17
   expect(overflow, 'no horizontal overflow at 360 px').toBeLessThanOrEqual(0);
 });
 
+test('settings page has no WCAG violations in either theme (task 179)', async ({ page }) => {
+  // The settings page's populated surface through route interception:
+  // the annotated settings view (a restart-requiring trio, a configured
+  // password) and the real §9.1 schedule through the providers listing —
+  // facts, forms, password section, schedule table, and paths all
+  // scanned with their tokens applied per mode. The environment-keyed
+  // field (the disabled input with its annotation) joins the scan: the
+  // editability marking is a §14.1 text+state surface.
+  await page.route('**/api/**', (route) =>
+    fulfillSettingsBody(route, {
+      '/api/settings': {
+        settings: {
+          server: {
+            host: { value: '127.0.0.1', source: 'file', restartRequired: true },
+            port: { value: 8787, source: 'environment', restartRequired: true },
+          },
+          app: {
+            timezone: { value: 'UTC', source: 'file', restartRequired: false },
+            pollingIntervalSeconds: {
+              value: 300,
+              source: 'environment',
+              restartRequired: false,
+            },
+            historyRetentionDays: { value: 180, source: 'file', restartRequired: false },
+          },
+          auth: {
+            mode: { value: 'auto', source: 'file', restartRequired: true },
+            passwordConfigured: true,
+          },
+          logging: { level: { value: 'warn', source: 'file', restartRequired: false } },
+        },
+        paths: {
+          configPath: '/home/op/.config/quotameter/config.json',
+          dataDir: '/home/op/.local/share/quotameter',
+        },
+      },
+    }),
+  );
+  await page.goto('/settings');
+  await expect(page.getByRole('heading', { name: 'Settings', level: 2 })).toBeVisible();
+  await expect(page.getByTestId('settings-general')).toBeVisible();
+  await expect(page.getByTestId('settings-schedule-window')).toBeVisible();
+  await expect(page.getByTestId('settings-restart-marker')).toHaveCount(3);
+  await expect(page.getByTestId('settings-env-note')).toHaveCount(1);
+  await expect(page.getByTestId('api-error')).toHaveCount(0);
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
+test('the settings page fits the 360 px viewport without horizontal overflow (task 179)', async ({
+  page,
+}) => {
+  // §14.1's 360 px floor against this page's widest content: the facts
+  // rows (a fixed dt floor) and the schedule's four-column window table
+  // (task 175's precedent cell — grids and tables are the overflow
+  // risks). The same interception as the a11y cell above serves the
+  // populated surface.
+  await page.setViewportSize({ width: 360, height: 640 });
+  await page.route('**/api/**', (route) =>
+    fulfillSettingsBody(route, { '/api/settings': healthySettingsBody() }),
+  );
+  await page.goto('/settings');
+  await expect(page.getByTestId('settings-schedule-window')).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow, 'no horizontal overflow at 360 px').toBeLessThanOrEqual(0);
+});
+
+/**
+ * Fulfills one settings-page GET with the given per-path body overrides
+ * on top of the standing providers default (the real registered provider
+ * with its §9.1 schedule); unknown API paths answer the §13 envelope's
+ * 404 shape, matching the honest server behavior.
+ */
+async function fulfillSettingsBody(
+  route: Route,
+  overrides: Record<string, unknown>,
+): Promise<void> {
+  const url = new URL(route.request().url());
+  const { pathname } = url;
+  const body: Record<string, unknown> = {
+    '/api/providers': {
+      providers: [
+        {
+          id: 'zai-coding-plan',
+          name: 'Z.ai Coding Plan',
+          peakHours: {
+            timezone: 'Asia/Singapore',
+            offPeakMultiplier: 0.5,
+            windows: [
+              {
+                id: 'zai-weekday-peak',
+                name: 'Z.ai Coding Plan peak hours',
+                days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+                start: '14:00',
+                end: '18:00',
+                multiplier: 1,
+              },
+            ],
+          },
+          metrics: [{ metricKey: 'mcp-monthly', label: 'Monthly MCP tool quota' }],
+        },
+      ],
+    },
+    ...overrides,
+  };
+  const answer = body[pathname];
+  await route.fulfill({
+    status: answer === undefined ? 404 : 200,
+    contentType: 'application/json',
+    body: JSON.stringify(
+      answer ?? { error: { code: 'NOT_FOUND', message: 'no route', details: null } },
+    ),
+  });
+}
+
 /**
  * Fulfills one overview GET with the given per-path body overrides on
  * top of the standing defaults (the real provider listing, the healthy

@@ -130,14 +130,17 @@ test('the shell loads and renders under the served CSP — no violations', async
 
 test('a SPA deep link serves the shell under the same policy', async ({ page }) => {
   const assertNoViolations = await expectNoCspViolations(page);
-  // Task 170 made `/accounts` an API-loading page (the accounts and
-  // providers lists), and this construction wires no accounts routes —
-  // the §13 scope's catch-all answers its honest 404 envelope, which
-  // Chromium logs as console noise unrelated to the policy. The deep
-  // link under test is the SPA fallback + the policy, so it uses a page
-  // whose loads this construction serves; restoring `/accounts` here is
-  // the composition task's seam (wire the API into the construction).
-  const response = await page.goto(`${baseUrl}/settings`);
+  // Task 179 made `/settings` an API-loading page (the settings view and
+  // the providers listing), and this construction wires no data-bearing
+  // routes — the §13 scope's catch-all answers their honest 404
+  // envelopes, which Chromium logs as console noise unrelated to the
+  // policy under test. The deep link under test is the SPA fallback +
+  // the policy, so it uses the one page whose only load this
+  // construction serves (the wired public health probe); task 180 will
+  // displace `/login` the same way, and serving a data page here means
+  // wiring the composition (the same move the task-170 deep link made
+  // for `/accounts`).
+  const response = await page.goto(`${baseUrl}/login`);
   expect(response?.status()).toBe(200);
   expect(response?.headers()['content-security-policy']).toBe(CSP_WIRE_VALUE);
   await expect(page.getByRole('heading', { name: 'Quotameter' })).toBeVisible();

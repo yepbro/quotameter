@@ -42,7 +42,7 @@ without server-side route tables.
 | ----------- | ---------- | -------------------------------- | ----------------------- |
 | `/`         | `overview` | `src/views/OverviewView.vue`     | 172–175 (done), 176–177 |
 | `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)              |
-| `/settings` | `settings` | `src/views/SettingsView.vue`     | 179                     |
+| `/settings` | `settings` | `src/views/SettingsView.vue`     | 179 (done)              |
 | `/login`    | `login`    | `src/views/LoginView.vue`        | 180                     |
 | any other   | —          | redirect to `/` (decision D-131) | —                       |
 
@@ -567,6 +567,67 @@ false`); D-081 downsampling buckets render as their `first`/`last`
   the e2e sync cell drives the real relay (Shift+wheel over one canvas)
   but asserts only DOM state, never canvas pixels.
 
+## The settings page (task 179)
+
+`/settings` (spec §14.5; decision D-156) is the settings surface over the
+§13 annotated settings view — only what §6.4 permits at runtime is
+editable; everything else renders read-only with the annotation the
+server carries.
+
+### Architecture
+
+| Module                                       | Owns                                                                                                                                   |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/views/SettingsView.vue`                 | the two loads (`settings.get`, `providers.list`), last-good copies, the read-only facts and paths, the theme row, composition          |
+| `src/components/SettingsGeneralForm.vue`     | the §6.4-live scalars: time-zone search, interval, retention, log level; the minimal-write PUT; the saved/pending-restart notices      |
+| `src/components/SettingsPasswordForm.vue`    | the §15.2 password change (the PUT's `auth.password` channel) with the session-revocation consequence                                  |
+| `src/components/SettingsScheduleSection.vue` | the §9.2 peak-hours schedule, read-only in its own time zone                                                                           |
+| `src/settings-fields.ts`                     | the UI-local validated ranges, the log-level enum, the §15.2 minimum — drift-pinned against the server constants by test               |
+| `src/timezones.ts`                           | the pure zone helpers: validity (the server check's mirror), the engine list seam, the suggestion filter with the canonical-twin match |
+
+### The editability contract
+
+| Field                        | Control                                                             | Environment-sourced renders       |
+| ---------------------------- | ------------------------------------------------------------------- | --------------------------------- |
+| `server.host`                | none — value + "restart required" + the `quotameter restart` remedy | value + the read-only annotation  |
+| `server.port`                | same                                                                | same                              |
+| `auth.mode`                  | same                                                                | same                              |
+| `app.timezone`               | search input + suggestions                                          | disabled input + annotation       |
+| `app.pollingIntervalSeconds` | number input, 60–3600                                               | disabled input + annotation       |
+| `app.historyRetentionDays`   | number input, 7–3650                                                | disabled input + annotation       |
+| `logging.level`              | select over the four levels                                         | disabled select + annotation      |
+| `auth.password`              | write-only masked input                                             | — (never environment-overridable) |
+
+The annotations are the served contract's own (`source`, `restartRequired`
+— D-130): the page never re-derives precedence knowledge. The PUT body
+carries **only the changed fields**; a save reloads the served truth and
+the drafts re-adopt it. A non-empty PUT outcome `restartRequired` list
+renders the pending-restart notice — the process's hand-edited-file
+state, never the request's doing.
+
+### The time-zone search
+
+The vocabulary is the browser's own IANA list
+(`Intl.supportedValuesOf('timeZone')`) — the same resolver that formats
+every date in the UI. Matching is a case-insensitive substring filter
+(capped, collapsed on an exact pick), plus a **canonical-twin match**:
+engines list CLDR-canonical names, so a fully typed tzdb primary
+(`Asia/Kolkata`) surfaces its listed twin (`Asia/Calcutta`). §5.3's
+explicit-choice rule holds: no silent defaults — a blank or non-IANA
+zone is a field error, and validity never depends on list membership
+(both spellings save; the server's own check agrees, drift-pinned).
+
+### The password change
+
+Rendered in **both** auth modes with the configured/not-set state line —
+`auto` mode uses a password on the remote paths (§15.1), so the section
+must not vanish for an operator who set one. The field follows the
+write-only discipline (masked, never prefilled, cleared after every
+dispatched attempt); the §15.2 minimum is guarded client-side; and the
+D-124/D-126 consequence is stated before the change (the hint) and as
+the success notice: changing the password revokes every session,
+including the one that made it.
+
 ## Layout
 
 - `index.html` — document shell (language, viewport, color-scheme, mount
@@ -605,6 +666,12 @@ false`); D-081 downsampling buckets render as their `first`/`last`
   `src/components/MetricHistoryChart.vue` — the per-metric chart card
   (see [The metric charts (task 175, decision
   D-148)](#the-metric-charts-task-175-decision-d-148)).
+- `src/settings-fields.ts` + `src/timezones.ts` + the settings components
+  (`src/components/SettingsGeneralForm.vue`,
+  `SettingsPasswordForm.vue`, `SettingsScheduleSection.vue`) — the
+  settings page's validated-vocabulary constants, pure zone helpers, and
+  section components (task 179, D-156; see
+  [The settings page (task 179)](#the-settings-page-task-179)).
 - `src/format.ts` — the pure `Intl` formatting helpers (task 172).
 - `src/i18n/` — the `en` message catalog (`en.ts`) and the
   `createAppI18n()` factory; see [Strings and the i18n
@@ -614,9 +681,9 @@ false`); D-081 downsampling buckets render as their `first`/`last`
   [Theming](#theming)).
 - `src/App.vue` — application shell: site header (title, primary nav,
   theme control) and the single `main` landmark the router renders into.
-- `src/views/*.vue` — routed page components (placeholders until their
-  content tasks land; each already carries the shared error wiring of
-  task 169).
+- `src/views/*.vue` — routed page components (the login placeholder until
+  task 180; every other page is implemented — overview 172+, accounts
+  170, settings 179).
 - `src/assets/base.css` — design tokens (`--qm-*` custom properties; the
   single color source) and document-level base styles; the theme blocks
   are described under [Theming](#theming).
@@ -650,9 +717,10 @@ D-133):
   still gets a fully working session-scoped theme.
 
 - **Control surface** — a labeled `<select>` in the shell header
-  (`App.vue`); the settings page (task 179) reuses the same
-  `useTheme()` seam. All control strings live under `app.theme.*` in the
-  i18n catalog.
+  (`App.vue`); the settings page (task 179, D-133's hand-off) renders a
+  second select on the same controller with its own page-owned strings
+  under `settings.theme.*` — one source of truth, two controls. The
+  header's strings live under `app.theme.*` in the i18n catalog.
 
 - **Consuming themes correctly (the rule for every later component and
   the 175/176 charts)** — the tokens are the **only** color source:

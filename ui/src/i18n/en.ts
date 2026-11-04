@@ -330,9 +330,106 @@ export const en = {
       errorKeyBlank: 'The API key must not be blank.',
     },
   },
+  // The settings page (task 179, spec §14.5; decision D-156): the
+  // read-only server/auth facts with their §6.4 annotations, the
+  // §6.4-live editable scalars, the theme row (the same controller the
+  // header select drives), the §15.2 password change with its session
+  // consequence, the §9.2 read-only peak schedule, and the §6.1 paths.
   settings: {
     title: 'Settings',
-    status: 'Not implemented yet.',
+    loading: 'Loading settings…',
+    // The retry beside a failed settings load (D-135's failed-load rule).
+    retry: 'Retry loading settings',
+    // The §6.4 restart-requiring trio: values render read-only, each row
+    // carrying the marker and the §6.4 remedy line below the section.
+    facts: {
+      heading: 'Server and authentication',
+      host: 'Bind address',
+      port: 'Port',
+      authMode: 'Authentication mode',
+      // §6.4's own label, verbatim — the marker is text, never color
+      // alone (§14.1).
+      restartRequired: 'restart required',
+      // §6.4's remedy, shown beside every restart-required row.
+      restartHint:
+        'These settings apply after a process restart: edit the configuration file, then run quotameter restart.',
+      // The §6.3 read-only marking for environment-supplied values.
+      environment: 'Set by the environment — read-only',
+    },
+    // The §6.4-live editable scalars (the PUT's runtime-modification set,
+    // D-130): field errors are per-field (D-134 presentation applies to
+    // API failures; client guards keep the request honest).
+    general: {
+      heading: 'General',
+      timezone: 'Display time zone',
+      timezoneHint: 'An explicit IANA zone — type to search, then pick a match.',
+      timezoneBlank: 'A display time zone is required.',
+      timezoneInvalid: 'Enter a valid IANA time-zone name.',
+      interval: 'Polling interval (seconds)',
+      intervalInvalid: 'Enter a whole number between {min} and {max}.',
+      retention: 'History retention (days)',
+      // The D-147 interplay stated where it is decided: retention bounds
+      // the ranges the Overview page offers.
+      retentionHint: 'Also decides which history ranges the Overview page offers.',
+      retentionInvalid: 'Enter a whole number between {min} and {max}.',
+      level: 'Log level',
+      save: 'Save settings',
+      saving: 'Saving…',
+      saved: 'Settings saved.',
+      // A non-empty PUT outcome restartRequired list: the process's
+      // pending file changes, never this request's doing (D-130).
+      restartPending: 'Waiting for a restart to apply: {fields}. Run quotameter restart.',
+    },
+    // The theme row — the same useTheme() controller the header select
+    // drives (D-133's hand-off: one source of truth, page-owned keys).
+    theme: {
+      label: 'Theme',
+      system: 'System',
+      light: 'Light',
+      dark: 'Dark',
+    },
+    // The §15.2 password change (the PUT's auth.password channel; the
+    // change revokes every session — D-124/D-126 — stated up front and
+    // again on success). Rendered in both auth modes: `auto` uses a
+    // password on the remote paths (§15.1), so the section must not
+    // vanish for an operator who set one.
+    password: {
+      heading: 'Password',
+      configured: 'A password is set.',
+      notSet: 'No password is set.',
+      field: 'New password',
+      hint: 'Write-only, at least {min} characters. Changing it signs out every session, including this one.',
+      errorShort: 'The password must be at least {min} characters.',
+      submit: 'Change password',
+      pending: 'Changing…',
+      changed: 'Password changed. All sessions were revoked — sign in again when prompted.',
+    },
+    // The §9.2 peak-hours schedule, read-only with its own time zone:
+    // window names, days, and times are the served configuration's own
+    // strings, rendered verbatim (trusted server data).
+    schedule: {
+      heading: 'Peak-hours schedule',
+      readOnly: 'Read-only — edit the configuration file and run quotameter reload.',
+      providerZone: 'Schedule time zone',
+      offPeak: 'Off-peak rate',
+      windowName: 'Window',
+      windowDays: 'Days',
+      windowTime: 'Local time',
+      windowTimeValue: '{start}–{end}',
+      windowRate: 'Rate',
+      rateValue: '×{rate}',
+      // §9.2's exact sentence for the null schedule and the empty
+      // windows array alike — never an invented schedule.
+      notConfigured: 'Peak-hours schedule is not configured.',
+      noProviders: 'No provider is available in this build.',
+    },
+    // The §6.1 paths display — informational facts of the running
+    // process, read-only.
+    paths: {
+      heading: 'Paths',
+      config: 'Configuration file',
+      data: 'Data directory',
+    },
   },
   login: {
     title: 'Login',
