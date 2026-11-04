@@ -18,6 +18,7 @@ import { createAccountSelection } from '../../ui/src/account-selection';
 import { createApiClientPlugin } from '../../ui/src/api';
 import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
+import { createAppTheme } from '../../ui/src/theme';
 import { en } from '../../ui/src/i18n/en';
 import {
   FakeFetch,
@@ -29,7 +30,7 @@ import {
   neverRespond,
   type RecordedCall,
 } from '../helpers/api';
-import { MemoryThemeStorage } from '../helpers/theme';
+import { MemoryThemeStorage, FakeThemeMedia } from '../helpers/theme';
 
 /**
  * The task-172 done-condition, executable (spec §14.3/§8.4/§14.6; decision
@@ -224,7 +225,9 @@ async function mountView(
   const selection = createAccountSelection({ storage });
   // Task 173: the view renders RouterLinks (the empty state's and the
   // attention notice's CTAs), so the mount carries a memory-history
-  // router (the app-shell precedent).
+  // router (the app-shell precedent). Task 175: the metric charts read
+  // the theme controller (D-133's restyle trigger), so the mount carries
+  // the theme plugin too — the shell always installs both.
   const router = createAppRouter(createMemoryHistory());
   const wrapper = mount(OverviewView, {
     attachTo: document.body,
@@ -233,6 +236,7 @@ async function mountView(
         createAppI18n(),
         selection,
         router,
+        createAppTheme({ storage, media: new FakeThemeMedia() }),
         createApiClientPlugin({ fetchImpl: backend.impl }),
       ],
     },
@@ -1360,7 +1364,7 @@ function spanOf(call: RecordedCall): number {
 }
 
 describe('overview rolling-range controls (task 174, D-147)', () => {
-  it('mounts the control at the D-137 seam: identity card, range controls, metrics', async () => {
+  it('mounts the control at the D-137 seam: identity card, range controls, metrics, charts', async () => {
     const backend = new FakeOverviewBackend({
       quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
     });
@@ -1369,16 +1373,18 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     expect(
       wrapper
         .findAll(
-          '[data-testid="account-overview-card"], [data-testid="history-range"], [data-testid="overview-metrics"]',
+          '[data-testid="account-overview-card"], [data-testid="history-range"], [data-testid="overview-metrics"], [data-testid="overview-charts"]',
         )
         .map((node) => node.attributes('data-testid')),
-    ).toEqual(['account-overview-card', 'history-range', 'overview-metrics']);
+    ).toEqual(['account-overview-card', 'history-range', 'overview-metrics', 'overview-charts']);
     // The refresh affordance sits beside the control (D-137’s loose
     // end, discharged): re-anchoring the rolling window.
     expect(wrapper.find('[data-testid="overview-refresh"]').exists()).toBe(true);
+    // Task 175: the charts region renders one chart card per metric.
+    expect(wrapper.findAll('[data-testid="metric-chart"]')).toHaveLength(1);
   });
 
-  it('passes the default 7-day rolling window to the server in D-139’s grammar', async () => {
+  it('passes the default 7-day rolling window to every metric series in D-139’s grammar', async () => {
     const beforeMount = Date.now();
     const backend = new FakeOverviewBackend({
       quotaByAccount: new Map([
@@ -1398,23 +1404,27 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     // The §14.4 default is checked.
     const checked = wrapper.find('[data-range-id="7d"] input');
     expect((checked.element as HTMLInputElement).checked).toBe(true);
+    // Task 175: one chart card per metric (D-147's per-metric extension).
+    expect(
+      wrapper
+        .findAll('[data-testid="metric-chart"]')
+        .map((card) => card.attributes('data-metric-key')),
+    ).toEqual(['mcp-monthly', 'tokens-5h']);
 
-    // The series request: the account, the FIRST metric key of the
-    // quota load (the wiring proof — per-metric charts are 175), the
+    // Each metric's series request: the account, its own metric key, the
     // 7-day window as exact ISO-Z bounds ending now, no maxPoints
     // (§13’s server-side default applies).
-    const history = backend.historyCalls.at(-1);
-    expect(history, 'a history request was dispatched').toBeDefined();
-    const historyParams = rangeParamsOf(history!);
-    expect(historyParams.accountId).toBe('acc-1');
-    expect(historyParams.metric).toBe('mcp-monthly');
-    expect(historyParams.from).toMatch(ISO_Z);
-    expect(historyParams.to).toMatch(ISO_Z);
-    expect(historyParams.hasMaxPoints).toBe(false);
-    expect(spanOf(history!)).toBe(7 * 86_400_000);
-    expect(Date.parse(historyParams.to)).toBeGreaterThanOrEqual(beforeMount);
-    expect(Date.parse(historyParams.to)).toBeLessThanOrEqual(Date.now());
-    expect(Date.parse(historyParams.from)).toBe(Date.parse(historyParams.to) - 7 * 86_400_000);
+    const seriesParams = backend.historyCalls.map((call) => rangeParamsOf(call));
+    expect(seriesParams.map((params) => params.metric)).toEqual(['mcp-monthly', 'tokens-5h']);
+    for (const params of seriesParams) {
+      expect(params.accountId).toBe('acc-1');
+      expect(params.from).toMatch(ISO_Z);
+      expect(params.to).toMatch(ISO_Z);
+      expect(params.hasMaxPoints).toBe(false);
+      expect(Date.parse(params.to)).toBeGreaterThanOrEqual(beforeMount);
+      expect(Date.parse(params.to)).toBeLessThanOrEqual(Date.now());
+      expect(Date.parse(params.from)).toBe(Date.parse(params.to) - 7 * 86_400_000);
+    }
 
     // The timeline request: account-level (no metric filter), the same
     // window shape.
@@ -1546,9 +1556,11 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     backend.refuseNext = (call) => (call.input.startsWith('/api/history?') ? 500 : undefined);
     const wrapper = await mountView(backend);
 
+    // Task 175: the per-metric series failure renders inside its chart
+    // card, with the card's own named retry (D-137's distinct-name rule).
     expect(wrapper.find('[data-testid="api-error"]').text()).toBe(en.errors.codes.internal);
-    const retry = wrapper.find('[data-testid="overview-retry-history"]');
-    expect(retry.text()).toBe(en.overview.retryHistory);
+    const retry = wrapper.find('[data-testid="chart-retry"]');
+    expect(retry.text()).toBe(`Retry loading the 5-hour token quota history`);
     const dispatched = backend.historyCalls.length;
 
     await retry.trigger('click');
@@ -1603,5 +1615,40 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     );
     // And the refreshed span is still the selected 7 days.
     expect(spanOf(backend.historyCalls.at(-1)!)).toBe(7 * 86_400_000);
+  });
+
+  it('refresh re-runs every metric series once (the per-metric refresh)', async () => {
+    // Two metric cards: the refresh token each card watches fires once
+    // per card — +2 series dispatches, one per metric (D-148).
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([
+        [
+          'acc-1',
+          quota({
+            metrics: [
+              metric({ metricKey: 'mcp-monthly', collectedAt: 1 }),
+              metric({ metricKey: 'tokens-5h', collectedAt: 1 }),
+            ],
+          }),
+        ],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+    const before = backend.historyCalls.length;
+    const metricsBefore = backend.historyCalls
+      .slice(-2)
+      .map((call) => rangeParamsOf(call).metric)
+      .sort();
+
+    await wrapper.find('[data-testid="overview-refresh"]').trigger('click');
+    await settle();
+
+    expect(backend.historyCalls.length).toBe(before + 2);
+    expect(
+      backend.historyCalls
+        .slice(-2)
+        .map((call) => rangeParamsOf(call).metric)
+        .sort(),
+    ).toEqual(metricsBefore);
   });
 });

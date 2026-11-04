@@ -36,6 +36,31 @@ function dateTimeFormat(timeZone: string): Intl.DateTimeFormat {
   return format;
 }
 
+/** Chart-date formats by zone — one per distinct zone used (§14.4 tooltips/axis). */
+const chartDateFormats = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * Formats one UTC epoch-milliseconds timestamp as a compact chart date
+ * ("Nov 4, 2:00 PM") in `timeZone` — the §14.4 tooltip and axis-label
+ * rendering. Task 177 owns tick PLACEMENT (local hour/day boundaries in
+ * the display zone, DST-aware); this helper owns only the text of one
+ * tick, which that task keeps consuming.
+ */
+export function formatChartDate(epochMs: number, timeZone: string): string {
+  let format = chartDateFormats.get(timeZone);
+  if (format === undefined) {
+    format = new Intl.DateTimeFormat('en', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone,
+    });
+    chartDateFormats.set(timeZone, format);
+  }
+  return format.format(epochMs);
+}
+
 /** Formats one quota value (§14.3: explicit numbers via `Intl`). */
 export function formatQuotaNumber(value: number): string {
   return quotaNumberFormat.format(value);

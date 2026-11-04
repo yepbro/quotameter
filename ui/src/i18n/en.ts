@@ -53,8 +53,8 @@ export const en = {
       archivedOption: 'Archived',
     },
     // One retry per range-keyed load (the distinct-accessible-name rule
-    // above; task 174).
-    retryHistory: 'Retry loading history',
+    // above; task 174). The per-metric series retries live under
+    // `chart.retry` below (task 175); this one is the timeline's.
     retryEvents: 'Retry loading the timeline',
     // The §14.4 rolling-range control (task 174; decision D-147): the
     // five history ranges, the retention-driven disabling explanation
@@ -74,6 +74,36 @@ export const en = {
       fallbackNotice:
         'The selected range is beyond the configured retention — showing the last 7 days instead.',
       refresh: 'Refresh',
+    },
+    // The §14.4 metric charts (task 175, decision D-148): the region's
+    // title, the per-chart states (loading, empty, the range-report
+    // notices), the percent/absolute toggle, the series labels, and the
+    // aria summary that states the chart's latest facts as text (§14.1:
+    // never color alone).
+    chart: {
+      regionTitle: 'History charts',
+      loading: 'Loading history…',
+      empty: 'No collected values in this range yet.',
+      // The range report's outcomes (D-139/D-147): a rejected range is
+      // entirely before the retention horizon; a real truncation names
+      // where the retained window starts.
+      rejected: 'The requested range is outside the configured history retention.',
+      truncatedNotice:
+        'Values in this range start {time} — older values are outside the configured history retention.',
+      // A series of only invalid rows and gap markers — a different fact
+      // from an empty range (the empty wording promises values a working
+      // collector would have delivered).
+      noValidValues: 'No valid values were collected in this range.',
+      retry: 'Retry loading the {metric} history',
+      viewLabel: 'Values shown',
+      viewAbsolute: 'Absolute values',
+      viewPercent: 'Percentages',
+      seriesUsed: 'Used',
+      seriesRemaining: 'Remaining',
+      // The chart's accessible name carries the metric (several chart
+      // images share one page — each must say which metric it is).
+      summaryAbsolute: '{metric}: latest {used} used, {remaining} remaining {unit} at {time}',
+      summaryPercent: '{metric}: latest {used} used, {remaining} remaining at {time}',
     },
     empty: {
       // The page-level no-accounts guidance (task 173, spec §14.3):

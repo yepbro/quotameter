@@ -5,6 +5,7 @@
 // documents the same pattern.)
 
 import { expect, test, type Page } from '@playwright/test';
+import { CHART_TOKEN_NAMES } from '../../ui/src/charts/tokens';
 
 /**
  * Theme selection end to end (spec §14.1; decision D-133): the mode
@@ -28,6 +29,13 @@ const DARK_BACKGROUND = 'rgb(23, 23, 27)';
 // value verbatim — the charts will read these exact strings.
 const LIGHT_TOKEN = '#fff';
 const DARK_TOKEN = '#17171b';
+// Task 175 (D-148): the chart series tokens the metric charts read the
+// same way — the chart contract extends to them (light/dark values from
+// base.css, verbatim).
+const LIGHT_CHART_USED = '#1b4fa0';
+const DARK_CHART_USED = '#8ab4f8';
+const LIGHT_CHART_REMAINING = '#1e6b33';
+const DARK_CHART_REMAINING = '#9fdcae';
 
 function bodyBackground(page: Page): Promise<string> {
   return page.evaluate(() => getComputedStyle(document.body).backgroundColor);
@@ -37,6 +45,27 @@ function bodyBackground(page: Page): Promise<string> {
 function backgroundToken(page: Page): Promise<string> {
   return page.evaluate(() =>
     getComputedStyle(document.documentElement).getPropertyValue('--qm-color-background').trim(),
+  );
+}
+
+/** Any raw token, read the chart way (D-133/D-148). */
+function chartToken(page: Page, name: string): Promise<string> {
+  return page.evaluate(
+    (token) => getComputedStyle(document.documentElement).getPropertyValue(token).trim(),
+    name,
+  );
+}
+
+/** Every chart token at once — the completeness read (D-148's list). */
+function allChartTokens(page: Page): Promise<Record<string, string>> {
+  return page.evaluate(
+    (names: string[]) => {
+      const computed = getComputedStyle(document.documentElement);
+      return Object.fromEntries(
+        names.map((name) => [name, computed.getPropertyValue(name).trim()]),
+      );
+    },
+    [...CHART_TOKEN_NAMES],
   );
 }
 
@@ -71,9 +100,21 @@ test('the raw tokens carry verbatim colors in every mode (the chart contract)', 
 
   await page.getByTestId('theme-select').selectOption('light');
   expect(await backgroundToken(page)).toBe(LIGHT_TOKEN);
+  // The chart series tokens carry their verbatim values per mode too —
+  // the metric charts (task 175) color through exactly these reads.
+  expect(await chartToken(page, '--qm-chart-used')).toBe(LIGHT_CHART_USED);
+  expect(await chartToken(page, '--qm-chart-remaining')).toBe(LIGHT_CHART_REMAINING);
 
   await page.getByTestId('theme-select').selectOption('dark');
   expect(await backgroundToken(page)).toBe(DARK_TOKEN);
+  expect(await chartToken(page, '--qm-chart-used')).toBe(DARK_CHART_USED);
+  expect(await chartToken(page, '--qm-chart-remaining')).toBe(DARK_CHART_REMAINING);
+  // Completeness: every token the charts read resolves in the mode — a
+  // name missing from one of base.css's three theme blocks fails here
+  // (CHART_TOKEN_NAMES is the single list, D-148).
+  for (const [name, value] of Object.entries(await allChartTokens(page))) {
+    expect(value, `${name} resolves in dark mode`).not.toBe('');
+  }
 
   // System under an emulated dark OS must resolve to the SAME raw value
   // as explicit dark — the duplicated dark block cannot drift — and the
@@ -82,8 +123,13 @@ test('the raw tokens carry verbatim colors in every mode (the chart contract)', 
   await expect(page.locator('html')).not.toHaveAttribute('data-theme');
   await page.emulateMedia({ colorScheme: 'dark' });
   expect(await backgroundToken(page)).toBe(DARK_TOKEN);
+  expect(await chartToken(page, '--qm-chart-used')).toBe(DARK_CHART_USED);
   await page.emulateMedia({ colorScheme: 'light' });
   expect(await backgroundToken(page)).toBe(LIGHT_TOKEN);
+  expect(await chartToken(page, '--qm-chart-used')).toBe(LIGHT_CHART_USED);
+  for (const [name, value] of Object.entries(await allChartTokens(page))) {
+    expect(value, `${name} resolves in light mode`).not.toBe('');
+  }
 });
 
 test('explicit light overrides an OS dark preference', async ({ page }) => {

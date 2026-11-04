@@ -23,6 +23,10 @@ providers directly; all data flows through the HTTP API (spec §13, §14).
   the `system`/`light`/`dark` preference, its browser-storage
   persistence, and the live `data-theme` application — see
   [Theming](#theming).
+- **Apache ECharts** (task 175, D-148): the §14.4 metric charts, a
+  devDependency (bundled by Vite like every other UI library) imported
+  modularly — see
+  [The metric charts (task 175, decision D-148)](#the-metric-charts-task-175-decision-d-148).
 - **API client** (`src/api/`, task 169): the typed same-origin data
   layer over the §13 HTTP API, with the shared error taxonomy and the
   `ApiErrorNotice` presentation — see [The API client and error
@@ -36,7 +40,7 @@ without server-side route tables.
 
 | Path        | Name       | View                             | Content task            |
 | ----------- | ---------- | -------------------------------- | ----------------------- |
-| `/`         | `overview` | `src/views/OverviewView.vue`     | 172–174 (done), 175–176 |
+| `/`         | `overview` | `src/views/OverviewView.vue`     | 172–175 (done), 176–177 |
 | `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)              |
 | `/settings` | `settings` | `src/views/SettingsView.vue`     | 179                     |
 | `/login`    | `login`    | `src/views/LoginView.vue`        | 180                     |
@@ -283,17 +287,19 @@ snapshots).
 
 ### Architecture
 
-| Module                                      | Owns                                                                                                                                    |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/views/OverviewView.vue`                | the seven loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the attention wiring, the range wiring |
-| `src/components/AccountOverviewCard.vue`    | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`)    |
-| `src/components/AccountStatusBadge.vue`     | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                                  |
-| `src/components/AccountAttentionNotice.vue` | the account-level attention notice (task 173): the remedy sentence plus a link exactly where the remedy is a UI action                  |
-| `src/components/MetricCard.vue`             | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                     |
-| `src/components/HistoryRangeControls.vue`   | the §14.4 rolling-range radio group (task 174, D-147): five options, retention-aware disabling with the explanation as text             |
-| `src/account-attention.ts`                  | the pure attention classifier (task 173, D-138): archived → disabled → keyless-environment → keyless → `null`                           |
-| `src/history-range.ts`                      | the pure §14.4 range vocabulary and boundary arithmetic (task 174, D-147), drift-pinned against the server's rolling-ranges module      |
-| `src/format.ts`                             | the pure `Intl` helpers (`formatEpochMs`, `formatRelative`, `formatQuotaNumber`, `windowHours`) — 174+ reuse these                      |
+| Module                                      | Owns                                                                                                                                                                           |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/views/OverviewView.vue`                | the six page-level loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the attention wiring, the range wiring, the per-metric chart targets |
+| `src/components/AccountOverviewCard.vue`    | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`)                                           |
+| `src/components/AccountStatusBadge.vue`     | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                                                                         |
+| `src/components/AccountAttentionNotice.vue` | the account-level attention notice (task 173): the remedy sentence plus a link exactly where the remedy is a UI action                                                         |
+| `src/components/MetricCard.vue`             | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                                                            |
+| `src/components/HistoryRangeControls.vue`   | the §14.4 rolling-range radio group (task 174, D-147): five options, retention-aware disabling with the explanation as text                                                    |
+| `src/components/MetricHistoryChart.vue`     | one metric's §14.4 history chart card (task 175, D-148): its own per-metric series load, the percent/absolute toggle, the states, the ECharts instance                         |
+| `src/account-attention.ts`                  | the pure attention classifier (task 173, D-138): archived → disabled → keyless-environment → keyless → `null`                                                                  |
+| `src/history-range.ts`                      | the pure §14.4 range vocabulary and boundary arithmetic (task 174, D-147), drift-pinned against the server's rolling-ranges module                                             |
+| `src/format.ts`                             | the pure `Intl` helpers (`formatEpochMs`, `formatRelative`, `formatQuotaNumber`, `formatChartDate`, `windowHours`) — the charts reuse these                                    |
+| `src/charts/`                               | the ECharts surface (task 175, D-148): see [The metric charts](#the-metric-charts-task-175-decision-d-148)                                                                     |
 
 The five data-defining loads: `accounts.list`, `providers.list` (display names **and**
 the metric-label catalog), `status.get`, `settings.get` (the configured
@@ -308,9 +314,10 @@ flashing 404 — and switching the selection **clears** the previous
 account's quota before the new load: one account's values can never render
 as another's. A failed load is never a fake empty state: each call keeps
 its last-good copy beside its `ApiErrorNotice`; the data-defining loads
-(accounts, status, quota) and the two range-keyed loads (history,
-events — task 174) carry retries with distinct accessible names, the
-two that degrade gracefully (providers → raw ids/keys, settings → the
+(accounts, status, quota), the account-level timeline (task 174; its
+rendering is task 176's), and — inside their cards — the per-metric series
+loads (task 175) carry retries with distinct accessible names, the two
+that degrade gracefully (providers → raw ids/keys, settings → the
 browser's time zone and unknown retention) render their notice alone. A
 status row that is absent (load in flight or failed) renders its slots as
 `Unknown` — "Never"/"None" state collection history only a loaded row
@@ -446,17 +453,66 @@ retention") — never color alone.
   never participates in a request (§10 — presentation only).
 - **The range-keyed loads.** The client's `history`/`events` families
   carry the windows: the account-level §12.2 timeline keys on the
-  validated target and the range; the metric series additionally keys
-  on the first quota metric key (no snapshot ⇒ no metric vocabulary ⇒
-  no series request). Both re-run on selection and range changes,
-  render nothing yet (the charts are task 175/176, which inherit the
-  wired loads), and present failures through the shared notice with
-  their own distinctly-named retries. The refresh button beside the
+  validated target and the range (its rendering is task 176's); since
+  task 175 the metric series render as **one chart card per quota metric
+  key** (`MetricHistoryChart.vue`, below) — no snapshot ⇒ no metric
+  vocabulary ⇒ no series requests. The refresh button beside the
   control re-runs the account's data loads with a fresh "now" — it
-  re-anchors the rolling window (D-137's handed-forward affordance).
+  re-anchors the rolling window by bumping a token the chart cards
+  watch, keeping last-good charts rendered until fresh data arrives
+  (D-135's keep-last-good rule).
 
-The charts (175+) read colors only through the token lookups (D-133)
-and reuse `src/format.ts`.
+### The metric charts (task 175, decision D-148)
+
+One chart per quota metric, below the metric cards: the used/remaining
+line pair over the selected rolling range, with the percent/absolute
+toggle where the data carries both views.
+
+| Module                                  | Owns                                                                                                                                                                                                                                |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/charts/runtime.ts`                 | the ONLY module importing ECharts: modular `echarts/core` + the line/grid/tooltip/legend/canvas pieces, the `ChartHandle` structural seam, the injectable `ChartRuntime` (`useChartRuntime()`), and the production `cssTokenReader` |
+| `src/charts/tokens.ts`                  | the pure `--qm-*` token → `ChartTokens` mapping (`chartTokensOf(read)`); the single list of token names both theme blocks must carry                                                                                                |
+| `src/charts/series.ts`                  | the pure adapter: D-139 wire kinds → `ChartSample`s, availability/`resolveViewMode`, the D-147 sliver-thresholded `rangeNoticeOf`, and `buildMetricChartOption` (one mode, one unit, one y-axis)                                    |
+| `src/components/MetricHistoryChart.vue` | the card: its own per-metric `useApiCall`, the toggle (native radios, one group per card), the states, the ECharts instance lifecycle, the aria summary                                                                             |
+
+- **ECharts.** A devDependency mirroring `vue`/`vue-i18n`/`vue-router`
+  (the shipped tarball carries the prebuilt bundle; spec §3 keeps
+  runtime dependencies minimal), imported **modularly** (spec §3): the
+  bundle carries only the registered pieces. The renderer is
+  **canvas with `tooltip.renderMode: 'richText'`** — D-127's constraint
+  (ECharts' SVG renderer and HTML tooltips style through the `style=`
+  attribute the CSP blocks); the canvas painter and rich-text tooltip
+  draw without DOM styling.
+- **Unit segregation is structural.** The option builder takes one view
+  mode and one unit and emits ONE y-axis — incompatible units cannot
+  share an axis because no input shape expresses it. The toggle renders
+  only where the data carries BOTH views; percentage-only metrics stay
+  on their bounded 0–100 `%` axis (§14.4: no inferred token counts); the
+  used/remaining pair distinguishes itself by legend text and
+  solid-vs-dashed lines (never color alone).
+- **Wire kinds.** Points render verbatim (invalid rows' nulls stay
+  null); §12.2 gap empty points become line breaks (`connectNulls:
+false`); D-081 downsampling buckets render as their `first`/`last`
+  endpoints — real observed points, the honest minimal render of a
+  bucketed response (task 176 may extend the same samples with extrema
+  bands, markers, and hatched gaps).
+- **Theme.** Colors come only from token lookups (`--qm-chart-used`,
+  `--qm-chart-remaining`, and the shell's existing tokens); the option
+  computed reads `resolvedTheme`, so a mode flip re-reads the cascade
+  and re-sets the option live (D-133).
+- **The x-axis** is the numeric epoch-ms axis §14.4 prescribes (ECharts'
+  time axis is local/UTC only) with `Intl.DateTimeFormat` labels in the
+  configured display zone (`formatChartDate` in `src/format.ts`); tick
+  PLACEMENT (hour/day boundaries, DST days) is task 177's.
+- **The range report.** A `truncated` clamp within 60 s stays quiet (the
+  D-147 clock-skew sliver); a real truncation names the retained
+  window's start; a rejected range states that instead of a chart.
+- **Testing seam.** ECharts cannot boot under happy-dom (zrender
+  measures text through a real canvas 2d context), so component tests
+  inject a recording `ChartRuntime` through `useChartRuntime()` — every
+  option the card builds is asserted through the fake handle, while the
+  token reader stays the production one over live inline custom
+  properties. ECharts itself renders only in real browsers.
 
 ## Layout
 
@@ -490,6 +546,11 @@ and reuse `src/format.ts`.
   §14.4 rolling-range vocabulary/boundary arithmetic and its control
   (task 174, D-147; see
   [The overview page (task 172)](#the-overview-page-task-172)).
+- `src/charts/` — the ECharts runtime seam, the token mapping, and the
+  pure series adapter/option builder (task 175, D-148), beside
+  `src/components/MetricHistoryChart.vue` — the per-metric chart card
+  (see [The metric charts (task 175, decision
+  D-148)](#the-metric-charts-task-175-decision-d-148)).
 - `src/format.ts` — the pure `Intl` formatting helpers (task 172).
 - `src/i18n/` — the `en` message catalog (`en.ts`) and the
   `createAppI18n()` factory; see [Strings and the i18n

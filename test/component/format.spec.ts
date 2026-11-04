@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatEpochMs, formatQuotaNumber, formatRelative, windowHours } from '../../ui/src/format';
+import {
+  formatChartDate,
+  formatEpochMs,
+  formatQuotaNumber,
+  formatRelative,
+  windowHours,
+} from '../../ui/src/format';
 
 /**
  * The §14.1 formatting helpers (task 172, D-137): every function is pure
@@ -33,6 +39,19 @@ describe('formatEpochMs (§14.1 configured display time zone)', () => {
   it('honors a zone with a non-whole-hour offset', () => {
     const instant = Date.UTC(2026, 10, 3, 18, 30, 0);
     expect(formatEpochMs(instant, 'Asia/Kolkata')).toBe('Nov 4, 2026, 12:00 AM');
+  });
+});
+
+describe('formatChartDate (§14.4 chart ticks and tooltips)', () => {
+  it('formats compact chart dates in the configured zone', () => {
+    const instant = Date.UTC(2026, 10, 4, 14, 0, 0);
+    expect(formatChartDate(instant, 'UTC')).toBe('Nov 4, 2:00 PM');
+    expect(formatChartDate(instant, 'America/New_York')).toBe('Nov 4, 9:00 AM');
+  });
+
+  it('honors a zone with a non-whole-hour offset', () => {
+    const instant = Date.UTC(2026, 10, 4, 18, 45, 0);
+    expect(formatChartDate(instant, 'Asia/Kathmandu')).toBe('Nov 5, 12:30 AM');
   });
 });
 

@@ -11,6 +11,7 @@ import AccountOverviewCard from '../components/AccountOverviewCard.vue';
 import ApiErrorNotice from '../components/ApiErrorNotice.vue';
 import HistoryRangeControls from '../components/HistoryRangeControls.vue';
 import MetricCard from '../components/MetricCard.vue';
+import MetricHistoryChart from '../components/MetricHistoryChart.vue';
 import { useApi, useApiCall } from '../api';
 import { useAccountSelection } from '../account-selection';
 import {
@@ -46,12 +47,10 @@ import {
 // so one account's values can never render as another's.
 //
 // Task 174 (D-147) adds the §14.4 rolling-range controls at the seam
-// below and two range-keyed loads beside the quota: the metric series
-// (`history`) and the account-level §12.2 timeline (`events`), both
-// re-run on selection and range changes with boundaries recomputed per
-// dispatch (a rolling range ends now, §10). The two new loads render
-// nothing yet — the charts are task 175/176, which inherit the wiring
-// — so they carry no last-good surface, only their failure notices.
+// below and the account-level §12.2 timeline load beside the quota.
+// Task 175 (D-148) renders the §14.4 metric charts: one card per quota
+// metric below the metric cards, each owning its per-metric range-keyed
+// series load (the §12.2 timeline's consumer is task 176).
 const { t } = useI18n();
 const api = useApi();
 const selection = useAccountSelection();
@@ -260,46 +259,30 @@ function onRangeChange(range: HistoryRangeId): void {
 }
 
 /**
- * The history load's target: the validated account plus its first
- * quota metric key — the metric vocabulary arrives with the quota load
- * (no snapshot ⇒ no keys ⇒ no history request; the timeline below
- * still loads, it states account-level facts).
+ * The history loads' target vocabulary: the validated account plus its
+ * quota metric keys — one §14.4 chart per metric (task 175, D-147's
+ * per-metric extension). No snapshot ⇒ no keys ⇒ no series requests (the
+ * timeline below still loads, it states account-level facts).
  */
-const historyTarget = computed((): { accountId: string; metric: string } | null => {
+const chartTargets = computed((): readonly { accountId: string; metricKey: string }[] => {
   const accountId = quotaTarget.value;
-  const metric = lastQuota.value?.metrics[0]?.metricKey;
-  return accountId === null || metric === undefined ? null : { accountId, metric };
+  if (accountId === null) return [];
+  const metrics = lastQuota.value?.metrics ?? [];
+  return metrics.map((metric) => ({ accountId, metricKey: metric.metricKey }));
 });
 
 /**
- * The string key of {@link historyTarget} — the watcher's trigger. An
- * object-returning computed would re-fire on every recompute (new
- * object identity); the string is stable while the target is.
+ * The refresh epoch: bumped by the refresh affordance, watched by every
+ * chart card (and nothing else) — each card re-anchors its own rolling
+ * window with fresh bounds while keeping its last-good chart rendered
+ * until the fresh data arrives (D-135's rule).
  */
-const historyTargetKey = computed((): string | null => {
-  const target = historyTarget.value;
-  return target === null ? null : `${target.accountId}\u0000${target.metric}`;
-});
+const historyRefreshToken = ref(0);
 
-// The two range-keyed loads (D-147). The boundaries are recomputed on
-// every dispatch — a rolling range ends "now" (§10), so each request
-// re-anchors the window. Nothing renders from the payloads yet: the
-// charts are task 175/176, which inherit these wired loads; failures
-// still render their notices and retries below.
-const {
-  error: historyError,
-  execute: loadHistory,
-  reset: resetHistory,
-} = useApiCall(() => {
-  const target = historyTarget.value;
-  if (target === null) {
-    // Unreachable on the wired paths (the watcher dispatches only on a
-    // non-null key) — loud, never a bogus request.
-    throw new Error('history load dispatched without a target');
-  }
-  const { from, to } = historyRangeIsoBounds(selectedRange.value, Date.now());
-  return api.history.get({ accountId: target.accountId, metric: target.metric, from, to });
-});
+// The account-level §12.2 timeline load (D-147): the range-keyed request
+// whose consumer is task 176's strip. Boundaries recompute on every
+// dispatch — a rolling range ends "now" (§10); the per-metric series
+// loads live inside the chart cards below.
 const {
   error: eventsError,
   execute: loadEvents,
@@ -313,11 +296,8 @@ const {
   return api.events.list({ accountId, from, to });
 });
 
-// Each load re-runs on exactly its own dependencies: the account-level
-// §12.2 timeline keys on the validated target and the range; the
-// series additionally keys on the metric vocabulary (so a selection
-// switch resets it while the new quota loads, then dispatches once the
-// first metric key arrives).
+// The timeline re-runs on exactly its own dependencies: the validated
+// target and the range.
 watch(
   [quotaTarget, selectedRange],
   ([accountId]) => {
@@ -326,30 +306,17 @@ watch(
   },
   { immediate: true },
 );
-watch(
-  [historyTargetKey, selectedRange],
-  ([key]) => {
-    resetHistory();
-    if (key !== null) void loadHistory();
-  },
-  { immediate: true },
-);
 
 /**
  * Re-runs the selected account's data loads with a fresh "now" — the
  * refresh affordance D-137 handed to this task: it re-anchors the
- * rolling window and exercises the keep-last-good quota reload beyond
- * the retry path.
+ * rolling window (the chart cards re-dispatch through the token) and
+ * exercises the keep-last-good quota reload beyond the retry path.
  */
 function refreshAccountData(): void {
   if (quotaAccountId.value !== null) void loadQuota();
   if (quotaTarget.value !== null) void loadEvents();
-  if (historyTarget.value !== null) void loadHistory();
-}
-
-/** Re-runs the history load (the retry affordance, target-guarded). */
-function retryHistory(): void {
-  if (historyTarget.value !== null) void loadHistory();
+  historyRefreshToken.value += 1;
 }
 
 /** Re-runs the timeline load (the retry affordance, target-guarded). */
@@ -440,19 +407,9 @@ function optionText(account: AccountView): string {
         {{ t('overview.retryQuota') }}
       </button>
     </div>
-    <!-- The range-keyed loads' failures (task 174): the same notice +
-      distinct-retry pattern as the data-defining loads above. -->
-    <div v-if="historyError" class="load-failure">
-      <ApiErrorNotice :error="historyError" />
-      <button
-        type="button"
-        data-testid="overview-retry-history"
-        :disabled="historyTarget === null"
-        @click="retryHistory"
-      >
-        {{ t('overview.retryHistory') }}
-      </button>
-    </div>
+    <!-- The range-keyed loads' failures: the timeline's notice + retry
+      (task 174; the per-metric series failures render inside their chart
+      cards below). -->
     <div v-if="eventsError" class="load-failure">
       <ApiErrorNotice :error="eventsError" />
       <button
@@ -536,6 +493,29 @@ function optionText(account: AccountView): string {
             :now="nowMs"
           />
         </div>
+        <!-- Task 175 (§14.4, D-148): one history chart per quota metric,
+          each owning its range-keyed series load — one compatible unit
+          per chart, the percent/absolute toggle where the data carries
+          both views. Keyed by account + metric so a selection switch is
+          a fresh card set (no per-account state leaks across). -->
+        <section
+          v-if="chartTargets.length > 0"
+          class="charts"
+          data-testid="overview-charts"
+          aria-labelledby="overview-charts-title"
+        >
+          <h3 id="overview-charts-title">{{ t('overview.chart.regionTitle') }}</h3>
+          <MetricHistoryChart
+            v-for="target in chartTargets"
+            :key="`${target.accountId}\u0000${target.metricKey}`"
+            :account-id="target.accountId"
+            :metric-key="target.metricKey"
+            :label="metricLabelOf(selected.providerId, target.metricKey)"
+            :range-id="selectedRange"
+            :time-zone="timeZone"
+            :refresh-token="historyRefreshToken"
+          />
+        </section>
         <p v-if="quotaPending" class="status" data-testid="overview-quota-loading">
           {{ t('overview.loading') }}
         </p>
@@ -646,5 +626,23 @@ function optionText(account: AccountView): string {
   grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
   gap: 0.75rem;
   margin-top: 0.75rem;
+}
+
+/* The §14.4 charts (task 175): one chart per metric, one compatible unit
+   per chart; the grid reflows cards beside each other where the viewport
+   allows. The `min(100%, …)` floor keeps the track from exceeding the
+   content width — §14.1's 360 px viewport (296 px of content beside the
+   shell margins) must never gain horizontal overflow. */
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.charts h3 {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 1.125rem;
 }
 </style>

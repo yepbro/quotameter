@@ -236,6 +236,77 @@ test('overview range controls’ disabled state has no WCAG violations (task 174
   }
 });
 
+test('the overview fits the 360 px viewport without horizontal overflow (task 175)', async ({
+  page,
+}) => {
+  // §14.1: "an interface that works from 360 px wide". The task-175
+  // charts region's grid floor is the newest overflow risk (`minmax`
+  // tracks do not shrink below their floor), so this cell renders the
+  // populated overview — identity card, range controls, metric cards,
+  // AND chart cards — through the same interception at 360 px and pins
+  // that nothing exceeds the viewport. The shell margins leave 296 px
+  // of content width: every grid track must respect `min(100%, …)`.
+  await page.setViewportSize({ width: 360, height: 640 });
+  await page.route('**/api/**', (route) =>
+    fulfillOverviewBody(route, {
+      '/api/accounts': {
+        accounts: [
+          {
+            id: 'acc-1',
+            providerId: 'zai-coding-plan',
+            label: 'Main',
+            enabled: true,
+            status: 'active',
+            hasKey: true,
+            keySource: 'file',
+            keyMask: '********',
+            planName: null,
+            createdAt: null,
+            archivedAt: null,
+          },
+        ],
+      },
+      '/api/status': {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [{ id: 'acc-1', status: 'fresh', lastSuccessAt: null, lastError: null }],
+      },
+      '/api/quota': {
+        accountId: 'acc-1',
+        status: 'fresh',
+        collectedAt: 1,
+        planName: null,
+        metrics: [
+          {
+            metricKey: 'mcp-monthly',
+            limitType: 'MONTHLY',
+            unit: 'REQUESTS',
+            windowSeconds: null,
+            used: 1,
+            remaining: null,
+            limit: null,
+            percentUsed: null,
+            percentRemaining: null,
+            resetsAt: null,
+            isValid: true,
+            invalidReason: null,
+            derivedFields: null,
+            collectedAt: 1,
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto('/');
+  await expect(page.getByTestId('overview-charts')).toBeVisible();
+  await expect(page.getByTestId('metric-chart')).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow, 'no horizontal overflow at 360 px').toBeLessThanOrEqual(0);
+});
+
 /**
  * Fulfills one overview GET with the given per-path body overrides on
  * top of the standing defaults (the real provider listing, the healthy
