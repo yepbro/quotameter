@@ -87,8 +87,33 @@ function yesDeps(
       // The connection test's provider seam: a fake by default (no network
       // in unit tests), rejecting when a case needs the failure path.
       provider: provider ?? acceptingProvider(),
+      // The service-setup seams (D-160 hermeticity): this suite pins the
+      // `--yes` layer, not the machine — a fixed systemd-less capability
+      // answer keeps the step on its manual route (which performs no I/O)
+      // on any host, and the forbidden service seams below turn a regressed
+      // route into a visible test failure: a forbidden command throws out
+      // of the handler, a forbidden write lands in the step's failure
+      // fallback's stderr line — and every fresh-run test asserts stderr
+      // stays empty.
+      probeCapabilities: () => ({ systemd: false, userManager: false }),
+      runServiceCommand: forbiddenServiceCommand(),
+      writeServiceUnitFile: forbiddenUnitWriter(),
     },
     writes: () => writes,
+  };
+}
+
+/** A service-command seam that must never run in this suite's manual route. */
+function forbiddenServiceCommand(): () => never {
+  return () => {
+    throw new Error('a service command must not run in the init --yes unit tests');
+  };
+}
+
+/** A unit-writer seam that must never run in this suite's manual route. */
+function forbiddenUnitWriter(): () => never {
+  return () => {
+    throw new Error('a unit file must not be written in the init --yes unit tests');
   };
 }
 

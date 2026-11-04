@@ -55,10 +55,15 @@
  * the foreground fallback, the system-unit route) carry no linger note.
  *
  * Everything with side effects is an injectable seam with a production
- * default: the capability probes read two well-known paths (no systemd
- * needed to test), and the development container and CI images — which ship
- * no systemd and no sudo — deterministically take the `manual` route, whose
- * rendering performs no I/O at all.
+ * default: the capability probe reads the well-known marker/runtime paths
+ * and, when they claim systemd is present, verifies the claim with one
+ * read-only `systemctl` query per manager scope (decision D-160 — a mounted
+ * `/run/systemd/system` marker with a dead manager must route to the same
+ * graceful fallbacks as no systemd at all, never into raw systemctl errors).
+ * Environments without the marker — the development container and the CI
+ * images the test jobs are pinned to, which ship no systemd and no sudo —
+ * probe without spawning anything and deterministically take the `manual`
+ * route, whose rendering performs no I/O at all.
  */
 
 import { spawn } from 'node:child_process';
@@ -79,15 +84,75 @@ import { buildUserUnit, userUnitInstallPath, USER_UNIT_NAME } from './systemd-us
  */
 export const SYSTEMD_RUN_MARKER_PATH = '/run/systemd/system';
 
+/**
+ * The read-only system-manager verification (D-160): `is-system-running`
+ * answers from the system manager itself with no side effects. Its **exit
+ * code is deliberately not a classifier** — a live-but-degraded system
+ * answers `degraded` with exit 1 — only systemd's own inertness diagnostics
+ * (or a missing binary) say "no manager will ever answer here".
+ */
+export const SYSTEM_PROBE_COMMAND = ['systemctl', 'is-system-running'] as const;
+
+/**
+ * The read-only user-manager verification (D-160): any `--user` query forces
+ * a connection to the per-user bus, which is exactly the reachability fact
+ * being probed. `default.target` is the manager's own graph root — the unit
+ * state is irrelevant (an inactive or unknown target still proves the
+ * manager answered), so the exit code is again not a classifier.
+ */
+export const USER_PROBE_COMMAND = ['systemctl', '--user', 'is-active', 'default.target'] as const;
+
+/**
+ * The stderr shapes that prove a manager will not answer (D-160), matched
+ * case-insensitively against the one captured diagnostic line:
+ *
+ * - the bus-connect failure, both systemd's wording generations — ≤256's
+ *   `Failed to connect to bus: …` and ≥257's `Failed to connect to
+ *   {system,user} scope bus via local transport: …` (dead session bus,
+ *   stale `XDG_RUNTIME_DIR`, a bus socket that is not there);
+ * - systemd's own "not booted with systemd" diagnostic (chroots, WSL
+ *   without systemd, containers with the host's `/run` marker visible) —
+ *   kept for the seam contract's named class even though a real `systemctl`
+ *   behind a present marker consults the same path `sd_booted()` does;
+ * - Node's own `spawn systemctl …` spawn-failure message shape (a missing
+ *   or unrunnable binary: no manager command could ever run, so the
+ *   graceful fallback is the only honest route — `ENOENT`, `EACCES`, and
+ *   every other errno alike).
+ */
+const INERT_MANAGER_ANSWER_PATTERNS: readonly RegExp[] = [
+  /failed to connect to (?:[a-z]+ scope )?bus/i,
+  /system has not been booted with systemd/i,
+  /^spawn systemctl /i,
+];
+
+/**
+ * Classifies one probe command's outcome (D-160): `true` when a manager
+ * answered — any state, including non-success exits like a degraded system
+ * or an inactive target — and `false` only for the proven-inert shapes
+ * {@link INERT_MANAGER_ANSWER_PATTERNS} list. The conservative direction is
+ * deliberate: misreading a live manager as absent costs the user the manual
+ * steps, while misreading an inert machine as live reproduces exactly the
+ * raw-`systemctl`-error class this predicate exists to route away from.
+ */
+export function managerAnswered(outcome: CommandOutcome): boolean {
+  if (outcome.ok) return true;
+  return !INERT_MANAGER_ANSWER_PATTERNS.some((pattern) => pattern.test(outcome.detail));
+}
+
 /** The capabilities the route decision needs (spec §5.3 steps 1 and 7). */
 export interface ServiceCapabilities {
-  /** A system service manager is running (init is systemd). */
+  /**
+   * A system service manager is running and answers (init is systemd, live —
+   * D-160: the run marker alone is necessary but no longer sufficient).
+   */
   readonly systemd: boolean;
   /**
    * The owner's per-user service manager is reachable: an own, non-empty
-   * `XDG_RUNTIME_DIR` whose `systemd` runtime directory exists — the same
-   * reachability signal `systemctl --user` itself uses. Without a runtime
-   * directory (cron, some ssh setups) no user unit can be enabled.
+   * `XDG_RUNTIME_DIR` whose `systemd` runtime directory exists **and** whose
+   * manager answers one read-only query — the same reachability `systemctl
+   * --user` itself needs. Implies {@link systemd}: a user instance cannot
+   * outlive its system manager, so the probe never reports the one without
+   * the other.
    */
   readonly userManager: boolean;
 }
@@ -98,23 +163,99 @@ export interface CapabilitySeams {
   readonly env?: EnvSnapshot;
   /** Path-existence check; production `existsSync`. */
   readonly exists?: (path: string) => boolean;
+  /**
+   * Runs one read-only manager verification; production
+   * {@link spawnServiceCommand}. Called at most twice, and never at all on
+   * machines without the run marker — the systemd-less environments the
+   * tests run on stay spawn-free and deterministic.
+   */
+  readonly probeCommand?: ServiceCommandRunner;
+  /**
+   * How long one manager verification may take before the scope is
+   * classified not-answering (review round P2): a manager that cannot
+   * answer a read-only query within the bound is the "unavailable" case
+   * §5.3/§5.2 render the graceful fallbacks for. The losing subprocess is
+   * left to D-Bus's own reply timeout (no kill handle crosses the seam);
+   * the timer is unref'd, so an in-flight probe never holds the event loop
+   * open past shutdown.
+   */
+  readonly probeTimeoutMs?: number;
 }
 
 /**
- * Probes the machine's service-management capabilities (spec §5.3 step 1).
- * Pure over the seams, so every combination is testable on the systemd-less
- * container and CI images.
+ * The bound {@link CapabilitySeams.probeTimeoutMs} defaults to — generous
+ * against a healthy manager's one-digit-millisecond answers, far below the
+ * D-Bus reply timeout that would otherwise bound a wedged bus.
  */
-export function probeServiceCapabilities(seams: CapabilitySeams = {}): ServiceCapabilities {
+export const PROBE_TIMEOUT_MS = 10_000;
+
+/** The sentinel outcome the probe race resolves a timed-out query to. */
+const PROBE_TIMED_OUT: CommandOutcome = {
+  ok: false,
+  detail: 'the manager did not answer within the probe timeout',
+};
+
+/**
+ * Runs one manager verification under the timeout bound and classifies it:
+ * `false` for the timed-out sentinel and for the proven-inert diagnostics,
+ * `true` for any manager that answered — any state, including non-success
+ * exits like a degraded system or an inactive target.
+ */
+async function managerAnsweredInTime(
+  probeCommand: ServiceCommandRunner,
+  command: readonly string[],
+  timeoutMs: number,
+): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const outcome = await Promise.race([
+    probeCommand(command),
+    new Promise<CommandOutcome>((resolve) => {
+      timer = setTimeout(() => resolve(PROBE_TIMED_OUT), timeoutMs);
+      timer.unref();
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  return outcome === PROBE_TIMED_OUT ? false : managerAnswered(outcome);
+}
+
+/**
+ * The capability-probe seam every service command injects (D-160): the
+ * production {@link probeServiceCapabilities} is async — a live manager is
+ * verified with a real query — while tests may keep injecting a synchronous
+ * fixed answer, so the seam accepts either and callers `await`.
+ */
+export type CapabilityProbe = () => ServiceCapabilities | Promise<ServiceCapabilities>;
+
+/**
+ * Probes the machine's service-management capabilities (spec §5.3 step 1,
+ * decision D-160). The run marker is the cheap gate: without it the answer
+ * is `caps(false, false)` with no process spawned. With it, each manager
+ * scope's claim is verified by one read-only query, because a marker can
+ * outlive its manager (mounted `/run`, stripped images) — an inert manager
+ * routes to the same graceful fallbacks as no systemd at all, never into
+ * raw systemctl errors. Injectable at every seam, so every machine class is
+ * testable on the systemd-less container and CI images.
+ */
+export async function probeServiceCapabilities(
+  seams: CapabilitySeams = {},
+): Promise<ServiceCapabilities> {
   const exists = seams.exists ?? existsSync;
   const env = seams.env ?? process.env;
+  const probeCommand = seams.probeCommand ?? spawnServiceCommand;
+  const timeoutMs = seams.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
   // Own-property read (the init-yes.ts / service-owner.ts discipline): an
   // inherited `XDG_RUNTIME_DIR` must not masquerade as a login session.
   const runtimeDir = Object.hasOwn(env, 'XDG_RUNTIME_DIR') ? env.XDG_RUNTIME_DIR : undefined;
+  if (!exists(SYSTEMD_RUN_MARKER_PATH)) return { systemd: false, userManager: false };
+  if (!(await managerAnsweredInTime(probeCommand, SYSTEM_PROBE_COMMAND, timeoutMs))) {
+    return { systemd: false, userManager: false };
+  }
+  if (runtimeDir === undefined || runtimeDir === '' || !exists(join(runtimeDir, 'systemd'))) {
+    return { systemd: true, userManager: false };
+  }
   return {
-    systemd: exists(SYSTEMD_RUN_MARKER_PATH),
-    userManager:
-      runtimeDir !== undefined && runtimeDir !== '' && exists(join(runtimeDir, 'systemd')),
+    systemd: true,
+    userManager: await managerAnsweredInTime(probeCommand, USER_PROBE_COMMAND, timeoutMs),
   };
 }
 

@@ -77,7 +77,7 @@ import {
   probeServiceCapabilities,
   STDERR_CAPTURE_CAP,
   thrownMessage,
-  type ServiceCapabilities,
+  type CapabilityProbe,
 } from './service-setup';
 import { SYSTEM_UNIT_INSTALL_PATH, SYSTEM_UNIT_NAME } from './systemd-unit';
 import { userUnitInstallPath, USER_UNIT_NAME } from './systemd-user-unit';
@@ -448,7 +448,7 @@ export interface ServiceLogsDeps {
   /** The §5.3 step 1 owner resolution (task 136, D-105); production `resolveServiceOwner`. */
   readonly resolveOwner?: () => ServiceOwnerResolution;
   /** The §5.3 step 1 capability probe (task 137); production `probeServiceCapabilities`. */
-  readonly probeCapabilities?: () => ServiceCapabilities;
+  readonly probeCapabilities?: CapabilityProbe;
   /** Whether a unit file is on disk; production `unitFileExistsOnDisk` (task 139). */
   readonly unitFileExists?: (installPath: string) => boolean;
   /**
@@ -524,7 +524,7 @@ export function runLogsCommand(deps: ServiceLogsDeps = {}): CliHandler {
     // selected the moment the command runs, before any gate decides whether
     // journalctl actually streams — the systemd-less test environments'
     // honest routes then evaluate the production defaults too.
-    const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+    const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
     const runViewer = deps.runViewer ?? runJournalctlPassthrough;
 
     const linesFlag = ctx.flags['lines'];

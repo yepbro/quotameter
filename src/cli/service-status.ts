@@ -100,6 +100,7 @@ import {
   probeServiceCapabilities,
   spawnServiceCommand,
   thrownMessage,
+  type CapabilityProbe,
   type CommandOutcome,
   type ServiceCapabilities,
   type ServiceCommandRunner,
@@ -474,7 +475,7 @@ export interface ServiceStatusDeps {
   /** Whether a unit file is on disk; production `unitFileExistsOnDisk` (task 139). */
   readonly unitFileExists?: (installPath: string) => boolean;
   /** The §5.3 capability probe (task 137); production `probeServiceCapabilities`. */
-  readonly probeCapabilities?: () => ServiceCapabilities;
+  readonly probeCapabilities?: CapabilityProbe;
   /** The service-command executor; production `spawnServiceCommand`. */
   readonly runCommand?: ServiceCommandRunner;
   /** Reads the single-instance lock; production `readServiceLock` (task 141). */
@@ -571,7 +572,7 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
     }
 
     /* Manager state (installed units only; unprivileged query). */
-    const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+    const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
     const plan = planManagerProbe({
       selected,
       privileges: owner.privileges,

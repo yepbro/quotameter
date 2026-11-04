@@ -540,10 +540,11 @@ describe('scope follows the installed unit, not the invocation alone', () => {
 
 describe('production default seams (task-137/139 pattern)', () => {
   /**
-   * The container and the CI runners ship no systemd and no quotameter
+   * The container and the systemd-less CI test runners (the pinned 24.04
+   * image, D-160) ship no systemd and no quotameter
    * installation, so the default seams are exercised on the branches those
    * environments deterministically produce — the entry-evaluated seam
-   * consts (139's shape) cover the `??` default arms the moment a route is
+   * consts cover the `??` default arms the moment a route is
    * entered, before any gate decides whether a command actually runs.
    */
 

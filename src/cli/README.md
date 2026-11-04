@@ -394,8 +394,9 @@ Installing/enabling the unit (`quotameter service install`, §5.2) is task
   (task 145) reuses it for the §5.4 stale Node/CLI path check on
   `ExecStart`.
 - **`validateSystemUnit(content, expected?)`** is the structural validator:
-  the container and CI images ship no systemd (`systemd-analyze` is absent —
-  verified on the pinned image), so a generated unit's done-condition is
+  the systemd-less environments the gates run in (the development container
+  and the CI test jobs' pinned 24.04 image, D-160) ship no
+  `systemd-analyze`, so a generated unit's done-condition is
   the exact-content snapshot plus this invariant checker. It verifies every
   §5.4 contract directive (exact values, truthy-boolean spellings, systemd
   time units, absolute `ExecStart` tokens `<node> <cli> run`, `User=`/
@@ -547,12 +548,20 @@ capabilities, and owns the two fallback paths:
 | none       | yes     | no           | manual — unit written + exact session commands       |
 | none       | no      | (any)        | manual — `quotameter run`                            |
 
-- **Probes** — `probeServiceCapabilities` reads two well-known facts, no
-  commands: `/run/systemd/system` (the marker systemd itself creates when
-  it is the init system) for `systemd`, and an own, non-empty
-  `XDG_RUNTIME_DIR` whose `systemd` runtime directory exists for
-  `userManager` — the same reachability signal `systemctl --user` uses
-  (own-property read: an inherited `XDG_RUNTIME_DIR` is not a session).
+- **Probes** — `probeServiceCapabilities` (D-160) reads well-known facts and,
+  when they claim systemd, verifies the claim with one read-only command per
+  scope: `/run/systemd/system` (the marker systemd itself creates when it is
+  the init system) gates everything — absent means `caps(false, false)` with
+  no process spawned; present, `systemctl is-system-running` is asked, and an
+  inert answer (systemd's own "not booted with systemd" diagnostic, a bus
+  failure, a missing binary) classifies the machine absent too, never into
+  raw systemctl errors. `userManager` additionally needs an own, non-empty
+  `XDG_RUNTIME_DIR` whose `systemd` runtime directory exists (own-property
+  read: an inherited `XDG_RUNTIME_DIR` is not a session) and a live
+  `systemctl --user is-active default.target` — exit codes never classify
+  (a degraded system or an inactive target is a manager answering); the
+  probe is async and every consumer's `probeCapabilities` seam accepts a
+  synchronous fixed answer.
 - **The no-sudo install** — all unprivileged, through injectable seams:
   task 135's `buildUserUnit` (with `INIT_RESTART_SEC_SECONDS = 5`, D-106 —
   D-103 keeps no default in the generator and 139 owns the configurable
@@ -670,7 +679,8 @@ route from task 137's matrix, and the linger guidance from task 138.
   throws.
 
 Branch coverage: every route and failure path is seam-driven in
-`test/unit/cli-service-install.spec.ts` (the container and CI images ship no systemd);
+`test/unit/cli-service-install.spec.ts` (the systemd-less test environments:
+the container and the CI test jobs' pinned 24.04 image, D-160);
 the systemd-less routes the container does produce — the install refusal and the
 no-op/manager-less uninstall — are additionally pinned through the real launcher in
 `test/integration/cli-service-install.spec.ts`.

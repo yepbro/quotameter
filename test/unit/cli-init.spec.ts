@@ -141,6 +141,20 @@ function freshDeps(
         revokedDirs.push(dataDir);
         return options?.revocation ?? { state: 'none' };
       },
+      // The service-setup seams (D-160 hermeticity): the fresh runs this
+      // suite scripts must deterministically take the manual service route
+      // on any host — a fixed systemd-less capability answer and service
+      // seams that turn a regressed route into a visible test failure (a
+      // forbidden command throws out of the handler; a forbidden write
+      // lands in the step's failure fallback's stderr line, and these
+      // tests assert stderr stays empty).
+      probeCapabilities: () => ({ systemd: false, userManager: false }),
+      runServiceCommand: () => {
+        throw new Error('a service command must not run in the cli-init unit tests');
+      },
+      writeServiceUnitFile: () => {
+        throw new Error('a unit file must not be written in the cli-init unit tests');
+      },
     },
     writes: () => writes,
     hashedPasswords: () => hashed,

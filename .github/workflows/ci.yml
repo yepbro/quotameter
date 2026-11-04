@@ -61,8 +61,17 @@ jobs:
           path: reports/
           retention-days: 30
 
+  # The vitest projects pin systemd-less behavior through the real launcher
+  # (§5.3/§5.2 fallback arms — D-103's "the CI images ship no systemd"
+  # premise, D-160's environment note): ubuntu-latest moved to 26.04, whose
+  # job sessions run a LIVE systemd user manager — there `quotameter service
+  # install` really installs into the passwd home and enables the unit (the
+  # 2026-11 CI breakage: cross-test contamination plus live systemctl
+  # answers). The test jobs are pinned to the systemd-less 24.04 image;
+  # re-pointing them at a newer image requires re-working those suites'
+  # environment premises first (see DECISIONS.md D-160).
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       # Spec §4.4/§17.2: cover Node.js 22 including the declared minimum

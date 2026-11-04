@@ -8,15 +8,15 @@ quality target comes from spec §17.3 (see
 
 ## What runs where
 
-| Concern    | Answer                                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------------------------- |
-| Trigger    | `schedule` cron `17 2 * * *` — daily at **02:17 UTC = 09:17 (UTC+7)** — plus manual `workflow_dispatch` |
-| Executor   | GitHub-hosted `ubuntu-latest` runner — GitHub's infrastructure, nothing local is involved               |
-| Definition | [`.github/workflows/mutation.yml`](../.github/workflows/mutation.yml) on the default branch (`master`)  |
-| Subject    | The tip of `master` at run start (fresh checkout)                                                       |
-| Tool       | Stryker via `npm run test:mutation`, configured by [`stryker.config.mjs`](../stryker.config.mjs)        |
-| Cost       | Free — Actions minutes are not billed for public repositories                                           |
-| Output     | Run artifact (JSON + HTML) and the rolling `mutation-report` issue                                      |
+| Concern    | Answer                                                                                                                                                   |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trigger    | `schedule` cron `17 2 * * *` — daily at **02:17 UTC = 09:17 (UTC+7)** — plus manual `workflow_dispatch`                                                  |
+| Executor   | GitHub-hosted runner, pinned `ubuntu-24.04` (the systemd-less image the full suite requires, D-160) — GitHub's infrastructure, nothing local is involved |
+| Definition | [`.github/workflows/mutation.yml`](../.github/workflows/mutation.yml) on the default branch (`master`)                                                   |
+| Subject    | The tip of `master` at run start (fresh checkout)                                                                                                        |
+| Tool       | Stryker via `npm run test:mutation`, configured by [`stryker.config.mjs`](../stryker.config.mjs)                                                         |
+| Cost       | Free — Actions minutes are not billed for public repositories                                                                                            |
+| Output     | Run artifact (JSON + HTML) and the rolling `mutation-report` issue                                                                                       |
 
 The pipeline inside the run: checkout → `npm ci` → Stryker
 (`continue-on-error`, so a below-threshold score still produces the

@@ -72,7 +72,7 @@ import {
   thrownMessage,
   unsafeOwnerNameProblem,
   writeUnitFileToDisk,
-  type ServiceCapabilities,
+  type CapabilityProbe,
   type ServiceCommandRunner,
   type ServiceSetupRoute,
   type ServiceUnitWriter,
@@ -105,7 +105,7 @@ export interface ServiceCommandDeps {
   /** The §5.3 step 1 owner resolution (task 136, D-105); production `resolveServiceOwner`. */
   readonly resolveOwner?: () => ServiceOwnerResolution;
   /** The §5.3 step 1 capability probe (task 137); production `probeServiceCapabilities`. */
-  readonly probeCapabilities?: () => ServiceCapabilities;
+  readonly probeCapabilities?: CapabilityProbe;
   /** The service-command executor; production `spawnServiceCommand`. */
   readonly runCommand?: ServiceCommandRunner;
   /** The unit-file writer; production `writeUnitFileToDisk`. */
@@ -486,7 +486,7 @@ export function runServiceInstallCommand(deps: ServiceCommandDeps = {}): CliHand
       ctx.output.err(`${errorPrefix}: ${restart.problem}`);
       return 1;
     }
-    const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+    const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
     const route = resolveServiceSetupRoute(owner, capabilities);
 
     if (route.path === 'manual' && route.reason === 'systemd-absent') {
@@ -687,7 +687,7 @@ export function runServiceUninstallCommand(deps: ServiceCommandDeps = {}): CliHa
       ctx.output.err(`${errorPrefix}: ${nameProblem}`);
       return 1;
     }
-    const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+    const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
     const route = resolveServiceSetupRoute(owner, capabilities);
     // The unit kind an invocation owns follows the privileges alone: a
     // privileged run manages the system unit, a regular user their own user

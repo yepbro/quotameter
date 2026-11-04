@@ -108,6 +108,7 @@ import {
   probeServiceCapabilities,
   runServiceSetupStep,
   thrownMessage,
+  type CapabilityProbe,
   type ServiceCapabilities,
   type ServiceCommandRunner,
   type ServiceExecPaths,
@@ -142,8 +143,11 @@ export interface InitDeps {
    * Production `resolveServiceOwner`.
    */
   readonly resolveOwner?: () => ServiceOwnerResolution;
-  /** The §5.3 step 1 capability probe; production `probeServiceCapabilities`. */
-  readonly probeCapabilities?: () => ServiceCapabilities;
+  /**
+   * The §5.3 step 1 capability probe; production `probeServiceCapabilities`
+   * (async since D-160 — a claimed manager is verified with a real query).
+   */
+  readonly probeCapabilities?: CapabilityProbe;
   /**
    * The §5.3 step 7 service-command executor; production `spawnServiceCommand`.
    */
@@ -192,7 +196,7 @@ export function runInitCommand(deps: InitDeps = {}): CliHandler {
       }
       return 1;
     }
-    const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+    const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
     const paths = resolvePaths(deps.pathEnv ?? process.env);
     const configFile = configFilePath(paths.configDir);
     const existing = await (deps.readExisting ?? readExistingConfig)(configFile);

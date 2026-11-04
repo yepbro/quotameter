@@ -112,7 +112,7 @@ import {
   spawnServiceCommand,
   STDERR_CAPTURE_CAP,
   thrownMessage,
-  type ServiceCapabilities,
+  type CapabilityProbe,
   type ServiceCommandRunner,
   type ServiceExecPaths,
 } from './service-setup';
@@ -990,7 +990,7 @@ export interface DoctorDeps {
   /** The absolute paths freshness compares against; production `serviceExecPaths`. */
   readonly execPaths?: () => ServiceExecPaths;
   /** The §5.3 capability probe (task 137); production `probeServiceCapabilities`. */
-  readonly probeCapabilities?: () => ServiceCapabilities;
+  readonly probeCapabilities?: CapabilityProbe;
   /** The service-command executor; production `spawnServiceCommand`. */
   readonly runCommand?: ServiceCommandRunner;
   /** Reads the single-instance lock; production `readServiceLock` (task 141). */
@@ -1169,7 +1169,7 @@ export function runDoctorCommand(deps: DoctorDeps = {}): CliHandler {
         });
       } else if (systemUnit || userUnit) {
         const kind: 'system' | 'user' = systemUnit ? 'system' : 'user';
-        const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+        const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
         const plan = planManagerProbe({
           selected: kind,
           privileges: owner.privileges,

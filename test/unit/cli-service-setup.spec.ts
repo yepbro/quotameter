@@ -39,14 +39,19 @@ import type { QuotaProvider } from '../../src/providers/registry';
  * and the manual-steps fallbacks — plus, since task 138 (decision D-107),
  * the detected linger guidance rendered on the user-unit outcomes.
  *
- * Every branch is driven through the injected seams — the container and CI
- * images ship no systemd and no sudo, so the `user-unit` and `system-unit`
+ * Every branch is driven through the injected seams — the development
+ * container and the systemd-less CI images the test jobs are pinned to
+ * (D-160) ship no systemd and no sudo, so the `user-unit` and `system-unit`
  * routes cannot occur there for real (the branch that does occur, the
  * systemd-less manual route, is additionally pinned end-to-end through the
  * real launcher — piped, `--yes`, and under a real PTY — by
  * `test/integration/cli-init-service.spec.ts`). The done-condition "each
  * branch tested and actionable" is delivered here as: every route's rendered
  * output names the exact commands, each on its own line, copy-pasteable.
+ * The machine-probe classification itself (absent, present-but-inert, live
+ * — D-160's taxonomy) is pinned in the first describe block through a
+ * scripted manager-probe seam, so the inert class is testable on machines
+ * that have no systemd at all.
  * The linger matrix (on/off/unknown × user-unit outcome) is the task-138
  * done-condition: the exact enable-linger command with the logout/reboot
  * consequence unless linger is detected enabled; the probe itself is pinned
@@ -67,46 +72,209 @@ function caps(systemd: boolean, userManager: boolean): ServiceCapabilities {
   return { systemd, userManager };
 }
 
-describe('probeServiceCapabilities — the §5.3 step 1 machine probe', () => {
-  it('reports systemd by the run marker and the user manager by the runtime dir', () => {
-    const existing = new Set([SYSTEMD_RUN_MARKER_PATH, '/run/user/1001/systemd']);
-    const result = probeServiceCapabilities({
-      env: { XDG_RUNTIME_DIR: '/run/user/1001' },
-      exists: (path) => existing.has(path),
+describe('probeServiceCapabilities — the §5.3 step 1 machine probe (D-160)', () => {
+  /** The outcome of a probe whose manager answered with a healthy state. */
+  const ANSWERED: CommandOutcome = { ok: true, detail: '' };
+
+  /**
+   * A scripted manager-probe seam: answers the canned outcomes in order and
+   * records every command it was asked to run, so the tests pin both the
+   * classification and the exact read-only queries (never a mutation).
+   */
+  function scriptedManager(outcomes: readonly CommandOutcome[]): {
+    probeCommand: ServiceCommandRunner;
+    commands(): readonly string[][];
+  } {
+    const commands: string[][] = [];
+    return {
+      probeCommand: (command) => {
+        commands.push([...command]);
+        return Promise.resolve(outcomes[commands.length - 1] ?? ANSWERED);
+      },
+      commands: () => commands,
+    };
+  }
+
+  /** The filesystem facts of a machine claiming full systemd presence. */
+  const FULL_SYSTEMD_PATHS = new Set([SYSTEMD_RUN_MARKER_PATH, '/run/user/1001/systemd']);
+  const FULL_SYSTEMD_ENV = { XDG_RUNTIME_DIR: '/run/user/1001' };
+
+  it('no run marker means systemd absent, and no probe command ever spawns', async () => {
+    const manager = scriptedManager([]);
+    const result = await probeServiceCapabilities({
+      env: FULL_SYSTEMD_ENV,
+      exists: (path) => path === '/run/user/1001/systemd',
+      probeCommand: manager.probeCommand,
+    });
+    expect(result).toEqual(caps(false, false));
+    expect(manager.commands()).toEqual([]);
+  });
+
+  it('a marker whose system manager is inert routes to the systemd-absent class', async () => {
+    // The machine claims everything — marker, runtime dir, session env — but
+    // `systemctl` answers with systemd's own not-booted diagnostic: the
+    // D-160 class (chroot, WSL without systemd, a container seeing the
+    // host's /run marker) must take the graceful fallbacks, and the user
+    // probe never even runs.
+    const manager = scriptedManager([
+      { ok: false, detail: 'System has not been booted with systemd (PID 1)' },
+    ]);
+    const result = await probeServiceCapabilities({
+      env: FULL_SYSTEMD_ENV,
+      exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+      probeCommand: manager.probeCommand,
+    });
+    expect(result).toEqual(caps(false, false));
+    expect(manager.commands()).toEqual([['systemctl', 'is-system-running']]);
+  });
+
+  it('a dead bus or a missing systemctl binary is inert the same way', async () => {
+    const inertAnswers: readonly CommandOutcome[] = [
+      // systemd ≤256 wording (the Ubuntu 24.04 image's client).
+      { ok: false, detail: 'Failed to connect to bus: No such file or directory' },
+      // systemd ≥257 wording (Ubuntu 26.04 / Debian 13 clients) — the
+      // review round's live-verified regression: the phrase "connect to
+      // bus" is no longer contiguous.
+      {
+        ok: false,
+        detail:
+          'Failed to connect to system scope bus via local transport: No such file or directory',
+      },
+      {
+        ok: false,
+        detail: 'Failed to connect to user scope bus via local transport: No medium found',
+      },
+      // Node's spawn-failure message shape: the binary is missing or
+      // unrunnable — no manager command could ever run (review round:
+      // every errno alike, not just ENOENT).
+      { ok: false, detail: 'spawn systemctl ENOENT' },
+      { ok: false, detail: 'spawn systemctl EACCES' },
+    ];
+    for (const inert of inertAnswers) {
+      const manager = scriptedManager([inert]);
+      const result = await probeServiceCapabilities({
+        env: FULL_SYSTEMD_ENV,
+        exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+        probeCommand: manager.probeCommand,
+      });
+      expect(result, JSON.stringify(inert)).toEqual(caps(false, false));
+    }
+  });
+
+  it('a probe that cannot answer within the bound is the not-answering class', async () => {
+    // Review round P2: a wedged bus must not hang the CLI and must not be
+    // misread as live — the system-scope timeout routes the whole machine
+    // to the graceful fallbacks, a timed-out user probe to caps(true,false).
+    const never: ServiceCommandRunner = () => new Promise(() => {});
+    expect(
+      await probeServiceCapabilities({
+        env: FULL_SYSTEMD_ENV,
+        exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+        probeCommand: never,
+        probeTimeoutMs: 20,
+      }),
+    ).toEqual(caps(false, false));
+    const answeredThenStuck = scriptedManager([ANSWERED]);
+    const stuckUser: ServiceCommandRunner = (command) =>
+      command.includes('--user') ? never(command) : answeredThenStuck.probeCommand(command);
+    expect(
+      await probeServiceCapabilities({
+        env: FULL_SYSTEMD_ENV,
+        exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+        probeCommand: stuckUser,
+        probeTimeoutMs: 20,
+      }),
+    ).toEqual(caps(true, false));
+  });
+
+  it('a live-but-degraded system manager is live — exit codes never classify', async () => {
+    // `is-system-running` exits 1 with `degraded` on stdout (ignored): a
+    // manager answering with a non-success state is still a manager.
+    const manager = scriptedManager([{ ok: false, detail: 'exit status 1' }]);
+    const result = await probeServiceCapabilities({
+      env: {},
+      exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+      probeCommand: manager.probeCommand,
+    });
+    expect(result).toEqual(caps(true, false));
+  });
+
+  it('a live system with a reachable user manager answers caps(true, true)', async () => {
+    const manager = scriptedManager([ANSWERED, ANSWERED]);
+    const result = await probeServiceCapabilities({
+      env: FULL_SYSTEMD_ENV,
+      exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+      probeCommand: manager.probeCommand,
+    });
+    expect(result).toEqual(caps(true, true));
+    expect(manager.commands()).toEqual([
+      ['systemctl', 'is-system-running'],
+      ['systemctl', '--user', 'is-active', 'default.target'],
+    ]);
+  });
+
+  it('a non-success user-probe state still proves the manager answered', async () => {
+    // `is-active` exits 3 for an inactive target with empty stderr — the
+    // review round's arm: exit codes never classify, so caps(true, true).
+    const manager = scriptedManager([ANSWERED, { ok: false, detail: 'exit status 3' }]);
+    const result = await probeServiceCapabilities({
+      env: FULL_SYSTEMD_ENV,
+      exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+      probeCommand: manager.probeCommand,
     });
     expect(result).toEqual(caps(true, true));
   });
 
-  it('no run marker means no systemd, whatever the user manager state', () => {
-    const result = probeServiceCapabilities({
-      env: { XDG_RUNTIME_DIR: '/run/user/1001' },
-      exists: (path) => path === '/run/user/1001/systemd',
-    });
-    expect(result).toEqual(caps(false, true));
-  });
-
-  it('the user manager needs an own, non-empty runtime dir with a systemd dir', () => {
-    const withSystemdDir = (env: Record<string, string>): ServiceCapabilities =>
+  it('the user manager needs an own, non-empty runtime dir with a systemd dir', async () => {
+    const liveSystem = scriptedManager([ANSWERED]);
+    const withRuntimeDir = (env: Record<string, string>): Promise<ServiceCapabilities> =>
       probeServiceCapabilities({
         env,
-        exists: (path) => path.endsWith('/systemd'),
+        exists: (path) => path === SYSTEMD_RUN_MARKER_PATH || path.endsWith('/systemd'),
+        probeCommand: liveSystem.probeCommand,
       });
-    // Unset and empty runtime dirs: no session facts to build on.
-    expect(withSystemdDir({}).userManager).toBe(false);
-    expect(withSystemdDir({ XDG_RUNTIME_DIR: '' }).userManager).toBe(false);
+    // Unset and empty runtime dirs: no session facts to build on, and the
+    // user probe never runs — every recorded command is the system probe.
+    expect(await withRuntimeDir({})).toEqual(caps(true, false));
+    expect(await withRuntimeDir({ XDG_RUNTIME_DIR: '' })).toEqual(caps(true, false));
     // An inherited name never counts (the own-property discipline).
     const inherited = Object.create({ XDG_RUNTIME_DIR: '/run/user/1001' }) as Record<
       string,
       string
     >;
-    expect(withSystemdDir(inherited).userManager).toBe(false);
+    expect(await withRuntimeDir(inherited)).toEqual(caps(true, false));
+    expect(liveSystem.commands()).toEqual([
+      ['systemctl', 'is-system-running'],
+      ['systemctl', 'is-system-running'],
+      ['systemctl', 'is-system-running'],
+    ]);
     // Set but the runtime dir carries no systemd entry: unreachable manager.
+    const noSystemdDir = scriptedManager([ANSWERED]);
     expect(
-      probeServiceCapabilities({
-        env: { XDG_RUNTIME_DIR: '/run/user/1001' },
-        exists: () => false,
+      await probeServiceCapabilities({
+        env: FULL_SYSTEMD_ENV,
+        exists: (path) => path === SYSTEMD_RUN_MARKER_PATH,
+        probeCommand: noSystemdDir.probeCommand,
       }),
-    ).toEqual(caps(false, false));
+    ).toEqual(caps(true, false));
+    expect(noSystemdDir.commands()).toEqual([['systemctl', 'is-system-running']]);
+  });
+
+  it('a live system with an inert user bus reports the user manager unreachable', async () => {
+    // The runtime-dir facts exist, but the session bus is dead (stale
+    // XDG_RUNTIME_DIR, cron leftovers): caps(true, false), never a
+    // user-unit route that would fail with raw bus errors.
+    const manager = scriptedManager([
+      ANSWERED,
+      { ok: false, detail: 'Failed to connect to bus: No medium found' },
+    ]);
+    const result = await probeServiceCapabilities({
+      env: FULL_SYSTEMD_ENV,
+      exists: (path) => FULL_SYSTEMD_PATHS.has(path),
+      probeCommand: manager.probeCommand,
+    });
+    expect(result).toEqual(caps(true, false));
+    expect(manager.commands()).toHaveLength(2);
   });
 });
 
@@ -117,10 +285,9 @@ describe('resolveServiceSetupRoute — the §5.3 step 7 route matrix', () => {
   });
 
   it('no systemd: the manual route with the systemd-absent reason, privilege aside', () => {
-    expect(resolveServiceSetupRoute(REGULAR, caps(false, true))).toEqual({
-      path: 'manual',
-      reason: 'systemd-absent',
-    });
+    // `caps(false, false)` is the only systemd-absent shape the D-160 probe
+    // produces (userManager implies systemd), for the absent and the inert
+    // class alike — both route to the same graceful fallback.
     expect(resolveServiceSetupRoute(REGULAR, caps(false, false))).toEqual({
       path: 'manual',
       reason: 'systemd-absent',

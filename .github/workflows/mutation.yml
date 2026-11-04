@@ -26,7 +26,11 @@ concurrency:
 
 jobs:
   mutation:
-    runs-on: ubuntu-latest
+    # Stryker runs the full vitest suite, which pins systemd-less behavior
+    # through the real launcher — the same environment premise as CI's
+    # `test` job (ubuntu-latest moved to a live-systemd 26.04 image;
+    # DECISIONS.md D-160 has the rationale).
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

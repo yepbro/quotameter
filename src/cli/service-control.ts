@@ -48,7 +48,7 @@ import {
   probeServiceCapabilities,
   spawnServiceCommand,
   thrownMessage,
-  type ServiceCapabilities,
+  type CapabilityProbe,
   type ServiceCommandRunner,
 } from './service-setup';
 import { SYSTEM_UNIT_INSTALL_PATH, SYSTEM_UNIT_NAME } from './systemd-unit';
@@ -69,7 +69,7 @@ export interface ServiceControlDeps {
   /** The §5.3 step 1 owner resolution (task 136, D-105); production `resolveServiceOwner`. */
   readonly resolveOwner?: () => ServiceOwnerResolution;
   /** The §5.3 step 1 capability probe (task 137); production `probeServiceCapabilities`. */
-  readonly probeCapabilities?: () => ServiceCapabilities;
+  readonly probeCapabilities?: CapabilityProbe;
   /** The service-command executor; production `spawnServiceCommand`. */
   readonly runCommand?: ServiceCommandRunner;
   /** Whether a unit file is on disk; production `unitFileExistsOnDisk` (task 139). */
@@ -302,7 +302,7 @@ async function controlSystemUnit(
   // executor arm is selected the moment the route is entered, before any
   // capability gate decides whether a command actually runs.
   const runCommand = deps.runCommand ?? spawnServiceCommand;
-  const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+  const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
   if (!capabilities.systemd) {
     ctx.output.err(
       `${errorPrefix}: systemd is not available on this machine, so the installed system service cannot be controlled here`,
@@ -360,7 +360,7 @@ async function controlUserUnit(
     ctx.output.out(renderUserUnitFromRegularAccountSteps(verb, owner.user.name));
     return 1;
   }
-  const capabilities = (deps.probeCapabilities ?? probeServiceCapabilities)();
+  const capabilities = await (deps.probeCapabilities ?? probeServiceCapabilities)();
   if (!capabilities.systemd) {
     ctx.output.err(
       `${errorPrefix}: systemd is not available on this machine, so the installed user service cannot be controlled here`,
