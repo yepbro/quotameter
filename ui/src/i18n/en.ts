@@ -52,6 +52,29 @@ export const en = {
       // signal, never color alone (§14.1).
       archivedOption: 'Archived',
     },
+    // One retry per range-keyed load (the distinct-accessible-name rule
+    // above; task 174).
+    retryHistory: 'Retry loading history',
+    retryEvents: 'Retry loading the timeline',
+    // The §14.4 rolling-range control (task 174; decision D-147): the
+    // five history ranges, the retention-driven disabling explanation
+    // (real text beside the disabled option — never color alone), and
+    // the refresh that re-anchors the rolling window.
+    range: {
+      label: 'History range',
+      hours24: '24 hours',
+      days3: '3 days',
+      days7: '7 days',
+      days14: '14 days',
+      days30: '30 days',
+      disabledReason: 'Exceeds the {days}-day history retention',
+      // The auto-fallback's announcement (a polite live region): the
+      // selection moved because retention demands it — heard, not only
+      // seen (§14.1).
+      fallbackNotice:
+        'The selected range is beyond the configured retention — showing the last 7 days instead.',
+      refresh: 'Refresh',
+    },
     empty: {
       // The page-level no-accounts guidance (task 173, spec §14.3):
       // a titled block whose link is the actionable next step. The

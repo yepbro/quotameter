@@ -1,5 +1,5 @@
 import { expect, test, type Route } from '@playwright/test';
-import { healthySettingsBody } from '../helpers/api';
+import { healthyEventsBody, healthyHistoryBody, healthySettingsBody } from '../helpers/api';
 import { assertNoAccessibilityViolations } from './helpers/a11y';
 
 /**
@@ -160,17 +160,96 @@ test('overview attention notice has no WCAG violations (task 173)', async ({ pag
   }
 });
 
+test('overview range controls’ disabled state has no WCAG violations (task 174)', async ({
+  page,
+}) => {
+  // The §14.4 a11y-critical surface: retention 7 disables the 14/30-day
+  // options, each explaining itself as real text (never color alone,
+  // §14.1) — the same interception technique, one keyed account with a
+  // metric so the range-keyed loads fire beside the control. The
+  // disabled radios and the muted reason texts go through axe in both
+  // themes (the component suite pins the structure, only a real
+  // browser scans WCAG contrast).
+  await page.route('**/api/**', (route) =>
+    fulfillOverviewBody(route, {
+      '/api/accounts': {
+        accounts: [
+          {
+            id: 'acc-1',
+            providerId: 'zai-coding-plan',
+            label: 'Main',
+            enabled: true,
+            status: 'active',
+            hasKey: true,
+            keySource: 'file',
+            keyMask: '********',
+            planName: null,
+            createdAt: null,
+            archivedAt: null,
+          },
+        ],
+      },
+      '/api/status': {
+        status: 'ok',
+        pollingIntervalSeconds: 300,
+        accounts: [{ id: 'acc-1', status: 'fresh', lastSuccessAt: null, lastError: null }],
+      },
+      '/api/quota': {
+        accountId: 'acc-1',
+        status: 'fresh',
+        collectedAt: 1,
+        planName: null,
+        metrics: [
+          {
+            metricKey: 'mcp-monthly',
+            limitType: 'MONTHLY',
+            unit: 'REQUESTS',
+            windowSeconds: null,
+            used: 1,
+            remaining: null,
+            limit: null,
+            percentUsed: null,
+            percentRemaining: null,
+            resetsAt: null,
+            isValid: true,
+            invalidReason: null,
+            derivedFields: null,
+            collectedAt: 1,
+          },
+        ],
+      },
+      '/api/settings': healthySettingsBody(7),
+    }),
+  );
+  await page.goto('/');
+  await expect(page.getByTestId('history-range')).toBeVisible();
+  // Exactly the two beyond-retention options carry the explanation.
+  await expect(page.getByTestId('history-range-reason')).toHaveCount(2);
+  await expect(page.getByTestId('history-range-reason').first()).toHaveText(
+    'Exceeds the 7-day history retention',
+  );
+  await expect(page.getByTestId('api-error')).toHaveCount(0);
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
 /**
  * Fulfills one overview GET with the given per-path body overrides on
- * top of the standing defaults (the real provider listing and the
- * healthy settings view); unknown API paths answer the §13 envelope's
- * 404 shape, matching the honest server behavior.
+ * top of the standing defaults (the real provider listing, the healthy
+ * settings view, and — since task 174 wired them — the range-keyed
+ * history/events loads, served through the same healthy-body helpers
+ * the component suites use); unknown API paths answer the §13
+ * envelope's 404 shape, matching the honest server behavior.
  */
 async function fulfillOverviewBody(
   route: Route,
   overrides: Record<string, unknown>,
 ): Promise<void> {
-  const { pathname } = new URL(route.request().url());
+  const url = new URL(route.request().url());
+  const { pathname, search } = url;
   const body: Record<string, unknown> = {
     '/api/providers': {
       providers: [
@@ -183,6 +262,10 @@ async function fulfillOverviewBody(
       ],
     },
     '/api/settings': healthySettingsBody(),
+    // Task 174: the page's range-keyed loads — the helpers echo the
+    // intercepted window back as the healthy range report.
+    '/api/events': healthyEventsBody(`${pathname}${search}`),
+    '/api/history': healthyHistoryBody(`${pathname}${search}`),
     ...overrides,
   };
   const answer = body[pathname];

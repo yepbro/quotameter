@@ -78,7 +78,9 @@ export function neverRespond(): () => Promise<ApiFetchResponse> {
  * (D-134), so a one-shape answer for every URL is a lie the consumers
  * choke on once a page loads real routes (task 170 made `/accounts`
  * load the accounts and providers lists; task 172 made `/` load the
- * status, settings, and — when an account is selected — quota routes).
+ * status, settings, and — when an account is selected — quota routes;
+ * task 174 added the range-keyed history/events loads, exactly as
+ * D-139's consequences recorded).
  */
 export function healthyApiBody(input: string): unknown {
   if (input === '/api/accounts') return { accounts: [] };
@@ -97,14 +99,17 @@ export function healthyApiBody(input: string): unknown {
       metrics: [],
     };
   }
+  if (input.startsWith('/api/history?')) return healthyHistoryBody(input);
+  if (input.startsWith('/api/events?')) return healthyEventsBody(input);
   return { status: 'ok' };
 }
 
 /**
  * A minimal valid `GET /api/settings` body — the overview reads its
- * display time zone (`UTC`, deterministic in tests) from here.
+ * display time zone (`UTC`, deterministic in tests) and history
+ * retention from here.
  */
-export function healthySettingsBody(): unknown {
+export function healthySettingsBody(historyRetentionDays = 365): unknown {
   const annotated = (value: unknown) => ({
     value,
     source: 'file',
@@ -119,7 +124,7 @@ export function healthySettingsBody(): unknown {
       app: {
         timezone: annotated('UTC'),
         pollingIntervalSeconds: annotated(300),
-        historyRetentionDays: annotated(365),
+        historyRetentionDays: annotated(historyRetentionDays),
       },
       auth: {
         mode: annotated('auto'),
@@ -130,6 +135,63 @@ export function healthySettingsBody(): unknown {
       },
     },
     paths: { configPath: '/tmp/quotameter/config.json', dataDir: '/tmp/quotameter/data' },
+  };
+}
+
+/**
+ * The range report both range-bearing routes echo (D-139): the healthy
+ * arm passes the request through untouched (`outcome: 'ok'`, no
+ * horizon). The parsed request parameters are echoed as epoch-ms
+ * integers — one format per direction.
+ */
+function healthyRangeReport(
+  input: string,
+  routePrefix: string,
+): {
+  outcome: 'ok';
+  requestedFrom: number;
+  requestedTo: number;
+  effectiveFrom: number;
+  effectiveTo: number;
+  retentionHorizon: null;
+} {
+  const params = new URLSearchParams(input.slice(routePrefix.length));
+  const requestedFrom = Date.parse(params.get('from') ?? '');
+  const requestedTo = Date.parse(params.get('to') ?? '');
+  return {
+    outcome: 'ok',
+    requestedFrom,
+    requestedTo,
+    effectiveFrom: requestedFrom,
+    effectiveTo: requestedTo,
+    retentionHorizon: null,
+  };
+}
+
+/** A minimal valid `GET /api/history` body: an honest empty series. */
+export function healthyHistoryBody(input: string): unknown {
+  const params = new URLSearchParams(input.slice('/api/history?'.length));
+  return {
+    accountId: params.get('accountId') ?? '',
+    metric: params.get('metric') ?? '',
+    unit: null,
+    limitType: null,
+    range: healthyRangeReport(input, '/api/history?'),
+    downsampled: false,
+    resolutionMs: null,
+    sourcePointCount: 0,
+    points: [],
+  };
+}
+
+/** A minimal valid `GET /api/events` body: an honest empty timeline. */
+export function healthyEventsBody(input: string): unknown {
+  const params = new URLSearchParams(input.slice('/api/events?'.length));
+  return {
+    accountId: params.get('accountId') ?? '',
+    metric: params.get('metric'),
+    range: healthyRangeReport(input, '/api/events?'),
+    events: [],
   };
 }
 

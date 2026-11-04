@@ -8,8 +8,10 @@
  * imports are erased at build time, so the browser bundle carries neither
  * the schema modules nor `@sinclair/typebox`/fastify behind them — the
  * coupling is compile-time truth, zero runtime weight. The endpoint
- * families still to land (history/events/peak-hours, task 161/162; auth,
- * task 180) join as new methods here, the same pattern.
+ * families still to land (peak-hours, task 162; auth, task 180) join
+ * as new methods here, the same pattern; the history/events families
+ * landed with task 174 (D-139's grammar: ISO-8601 request boundaries,
+ * epoch-ms responses).
  *
  * Success bodies are trusted casts, not re-validated: the same-origin
  * server serializes through the same closed schemas (the D-111/D-128
@@ -45,6 +47,7 @@ import type {
   UpdateAccountBody,
 } from '../../../src/schemas/api/accounts';
 import type { ProvidersListResponse } from '../../../src/schemas/api/providers';
+import type { EventsResponse, HistoryResponse } from '../../../src/schemas/api/history';
 import type {
   SettingsResponse,
   UpdateSettingsBody,
@@ -184,6 +187,38 @@ export interface ApiClient {
   readonly settings: {
     get(signal?: AbortSignal): Promise<SettingsResponse>;
     update(body: UpdateSettingsBody, signal?: AbortSignal): Promise<UpdateSettingsResponse>;
+  };
+  /**
+   * The range-bearing history family (§13, D-139): one account/metric
+   * series over an ISO-8601 window, and the account-level §12.2
+   * timeline. `from`/`to` must carry an explicit offset or `Z` (the
+   * server's strict parse gate); the page computes them as rolling
+   * bounds ending now (§10, D-068/D-147). `maxPoints` and `metric`
+   * (the events filter) are the optional §13 refinements — omitted
+   * here, the server applies its documented defaults.
+   */
+  readonly history: {
+    get(
+      query: {
+        readonly accountId: string;
+        readonly metric: string;
+        readonly from: string;
+        readonly to: string;
+        readonly maxPoints?: number;
+      },
+      signal?: AbortSignal,
+    ): Promise<HistoryResponse>;
+  };
+  readonly events: {
+    list(
+      query: {
+        readonly accountId: string;
+        readonly from: string;
+        readonly to: string;
+        readonly metric?: string;
+      },
+      signal?: AbortSignal,
+    ): Promise<EventsResponse>;
   };
 }
 
@@ -343,6 +378,35 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       get: (signal) => request<SettingsResponse>({ method: 'GET', path: '/settings', signal }),
       update: (body, signal) =>
         request<UpdateSettingsResponse>({ method: 'PUT', path: '/settings', body, signal }),
+    },
+    history: {
+      get: (query, signal) =>
+        request<HistoryResponse>({
+          method: 'GET',
+          path: '/history',
+          query: {
+            accountId: query.accountId,
+            metric: query.metric,
+            from: query.from,
+            to: query.to,
+            maxPoints: query.maxPoints === undefined ? undefined : String(query.maxPoints),
+          },
+          signal,
+        }),
+    },
+    events: {
+      list: (query, signal) =>
+        request<EventsResponse>({
+          method: 'GET',
+          path: '/events',
+          query: {
+            accountId: query.accountId,
+            from: query.from,
+            to: query.to,
+            metric: query.metric,
+          },
+          signal,
+        }),
     },
   };
 }

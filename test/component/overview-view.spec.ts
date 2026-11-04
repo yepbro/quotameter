@@ -13,6 +13,7 @@ import {
 } from '../../src/schemas/api/status';
 import OverviewView from '../../ui/src/views/OverviewView.vue';
 import { accountAttentionOf, type AccountAttention } from '../../ui/src/account-attention';
+import type { ApiFetchResponse } from '../../ui/src/api/client';
 import { createAccountSelection } from '../../ui/src/account-selection';
 import { createApiClientPlugin } from '../../ui/src/api';
 import { createAppI18n } from '../../ui/src/i18n';
@@ -22,6 +23,8 @@ import {
   FakeFetch,
   jsonResponse,
   healthyApiBody,
+  healthyEventsBody,
+  healthyHistoryBody,
   healthySettingsBody,
   neverRespond,
   type RecordedCall,
@@ -109,8 +112,11 @@ function quota(overrides: Partial<QuotaResponse> = {}, accountId = 'acc-1'): Quo
 }
 
 /**
- * A miniature overview service: the five routes the page loads, over
- * in-memory programmable state, recording every dispatch.
+ * A miniature overview service: the routes the page loads, over
+ * in-memory programmable state, recording every dispatch. Since task
+ * 174 the range-keyed routes (`/api/history`, `/api/events`) are part
+ * of the served set, and the settings answer can be held back
+ * (`settingsGate`) to pin the unknown-retention window.
  */
 class FakeOverviewBackend {
   readonly fake: FakeFetch;
@@ -118,6 +124,10 @@ class FakeOverviewBackend {
   providers: ProviderView[];
   status: StatusResponse;
   quotaByAccount: Map<string, QuotaResponse>;
+  /** The retention the settings answer carries (task 174). */
+  historyRetentionDays: number;
+  /** While set, the settings route waits for this promise (the late-arrival arm). */
+  settingsGate: Promise<void> | null = null;
   /** One-shot per-URL refusals (the failure arms); value = HTTP status. */
   refuseNext: ((call: RecordedCall) => number | undefined) | null = null;
 
@@ -127,6 +137,7 @@ class FakeOverviewBackend {
       providers?: ProviderView[];
       status?: StatusResponse;
       quotaByAccount?: Map<string, QuotaResponse>;
+      historyRetentionDays?: number;
     } = {},
   ) {
     this.accounts = options.accounts ?? [account()];
@@ -137,6 +148,7 @@ class FakeOverviewBackend {
       accounts: [statusRow()],
     };
     this.quotaByAccount = options.quotaByAccount ?? new Map();
+    this.historyRetentionDays = options.historyRetentionDays ?? 365;
     this.fake = new FakeFetch((call) => Promise.resolve(this.route(call)));
   }
 
@@ -148,7 +160,17 @@ class FakeOverviewBackend {
     return this.fake.calls;
   }
 
-  private route(call: RecordedCall): ReturnType<typeof jsonResponse> {
+  /** Every dispatched `/api/history` call, oldest first. */
+  get historyCalls(): RecordedCall[] {
+    return this.calls.filter((call) => call.input.startsWith('/api/history?'));
+  }
+
+  /** Every dispatched `/api/events` call, oldest first. */
+  get eventsCalls(): RecordedCall[] {
+    return this.calls.filter((call) => call.input.startsWith('/api/events?'));
+  }
+
+  private route(call: RecordedCall): ApiFetchResponse | Promise<ApiFetchResponse> {
     const refusal = this.refuseNext?.(call);
     if (refusal !== undefined) {
       this.refuseNext = null;
@@ -167,7 +189,9 @@ class FakeOverviewBackend {
       return jsonResponse(200, this.status);
     }
     if (method === 'GET' && input === '/api/settings') {
-      return jsonResponse(200, healthySettingsBody());
+      const answer = (): ReturnType<typeof jsonResponse> =>
+        jsonResponse(200, healthySettingsBody(this.historyRetentionDays));
+      return this.settingsGate === null ? answer() : this.settingsGate.then(answer);
     }
     if (method === 'GET' && input.startsWith('/api/quota?')) {
       const id = new URLSearchParams(input.slice('/api/quota?'.length)).get('accountId') ?? '';
@@ -178,6 +202,12 @@ class FakeOverviewBackend {
         });
       }
       return jsonResponse(200, body);
+    }
+    if (method === 'GET' && input.startsWith('/api/history?')) {
+      return jsonResponse(200, healthyHistoryBody(input));
+    }
+    if (method === 'GET' && input.startsWith('/api/events?')) {
+      return jsonResponse(200, healthyEventsBody(input));
     }
     return jsonResponse(404, { error: { code: 'NOT_FOUND', message: 'no route', details: null } });
   }
@@ -1057,7 +1087,10 @@ describe('overview fresh-install matrix (task 173, D-138)', () => {
           }),
         );
       }
-      return Promise.resolve(jsonResponse(200, healthySettingsBody()));
+      // Everything else routes through the healthy per-route bodies —
+      // task 174's events load included (a catch-all settings body is
+      // the one-shape lie the trusted casts choke on).
+      return Promise.resolve(jsonResponse(200, healthyApiBody(call.input)));
     });
     const selection = createAccountSelection({ storage: new MemoryThemeStorage() });
     const wrapper = mount(OverviewView, {
@@ -1283,5 +1316,292 @@ describe('overview failure surfaces (D-134/D-135 rules)', () => {
       expect(notice.text()).toBe(en.errors.network);
     }
     expect(wrapper.find('[data-testid="overview-empty"]').exists()).toBe(false);
+  });
+});
+
+/* ── Task 174: the §14.4 rolling-range controls (decision D-147) ──────── */
+
+/**
+ * The task-174 done-condition, executable (spec §14.4; decision
+ * D-147): the five rolling ranges render at the D-137 seam, the chosen
+ * range is passed to the server as D-139’s ISO-8601 grammar (a rolling
+ * window ending now, §10 — exact absolute-duration bounds, no zone),
+ * retention-aware disabling explains itself, and the range-keyed loads
+ * (history series + account timeline) re-run on selection, range, and
+ * refresh changes — with the shared failure surface when they fail.
+ */
+
+/** ISO 8601 UTC at millisecond precision with the `Z` designator. */
+const ISO_Z = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+
+/** The parsed range parameters of one dispatched history/events call. */
+function rangeParamsOf(call: RecordedCall): {
+  accountId: string;
+  metric: string | null;
+  from: string;
+  to: string;
+  hasMaxPoints: boolean;
+} {
+  const prefix = call.input.startsWith('/api/history?') ? '/api/history?' : '/api/events?';
+  const params = new URLSearchParams(call.input.slice(prefix.length));
+  return {
+    accountId: params.get('accountId') ?? '',
+    metric: params.get('metric'),
+    from: params.get('from') ?? '',
+    to: params.get('to') ?? '',
+    hasMaxPoints: params.has('maxPoints'),
+  };
+}
+
+/** The exact span a dispatched window covers, in ms. */
+function spanOf(call: RecordedCall): number {
+  const { from, to } = rangeParamsOf(call);
+  return Date.parse(to) - Date.parse(from);
+}
+
+describe('overview rolling-range controls (task 174, D-147)', () => {
+  it('mounts the control at the D-137 seam: identity card, range controls, metrics', async () => {
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    const wrapper = await mountView(backend);
+
+    expect(
+      wrapper
+        .findAll(
+          '[data-testid="account-overview-card"], [data-testid="history-range"], [data-testid="overview-metrics"]',
+        )
+        .map((node) => node.attributes('data-testid')),
+    ).toEqual(['account-overview-card', 'history-range', 'overview-metrics']);
+    // The refresh affordance sits beside the control (D-137’s loose
+    // end, discharged): re-anchoring the rolling window.
+    expect(wrapper.find('[data-testid="overview-refresh"]').exists()).toBe(true);
+  });
+
+  it('passes the default 7-day rolling window to the server in D-139’s grammar', async () => {
+    const beforeMount = Date.now();
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([
+        [
+          'acc-1',
+          quota({
+            metrics: [
+              metric({ metricKey: 'mcp-monthly', collectedAt: 1 }),
+              metric({ metricKey: 'tokens-5h', collectedAt: 1 }),
+            ],
+          }),
+        ],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+
+    // The §14.4 default is checked.
+    const checked = wrapper.find('[data-range-id="7d"] input');
+    expect((checked.element as HTMLInputElement).checked).toBe(true);
+
+    // The series request: the account, the FIRST metric key of the
+    // quota load (the wiring proof — per-metric charts are 175), the
+    // 7-day window as exact ISO-Z bounds ending now, no maxPoints
+    // (§13’s server-side default applies).
+    const history = backend.historyCalls.at(-1);
+    expect(history, 'a history request was dispatched').toBeDefined();
+    const historyParams = rangeParamsOf(history!);
+    expect(historyParams.accountId).toBe('acc-1');
+    expect(historyParams.metric).toBe('mcp-monthly');
+    expect(historyParams.from).toMatch(ISO_Z);
+    expect(historyParams.to).toMatch(ISO_Z);
+    expect(historyParams.hasMaxPoints).toBe(false);
+    expect(spanOf(history!)).toBe(7 * 86_400_000);
+    expect(Date.parse(historyParams.to)).toBeGreaterThanOrEqual(beforeMount);
+    expect(Date.parse(historyParams.to)).toBeLessThanOrEqual(Date.now());
+    expect(Date.parse(historyParams.from)).toBe(Date.parse(historyParams.to) - 7 * 86_400_000);
+
+    // The timeline request: account-level (no metric filter), the same
+    // window shape.
+    const events = backend.eventsCalls.at(-1);
+    expect(events, 'an events request was dispatched').toBeDefined();
+    const eventsParams = rangeParamsOf(events!);
+    expect(eventsParams.accountId).toBe('acc-1');
+    expect(eventsParams.metric).toBeNull();
+    expect(spanOf(events!)).toBe(7 * 86_400_000);
+  });
+
+  it('dispatches no history request without a metric vocabulary; the timeline still loads', async () => {
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ collectedAt: null, metrics: [] })]]),
+    });
+    const wrapper = await mountView(backend);
+
+    // No snapshot ⇒ no metric keys ⇒ nothing to request a series FOR.
+    expect(backend.historyCalls.length).toBe(0);
+    // The §12.2 timeline states account-level facts — it still loads,
+    // for the same 7-day default window.
+    expect(backend.eventsCalls.length).toBeGreaterThan(0);
+    expect(rangeParamsOf(backend.eventsCalls[0]!).accountId).toBe('acc-1');
+    // The control renders regardless — the range is selectable before
+    // any data exists.
+    expect(wrapper.find('[data-testid="history-range"]').exists()).toBe(true);
+  });
+
+  it('re-dispatches with the new window on a range change; a disabled option never dispatches', async () => {
+    const backend = new FakeOverviewBackend({
+      historyRetentionDays: 7,
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    const wrapper = await mountView(backend);
+
+    // Retention 7: the 14/30-day options are disabled, each with its
+    // explanation as text; the default stays selectable.
+    expect(wrapper.find('[data-range-id="14d"] [data-testid="history-range-reason"]').text()).toBe(
+      en.overview.range.disabledReason.replace('{days}', '7'),
+    );
+    expect(wrapper.find('[data-range-id="7d"] [data-testid="history-range-reason"]').exists()).toBe(
+      false,
+    );
+
+    await wrapper.find('[data-range-id="24h"] input').setChecked();
+    await settle();
+    const last = backend.historyCalls.at(-1);
+    expect(last, 'the 24-hour window was dispatched').toBeDefined();
+    expect(spanOf(last!)).toBe(24 * 3_600_000);
+    const eventsLast = backend.eventsCalls.at(-1);
+    expect(spanOf(eventsLast!)).toBe(24 * 3_600_000);
+
+    // The disabled 30-day option is inert — no dispatch, no selection.
+    const dispatched = backend.historyCalls.length;
+    await wrapper.find('[data-range-id="30d"] input').trigger('change');
+    await settle();
+    expect(backend.historyCalls.length).toBe(dispatched);
+    expect((wrapper.find('[data-range-id="30d"] input').element as HTMLInputElement).checked).toBe(
+      false,
+    );
+  });
+
+  it('falls back to the default range when a late retention disables the selection', async () => {
+    const backend = new FakeOverviewBackend({
+      historyRetentionDays: 7,
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    let releaseSettings!: () => void;
+    backend.settingsGate = new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+    const wrapper = await mountView(backend);
+
+    // While retention is unknown nothing is disabled: 30 days is an
+    // honest request (the server’s range report stays the authority).
+    expect(wrapper.find('[data-testid="history-range-reason"]').exists()).toBe(false);
+    await wrapper.find('[data-range-id="30d"] input').setChecked();
+    await settle();
+    expect(spanOf(backend.historyCalls.at(-1)!)).toBe(30 * 86_400_000);
+
+    // Retention 7 arrives: the selection reverts to the §14.4 default
+    // (always selectable — §11.3’s minimum retention equals it), the
+    // window re-dispatches as 7 days, and the disabled option explains
+    // itself.
+    releaseSettings();
+    await settle();
+    expect((wrapper.find('[data-range-id="7d"] input').element as HTMLInputElement).checked).toBe(
+      true,
+    );
+    expect(spanOf(backend.historyCalls.at(-1)!)).toBe(7 * 86_400_000);
+    expect(wrapper.find('[data-range-id="30d"] [data-testid="history-range-reason"]').text()).toBe(
+      en.overview.range.disabledReason.replace('{days}', '7'),
+    );
+  });
+
+  it('re-dispatches both loads for the newly selected account', async () => {
+    const backend = new FakeOverviewBackend({
+      accounts: [account(), account({ id: 'acc-2', label: 'Second' })],
+      quotaByAccount: new Map([
+        ['acc-1', quota({ metrics: [metric({ metricKey: 'tokens-5h', collectedAt: 1 })] })],
+        [
+          'acc-2',
+          quota({ metrics: [metric({ metricKey: 'weekly-quota', collectedAt: 1 })] }, 'acc-2'),
+        ],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+    expect(rangeParamsOf(backend.historyCalls.at(-1)!)).toMatchObject({
+      accountId: 'acc-1',
+      metric: 'tokens-5h',
+    });
+
+    await wrapper.find('[data-testid="overview-account-select"]').setValue('acc-2');
+    await settle();
+
+    // Both range-keyed loads re-ran for the new account — the series
+    // once the new metric vocabulary arrived, the timeline immediately.
+    expect(rangeParamsOf(backend.historyCalls.at(-1)!)).toMatchObject({
+      accountId: 'acc-2',
+      metric: 'weekly-quota',
+    });
+    expect(rangeParamsOf(backend.eventsCalls.at(-1)!)).toMatchObject({ accountId: 'acc-2' });
+  });
+
+  it('presents a refused history load beside its own retry, and the retry recovers', async () => {
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    backend.refuseNext = (call) => (call.input.startsWith('/api/history?') ? 500 : undefined);
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="api-error"]').text()).toBe(en.errors.codes.internal);
+    const retry = wrapper.find('[data-testid="overview-retry-history"]');
+    expect(retry.text()).toBe(en.overview.retryHistory);
+    const dispatched = backend.historyCalls.length;
+
+    await retry.trigger('click');
+    await settle();
+    expect(backend.historyCalls.length).toBe(dispatched + 1);
+    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+  });
+
+  it('presents a refused timeline load beside its own retry, and the retry recovers', async () => {
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    backend.refuseNext = (call) => (call.input.startsWith('/api/events?') ? 500 : undefined);
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="api-error"]').text()).toBe(en.errors.codes.internal);
+    const retry = wrapper.find('[data-testid="overview-retry-events"]');
+    expect(retry.text()).toBe(en.overview.retryEvents);
+    const dispatched = backend.eventsCalls.length;
+
+    await retry.trigger('click');
+    await settle();
+    expect(backend.eventsCalls.length).toBe(dispatched + 1);
+    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+  });
+
+  it('refresh re-runs the account’s data loads and re-anchors the rolling window', async () => {
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    const wrapper = await mountView(backend);
+    const quotaCalls = () =>
+      backend.calls.filter((call) => call.input.startsWith('/api/quota?')).length;
+    const before = {
+      quota: quotaCalls(),
+      history: backend.historyCalls.length,
+      events: backend.eventsCalls.length,
+    };
+    const firstTo = Date.parse(rangeParamsOf(backend.historyCalls.at(-1)!).to);
+
+    await wrapper.find('[data-testid="overview-refresh"]').trigger('click');
+    await settle();
+
+    // Exactly one more of each account-scoped load — the range never
+    // changed, so the watchers stayed quiet; the explicit refresh ran.
+    expect(quotaCalls()).toBe(before.quota + 1);
+    expect(backend.historyCalls.length).toBe(before.history + 1);
+    expect(backend.eventsCalls.length).toBe(before.events + 1);
+    // The window re-anchored: the refreshed `to` is not before the old.
+    expect(Date.parse(rangeParamsOf(backend.historyCalls.at(-1)!).to)).toBeGreaterThanOrEqual(
+      firstTo,
+    );
+    // And the refreshed span is still the selected 7 days.
+    expect(spanOf(backend.historyCalls.at(-1)!)).toBe(7 * 86_400_000);
   });
 });

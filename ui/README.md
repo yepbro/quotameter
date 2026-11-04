@@ -34,13 +34,13 @@ The server serves `index.html` for every non-`/api` path (spec §14.1 SPA
 fallback), and the router resolves the URL client-side — deep links work
 without server-side route tables.
 
-| Path        | Name       | View                             | Content task        |
-| ----------- | ---------- | -------------------------------- | ------------------- |
-| `/`         | `overview` | `src/views/OverviewView.vue`     | 172–173 (done), 174 |
-| `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)          |
-| `/settings` | `settings` | `src/views/SettingsView.vue`     | 179                 |
-| `/login`    | `login`    | `src/views/LoginView.vue`        | 180                 |
-| any other   | —          | redirect to `/` (decision D-131) | —                   |
+| Path        | Name       | View                             | Content task            |
+| ----------- | ---------- | -------------------------------- | ----------------------- |
+| `/`         | `overview` | `src/views/OverviewView.vue`     | 172–174 (done), 175–176 |
+| `/accounts` | `accounts` | `src/views/AccountsView.vue`     | 170 (done)              |
+| `/settings` | `settings` | `src/views/SettingsView.vue`     | 179                     |
+| `/login`    | `login`    | `src/views/LoginView.vue`        | 180                     |
+| any other   | —          | redirect to `/` (decision D-131) | —                       |
 
 The route table and the `createAppRouter(history)` factory (memory-history
 seam for component tests) live in `src/router/index.ts`. The `/login`
@@ -92,12 +92,12 @@ component every page shares.
 
 ### Architecture
 
-| Module                              | Owns                                                                                                                                                                          |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/api/client.ts`                 | `createApiClient({fetchImpl?, baseUrl?, timeoutMs?})` and the endpoint families (`health`, `status`, `quota`, `providers`, `accounts`, `settings`) — pure TypeScript, no Vue. |
-| `src/api/error.ts`                  | the `ApiClientError` taxonomy and the loose §13-envelope recognizer.                                                                                                          |
-| `src/api/index.ts`                  | the Vue half: `createApiClientPlugin()` (provide) / `useApi()` (inject), `useApiCall()` (the per-request composable), and the re-exports pages import.                        |
-| `src/components/ApiErrorNotice.vue` | the one presentation surface: an inline `role="alert"` region (`data-testid="api-error"`) rendering catalog sentences per taxonomy class.                                     |
+| Module                              | Owns                                                                                                                                                                                               |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/api/client.ts`                 | `createApiClient({fetchImpl?, baseUrl?, timeoutMs?})` and the endpoint families (`health`, `status`, `quota`, `providers`, `accounts`, `settings`, `history`, `events`) — pure TypeScript, no Vue. |
+| `src/api/error.ts`                  | the `ApiClientError` taxonomy and the loose §13-envelope recognizer.                                                                                                                               |
+| `src/api/index.ts`                  | the Vue half: `createApiClientPlugin()` (provide) / `useApi()` (inject), `useApiCall()` (the per-request composable), and the re-exports pages import.                                             |
+| `src/components/ApiErrorNotice.vue` | the one presentation surface: an inline `role="alert"` region (`data-testid="api-error"`) rendering catalog sentences per taxonomy class.                                                          |
 
 Request and response types come from the server's own TypeBox contracts
 (`src/schemas/api/*`) through **type-only imports** — erased at build time,
@@ -173,8 +173,10 @@ errors are handled consistently across pages, through the one surface.
 The accounts page (task 170) is the first real consumer — see
 [The accounts page (task 170)](#the-accounts-page-task-170).
 
-Future families join as methods on the client: `history`/`events`
-(task 161), `peakHours` (162), and `auth` (180). **The task-180 seam:**
+Future families join as methods on the client: `peakHours` (162) and
+`auth` (180) — the `history`/`events` families landed with task 174
+(the range-bearing GETs: ISO-8601 `from`/`to` boundaries, D-139's
+grammar). **The task-180 seam:**
 `ApiErrorNotice`'s `UNAUTHENTICATED` branch is where the login redirect
 (the named `login` route) hooks in; the error object's `code` field is the
 programmatic signal, so the guard can intercept `code === 'UNAUTHENTICATED'`
@@ -281,34 +283,38 @@ snapshots).
 
 ### Architecture
 
-| Module                                      | Owns                                                                                                                                 |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/views/OverviewView.vue`                | the five loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the attention wiring, the 174 seam   |
-| `src/components/AccountOverviewCard.vue`    | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`) |
-| `src/components/AccountStatusBadge.vue`     | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                               |
-| `src/components/AccountAttentionNotice.vue` | the account-level attention notice (task 173): the remedy sentence plus a link exactly where the remedy is a UI action               |
-| `src/components/MetricCard.vue`             | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                  |
-| `src/account-attention.ts`                  | the pure attention classifier (task 173, D-138): archived → disabled → keyless-environment → keyless → `null`                        |
-| `src/format.ts`                             | the pure `Intl` helpers (`formatEpochMs`, `formatRelative`, `formatQuotaNumber`, `windowHours`) — 174+ reuse these                   |
+| Module                                      | Owns                                                                                                                                    |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/views/OverviewView.vue`                | the seven loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the attention wiring, the range wiring |
+| `src/components/AccountOverviewCard.vue`    | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`)    |
+| `src/components/AccountStatusBadge.vue`     | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                                  |
+| `src/components/AccountAttentionNotice.vue` | the account-level attention notice (task 173): the remedy sentence plus a link exactly where the remedy is a UI action                  |
+| `src/components/MetricCard.vue`             | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                     |
+| `src/components/HistoryRangeControls.vue`   | the §14.4 rolling-range radio group (task 174, D-147): five options, retention-aware disabling with the explanation as text             |
+| `src/account-attention.ts`                  | the pure attention classifier (task 173, D-138): archived → disabled → keyless-environment → keyless → `null`                           |
+| `src/history-range.ts`                      | the pure §14.4 range vocabulary and boundary arithmetic (task 174, D-147), drift-pinned against the server's rolling-ranges module      |
+| `src/format.ts`                             | the pure `Intl` helpers (`formatEpochMs`, `formatRelative`, `formatQuotaNumber`, `windowHours`) — 174+ reuse these                      |
 
-The five loads: `accounts.list`, `providers.list` (display names **and**
-the metric-label catalog), `status.get`, `settings.get` (exactly the
-configured display time zone, §14.1), and `quota.get(selectedId)` —
-re-run on every selection change. The selection store is shared with
-the accounts page (`quotameter.selected-account`): the overview adds its
-own selector on the same store and re-runs the same reconciliation rule
-on every completed list load. The quota target is **list-validated** —
-the selected id dispatches only once a completed list load vouches for
-it, so a stale stored id (purged elsewhere) earns no flashing 404 — and
-switching the selection **clears** the previous account's quota before
-the new load: one account's values can never render as another's. A
-failed load is never a fake empty state: each call keeps its last-good
-copy beside its `ApiErrorNotice`; the data-defining loads (accounts,
-status, quota) carry retries with distinct accessible names, the two
-that degrade gracefully (providers → raw ids/keys, settings → the
-browser's time zone) render their notice alone. A status row that is
-absent (load in flight or failed) renders its slots as `Unknown` —
-"Never"/"None" state collection history only a loaded row vouches for.
+The five data-defining loads: `accounts.list`, `providers.list` (display names **and**
+the metric-label catalog), `status.get`, `settings.get` (the configured
+display time zone, §14.1, **and** the history retention, §14.4), and
+`quota.get(selectedId)` — re-run on every selection change. The selection
+store is shared with the accounts page (`quotameter.selected-account`): the
+overview adds its own selector on the same store and re-runs the same
+reconciliation rule on every completed list load. The quota target is
+**list-validated** — the selected id dispatches only once a completed list
+load vouches for it, so a stale stored id (purged elsewhere) earns no
+flashing 404 — and switching the selection **clears** the previous
+account's quota before the new load: one account's values can never render
+as another's. A failed load is never a fake empty state: each call keeps
+its last-good copy beside its `ApiErrorNotice`; the data-defining loads
+(accounts, status, quota) and the two range-keyed loads (history,
+events — task 174) carry retries with distinct accessible names, the
+two that degrade gracefully (providers → raw ids/keys, settings → the
+browser's time zone and unknown retention) render their notice alone. A
+status row that is absent (load in flight or failed) renders its slots as
+`Unknown` — "Never"/"None" state collection history only a loaded row
+vouches for.
 
 ### Honesty rules (the task's done-condition, spec §7.2/§8.4)
 
@@ -349,7 +355,7 @@ served by `page.route`.
 | -------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
 | initial load         | list load in flight                       | the loading line alone (distinct from error/empty, D-134's pending semantics)      |
 | quota pending        | selected, quota load in flight            | the identity card + the quota-loading line; no absence wording (absence is loaded) |
-| load failed          | any of the five loads                     | its own notice (+ retry where data-defining) — never a fake empty state            |
+| load failed          | any of the seven loads                    | its own notice (+ retry where carried) — never a fake empty state                  |
 | **no accounts**      | a completed list answered zero            | the titled guidance block + a link to `/accounts`                                  |
 | account attention    | archived / disabled / keyless (see below) | the attention notice between the identity card and the metrics region              |
 | no snapshot, blocked | `collectedAt` null **and** attention      | the honest line — collection is not running (the notice above carries the remedy)  |
@@ -411,13 +417,46 @@ documented fallback** — a stable adapter-defined identifier rendered
 verbatim when the provider declares no catalog or no entry. A new
 provider arrives with its labels; no UI rewrite (§8.1).
 
-### Task 174's layout seam
+### The rolling-range controls (task 174, decision D-147)
 
-The metric cards flow in a responsive grid inside
-`[data-testid="overview-metrics"]`; the rolling-range controls (spec
-§14.4, task 174) mount between the account card and that region — no
-placeholder UI is shipped for them. The charts (175+) read colors only
-through the token lookups (D-133) and reuse `src/format.ts`.
+The §14.4 filters — 24 hours, 3 days, 7 days (default), 14 days, 30
+days — render between the identity card (and its attention notice) and
+the metrics region, as a radio group (`HistoryRangeControls.vue`):
+fieldset + legend and five radios sharing one `name`, so keyboard
+support is native, and every retention-disabled option carries its
+explanation as real text beside its label ("Exceeds the N-day history
+retention") — never color alone.
+
+- **Disabling semantics.** Retention comes from the settings load the
+  page already performs (`app.historyRetentionDays`). A range is
+  disabled when its exact duration **strictly exceeds** the retention
+  (`durationMs > retentionDays × 86 400 000`); an exactly-equal range
+  stays selectable, which keeps the 7-day default available under the
+  §11.3 minimum retention. An unknown retention (settings pending or
+  failed) disables nothing — the server's own range report (D-139's
+  200-with-report) stays the authority — and a selection that becomes
+  disabled once retention arrives reverts to the default.
+- **The boundary rule: no zone anchors a request.** The selected range
+  is passed as D-139's grammar — ISO-8601 UTC `Z` boundaries
+  recomputed on every dispatch (`to = now`, `from = now − duration`),
+  D-068's exact absolute-duration arithmetic mirrored in
+  `src/history-range.ts` (UI-local constants **and union**, drift-pinned
+  both directions against the server's `src/util/rolling-ranges.ts` —
+  nothing from `src/**` crosses into the UI). The display time zone
+  never participates in a request (§10 — presentation only).
+- **The range-keyed loads.** The client's `history`/`events` families
+  carry the windows: the account-level §12.2 timeline keys on the
+  validated target and the range; the metric series additionally keys
+  on the first quota metric key (no snapshot ⇒ no metric vocabulary ⇒
+  no series request). Both re-run on selection and range changes,
+  render nothing yet (the charts are task 175/176, which inherit the
+  wired loads), and present failures through the shared notice with
+  their own distinctly-named retries. The refresh button beside the
+  control re-runs the account's data loads with a fresh "now" — it
+  re-anchors the rolling window (D-137's handed-forward affordance).
+
+The charts (175+) read colors only through the token lookups (D-133)
+and reuse `src/format.ts`.
 
 ## Layout
 
@@ -447,6 +486,10 @@ through the token lookups (D-133) and reuse `src/format.ts`.
   D-138; see [The overview page (task 172)](#the-overview-page-task-172)).
 - `src/components/AccountAttentionNotice.vue` — the overview's
   account-level attention notice (task 173).
+- `src/history-range.ts` + `src/components/HistoryRangeControls.vue` — the
+  §14.4 rolling-range vocabulary/boundary arithmetic and its control
+  (task 174, D-147; see
+  [The overview page (task 172)](#the-overview-page-task-172)).
 - `src/format.ts` — the pure `Intl` formatting helpers (task 172).
 - `src/i18n/` — the `en` message catalog (`en.ts`) and the
   `createAppI18n()` factory; see [Strings and the i18n

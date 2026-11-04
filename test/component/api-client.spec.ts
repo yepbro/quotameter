@@ -117,6 +117,79 @@ describe('API client (task 169, D-134)', () => {
       expect(lastCall().input).toBe('/api/quota?accountId=acc-main');
     });
 
+    it('history.get serializes the D-139 range query, maxPoints optional (task 174)', async () => {
+      const body = {
+        accountId: 'acc-main',
+        metric: 'tokens-5h',
+        unit: null,
+        limitType: null,
+        range: {
+          outcome: 'ok',
+          requestedFrom: 0,
+          requestedTo: 1,
+          effectiveFrom: 0,
+          effectiveTo: 1,
+          retentionHorizon: null,
+        },
+        downsampled: false,
+        resolutionMs: null,
+        sourcePointCount: 0,
+        points: [],
+      } as const;
+      const { client, lastCall, calls } = clientWith(() =>
+        Promise.resolve(jsonResponse(200, body)),
+      );
+      const from = '2026-11-03T12:00:00.000Z';
+      const to = '2026-11-04T12:00:00.000Z';
+      await expect(
+        client.history.get({ accountId: 'acc-main', metric: 'tokens-5h', from, to }),
+      ).resolves.toEqual(body);
+      expect(lastCall().method).toBe('GET');
+      // URLSearchParams percent-encodes the ISO colons — the server's
+      // query parser decodes them back; the spelling is pinned so a
+      // serialization change cannot drift silently.
+      expect(lastCall().input).toBe(
+        '/api/history?accountId=acc-main&metric=tokens-5h&from=2026-11-03T12%3A00%3A00.000Z&to=2026-11-04T12%3A00%3A00.000Z',
+      );
+      // GETs carry neither §15.3 leg.
+      expect(lastCall().headers[API_MUTATION_HEADER]).toBeUndefined();
+      expect(lastCall().headers['Content-Type']).toBeUndefined();
+      // maxPoints rides only when supplied — the server's §13 default
+      // applies otherwise.
+      await client.history.get({ accountId: 'a', metric: 'm', from, to, maxPoints: 2000 });
+      expect(calls.at(-1)?.input).toContain('&maxPoints=2000');
+    });
+
+    it('events.list serializes the account timeline query, metric optional (task 174)', async () => {
+      const body = {
+        accountId: 'acc-main',
+        metric: null,
+        range: {
+          outcome: 'ok',
+          requestedFrom: 0,
+          requestedTo: 1,
+          effectiveFrom: 0,
+          effectiveTo: 1,
+          retentionHorizon: null,
+        },
+        events: [],
+      } as const;
+      const { client, lastCall, calls } = clientWith(() =>
+        Promise.resolve(jsonResponse(200, body)),
+      );
+      const from = '2026-11-03T12:00:00.000Z';
+      const to = '2026-11-04T12:00:00.000Z';
+      await expect(client.events.list({ accountId: 'acc-main', from, to })).resolves.toEqual(body);
+      expect(lastCall().method).toBe('GET');
+      expect(lastCall().input).toBe(
+        '/api/events?accountId=acc-main&from=2026-11-03T12%3A00%3A00.000Z&to=2026-11-04T12%3A00%3A00.000Z',
+      );
+      expect(lastCall().headers[API_MUTATION_HEADER]).toBeUndefined();
+      // The optional metric filter serializes exactly when present.
+      await client.events.list({ accountId: 'acc-main', from, to, metric: 'tokens-5h' });
+      expect(calls.at(-1)?.input).toContain('&metric=tokens-5h');
+    });
+
     it('accounts.list resolves the accounts array', async () => {
       const { client } = clientWith(() =>
         Promise.resolve(jsonResponse(200, { accounts: [ACCOUNT] })),

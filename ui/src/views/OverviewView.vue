@@ -9,9 +9,16 @@ import { accountAttentionOf } from '../account-attention';
 import AccountAttentionNotice from '../components/AccountAttentionNotice.vue';
 import AccountOverviewCard from '../components/AccountOverviewCard.vue';
 import ApiErrorNotice from '../components/ApiErrorNotice.vue';
+import HistoryRangeControls from '../components/HistoryRangeControls.vue';
 import MetricCard from '../components/MetricCard.vue';
 import { useApi, useApiCall } from '../api';
 import { useAccountSelection } from '../account-selection';
+import {
+  HISTORY_RANGE_DEFAULT,
+  historyRangeIsoBounds,
+  isHistoryRangeWithinRetention,
+  type HistoryRangeId,
+} from '../history-range';
 
 // The account overview page (task 172, spec §14.3/§14.6; decision D-137):
 // the selected account's identity card (provider, label, plan, §7.3
@@ -27,15 +34,24 @@ import { useAccountSelection } from '../account-selection';
 // running and what to do about it), and the blocked-vs-waiting
 // no-snapshot wording.
 //
-// Five loads, one `useApiCall` each (D-134): the accounts list (selector
-// + identity), the providers list (provider names AND the metric-label
-// catalog, D-137), the §7.3 status rows, the settings view (exactly the
-// configured display time zone, §14.1), and the selected account's quota
-// (re-run on every selection change). A failed load is never a fake
-// empty state (D-135's rule): each call keeps its own last-good copy —
+// The five data-defining loads, one `useApiCall` each (D-134): the
+// accounts list (selector + identity), the providers list (provider
+// names AND the metric-label catalog, D-137), the §7.3 status rows,
+// the settings view (the configured display time zone §14.1 AND the
+// history retention §14.4), and the selected account's quota (re-run
+// on every selection change). A failed load is never a fake empty
+// state (D-135's rule): each of these keeps its own last-good copy —
 // a failed reload leaves the previous surface rendered beside the
 // failure notice — and the quota copy is cleared on a selection switch
 // so one account's values can never render as another's.
+//
+// Task 174 (D-147) adds the §14.4 rolling-range controls at the seam
+// below and two range-keyed loads beside the quota: the metric series
+// (`history`) and the account-level §12.2 timeline (`events`), both
+// re-run on selection and range changes with boundaries recomputed per
+// dispatch (a rolling range ends now, §10). The two new loads render
+// nothing yet — the charts are task 175/176, which inherit the wiring
+// — so they carry no last-good surface, only their failure notices.
 const { t } = useI18n();
 const api = useApi();
 const selection = useAccountSelection();
@@ -120,11 +136,11 @@ const accounts = computed(() => lastAccounts.value);
  * list load vouches for it — the list's own membership is the only
  * proof an id is requestable.
  */
-function validatedQuotaTarget(): string | null {
+const quotaTarget = computed((): string | null => {
   const id = selection.selectedId.value;
   if (id === null || !listLoaded.value) return null;
   return lastAccounts.value.some((account) => account.id === id) ? id : null;
-}
+});
 
 /** Re-runs the current target's quota load (the retry affordance). */
 function retryQuota(): void {
@@ -184,7 +200,7 @@ const noSnapshotText = computed(() =>
 // the previous account's values before loading — no cross-account
 // staleness, and no request at all while nothing is selected.
 watch(
-  validatedQuotaTarget,
+  quotaTarget,
   (accountId) => {
     lastQuota.value = null;
     resetQuota();
@@ -195,6 +211,151 @@ watch(
   },
   { immediate: true },
 );
+
+/* ── Task 174: the §14.4 rolling-range controls (decision D-147) ──────── */
+
+/**
+ * The selected range — page-local state (§14.4 names no persistence,
+ * and unlike the account id it is a query parameter of this page's
+ * history surface alone): default 7 days, never the selection store.
+ */
+const selectedRange = ref<HistoryRangeId>(HISTORY_RANGE_DEFAULT);
+
+/**
+ * The configured retention from the settings view this page already
+ * loads (§13's annotated `app.historyRetentionDays`); `null` while the
+ * load is pending or has failed. Unknown retention disables nothing —
+ * an unknown fact asserts nothing — and the server's own range report
+ * (D-139's 200-with-report) stays the authority on what is queryable.
+ */
+const retentionDays = computed(
+  (): number | null => settingsData.value?.settings.app.historyRetentionDays.value ?? null,
+);
+
+/**
+ * Whether the selection was auto-fell-back to the default (the notice
+ * below announces the change — a screen-reader user who just chose a
+ * longer range must hear that it moved, §14.1); the notice lives until
+ * the next manual pick.
+ */
+const rangeFellBack = ref(false);
+
+// A selected range that becomes disabled once retention is known falls
+// back to the default — always selectable, because §11.3's accepted
+// retention minimum (7 days) equals the default's duration.
+watch(
+  () => [selectedRange.value, retentionDays.value] as const,
+  ([range, retention]) => {
+    if (retention !== null && !isHistoryRangeWithinRetention(range, retention)) {
+      selectedRange.value = HISTORY_RANGE_DEFAULT;
+      rangeFellBack.value = true;
+    }
+  },
+);
+
+/** A manual pick: the range changes and any fallback notice retires. */
+function onRangeChange(range: HistoryRangeId): void {
+  selectedRange.value = range;
+  rangeFellBack.value = false;
+}
+
+/**
+ * The history load's target: the validated account plus its first
+ * quota metric key — the metric vocabulary arrives with the quota load
+ * (no snapshot ⇒ no keys ⇒ no history request; the timeline below
+ * still loads, it states account-level facts).
+ */
+const historyTarget = computed((): { accountId: string; metric: string } | null => {
+  const accountId = quotaTarget.value;
+  const metric = lastQuota.value?.metrics[0]?.metricKey;
+  return accountId === null || metric === undefined ? null : { accountId, metric };
+});
+
+/**
+ * The string key of {@link historyTarget} — the watcher's trigger. An
+ * object-returning computed would re-fire on every recompute (new
+ * object identity); the string is stable while the target is.
+ */
+const historyTargetKey = computed((): string | null => {
+  const target = historyTarget.value;
+  return target === null ? null : `${target.accountId}\u0000${target.metric}`;
+});
+
+// The two range-keyed loads (D-147). The boundaries are recomputed on
+// every dispatch — a rolling range ends "now" (§10), so each request
+// re-anchors the window. Nothing renders from the payloads yet: the
+// charts are task 175/176, which inherit these wired loads; failures
+// still render their notices and retries below.
+const {
+  error: historyError,
+  execute: loadHistory,
+  reset: resetHistory,
+} = useApiCall(() => {
+  const target = historyTarget.value;
+  if (target === null) {
+    // Unreachable on the wired paths (the watcher dispatches only on a
+    // non-null key) — loud, never a bogus request.
+    throw new Error('history load dispatched without a target');
+  }
+  const { from, to } = historyRangeIsoBounds(selectedRange.value, Date.now());
+  return api.history.get({ accountId: target.accountId, metric: target.metric, from, to });
+});
+const {
+  error: eventsError,
+  execute: loadEvents,
+  reset: resetEvents,
+} = useApiCall(() => {
+  const accountId = quotaTarget.value;
+  if (accountId === null) {
+    throw new Error('events load dispatched without a target');
+  }
+  const { from, to } = historyRangeIsoBounds(selectedRange.value, Date.now());
+  return api.events.list({ accountId, from, to });
+});
+
+// Each load re-runs on exactly its own dependencies: the account-level
+// §12.2 timeline keys on the validated target and the range; the
+// series additionally keys on the metric vocabulary (so a selection
+// switch resets it while the new quota loads, then dispatches once the
+// first metric key arrives).
+watch(
+  [quotaTarget, selectedRange],
+  ([accountId]) => {
+    resetEvents();
+    if (accountId !== null) void loadEvents();
+  },
+  { immediate: true },
+);
+watch(
+  [historyTargetKey, selectedRange],
+  ([key]) => {
+    resetHistory();
+    if (key !== null) void loadHistory();
+  },
+  { immediate: true },
+);
+
+/**
+ * Re-runs the selected account's data loads with a fresh "now" — the
+ * refresh affordance D-137 handed to this task: it re-anchors the
+ * rolling window and exercises the keep-last-good quota reload beyond
+ * the retry path.
+ */
+function refreshAccountData(): void {
+  if (quotaAccountId.value !== null) void loadQuota();
+  if (quotaTarget.value !== null) void loadEvents();
+  if (historyTarget.value !== null) void loadHistory();
+}
+
+/** Re-runs the history load (the retry affordance, target-guarded). */
+function retryHistory(): void {
+  if (historyTarget.value !== null) void loadHistory();
+}
+
+/** Re-runs the timeline load (the retry affordance, target-guarded). */
+function retryEvents(): void {
+  if (quotaTarget.value !== null) void loadEvents();
+}
 
 const statusRowOf = computed(() => {
   const rows = lastStatus.value?.accounts ?? [];
@@ -279,6 +440,30 @@ function optionText(account: AccountView): string {
         {{ t('overview.retryQuota') }}
       </button>
     </div>
+    <!-- The range-keyed loads' failures (task 174): the same notice +
+      distinct-retry pattern as the data-defining loads above. -->
+    <div v-if="historyError" class="load-failure">
+      <ApiErrorNotice :error="historyError" />
+      <button
+        type="button"
+        data-testid="overview-retry-history"
+        :disabled="historyTarget === null"
+        @click="retryHistory"
+      >
+        {{ t('overview.retryHistory') }}
+      </button>
+    </div>
+    <div v-if="eventsError" class="load-failure">
+      <ApiErrorNotice :error="eventsError" />
+      <button
+        type="button"
+        data-testid="overview-retry-events"
+        :disabled="quotaTarget === null"
+        @click="retryEvents"
+      >
+        {{ t('overview.retryEvents') }}
+      </button>
+    </div>
     <ApiErrorNotice v-if="providersError" :error="providersError" />
     <ApiErrorNotice v-if="settingsError" :error="settingsError" />
 
@@ -308,13 +493,39 @@ function optionText(account: AccountView): string {
           :now="nowMs"
         />
 
-        <!-- The account-level attention notice (task 173, D-138):
-          rendered only when a blocker exists — a healthy account sees
-          nothing here. -->
+        <!-- AccountAttentionNotice rendered when a blocker exists (task
+          173, D-138). -->
         <AccountAttentionNotice v-if="attention !== null" :attention="attention" />
 
-        <!-- Task 174's seam: the rolling-range controls mount above this
-          region (spec §14.4); the metric cards are the §14.3 surface. -->
+        <!-- Task 174 (§14.4, D-147): the rolling-range controls at the
+          D-137 seam — between the identity card (and its attention
+          notice) and the metrics region. The refresh beside them
+          re-anchors the rolling window (a range ends "now") and re-runs
+          the account's data loads. -->
+        <div class="history-controls">
+          <HistoryRangeControls
+            :model-value="selectedRange"
+            :retention-days="retentionDays"
+            @update:model-value="onRangeChange"
+          />
+          <button
+            type="button"
+            data-testid="overview-refresh"
+            :disabled="quotaTarget === null"
+            @click="refreshAccountData"
+          >
+            {{ t('overview.range.refresh') }}
+          </button>
+        </div>
+        <!-- The auto-fallback's announcement (a polite live region): a
+          changed selection must be heard, not only seen. -->
+        <p v-if="rangeFellBack" class="status" role="status" data-testid="history-range-fallback">
+          {{ t('overview.range.fallbackNotice') }}
+        </p>
+
+        <!-- The metric cards are the §14.3 surface; the §14.4 charts
+          (task 175/176) render from the range-keyed loads below this
+          region. -->
         <div class="metrics" data-testid="overview-metrics">
           <MetricCard
             v-for="metric in lastQuota?.metrics ?? []"
@@ -379,6 +590,7 @@ function optionText(account: AccountView): string {
 }
 
 .load-failure button,
+.history-controls button,
 .selector select {
   color: var(--qm-color-foreground);
   background-color: var(--qm-color-background);
@@ -386,6 +598,20 @@ function optionText(account: AccountView): string {
   border-radius: 4px;
   font: inherit;
   padding: 0.25rem 0.75rem;
+}
+
+.history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  margin-top: 0.75rem;
+}
+
+.history-controls button:disabled,
+.load-failure button:disabled {
+  color: var(--qm-color-muted);
+  cursor: not-allowed;
 }
 
 .selector {
@@ -413,8 +639,8 @@ function optionText(account: AccountView): string {
   color: var(--qm-color-foreground);
 }
 
-/* Task 174's layout seam: the cards flow as a responsive grid today;
-  the range controls will sit between the account card and this region. */
+/* The metric cards flow as a responsive grid; the range controls sit
+  between the account card and this region (§14.4). */
 .metrics {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
