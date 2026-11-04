@@ -62,44 +62,65 @@ async function mountShell(initial: string = '/') {
 }
 
 describe('App shell', () => {
-  it('renders the application title in the site header', async () => {
+  // Shell mounts carry the full overview pipeline (charts seam included,
+  // task 177) — the D-087/D-094 lesson from 177's landing: the default
+  // 5 s budget flakes under parallel-worktree load. 30 s house value.
+  it('renders the application title in the site header', { timeout: 30_000 }, async () => {
     const wrapper = await mountShell();
     expect(wrapper.find('h1').text()).toBe('Quotameter');
   });
 
-  it('renders the overview page with its no-accounts guidance block (task 173)', async () => {
-    const wrapper = await mountShell();
-    expect(wrapper.find('h2').text()).toBe('Overview');
-    // The healthy empty backend: the no-accounts guidance block with
-    // its CTA link — never a blank or broken page.
-    expect(wrapper.find('[data-testid="overview-empty"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="overview-empty-cta"]').attributes('href')).toBe('/accounts');
-    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
-  });
+  it(
+    'renders the overview page with its no-accounts guidance block (task 173)',
+    { timeout: 30_000 },
+    async () => {
+      const wrapper = await mountShell();
+      expect(wrapper.find('h2').text()).toBe('Overview');
+      // The healthy empty backend: the no-accounts guidance block with
+      // its CTA link — never a blank or broken page.
+      expect(wrapper.find('[data-testid="overview-empty"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="overview-empty-cta"]').attributes('href')).toBe(
+        '/accounts',
+      );
+      expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+    },
+  );
 
-  it('navigates with the three primary sections only (login is task 180)', async () => {
-    const wrapper = await mountShell();
-    const links = wrapper.findAll('nav a');
-    expect(links.map((link) => link.text())).toEqual(['Overview', 'Accounts', 'Settings']);
-  });
+  it(
+    'navigates with the three primary sections only (login is task 180)',
+    { timeout: 30_000 },
+    async () => {
+      const wrapper = await mountShell();
+      const links = wrapper.findAll('nav a');
+      expect(links.map((link) => link.text())).toEqual(['Overview', 'Accounts', 'Settings']);
+    },
+  );
 
   it.each([
     ['/settings', 'Settings'],
     ['/login', 'Login'],
-  ] as const)('direct navigation renders the %s view', async (path, heading) => {
-    const wrapper = await mountShell(path);
-    expect(wrapper.find('h2').text()).toBe(heading);
-    expect(wrapper.find('[data-testid="page-status"]').text()).toBe('Not implemented yet.');
-  });
+  ] as const)(
+    'direct navigation renders the %s view',
+    { timeout: 30_000 },
+    async (path, heading) => {
+      const wrapper = await mountShell(path);
+      expect(wrapper.find('h2').text()).toBe(heading);
+      expect(wrapper.find('[data-testid="page-status"]').text()).toBe('Not implemented yet.');
+    },
+  );
 
-  it('direct navigation renders the accounts view (task 170: real content)', async () => {
-    const wrapper = await mountShell('/accounts');
-    expect(wrapper.find('h2').text()).toBe('Accounts');
-    // The management page's honest empty state against the empty list.
-    expect(wrapper.find('[data-testid="accounts-empty"]').exists()).toBe(true);
-  });
+  it(
+    'direct navigation renders the accounts view (task 170: real content)',
+    { timeout: 30_000 },
+    async () => {
+      const wrapper = await mountShell('/accounts');
+      expect(wrapper.find('h2').text()).toBe('Accounts');
+      // The management page's honest empty state against the empty list.
+      expect(wrapper.find('[data-testid="accounts-empty"]').exists()).toBe(true);
+    },
+  );
 
-  it('navigates between sections through the nav links', async () => {
+  it('navigates between sections through the nav links', { timeout: 30_000 }, async () => {
     const wrapper = await mountShell();
     const accountsLink = wrapper.findAll('nav a').at(1);
     expect(accountsLink?.text()).toBe('Accounts');
@@ -112,31 +133,39 @@ describe('App shell', () => {
     expect(active.text()).toBe('Accounts');
   });
 
-  it('renders the theme control with the three modes, system by default', async () => {
-    const wrapper = await mountShell();
-    const select = wrapper.find('[data-testid="theme-select"]');
-    expect(select.exists()).toBe(true);
-    // The label is the select's accessible name (label[for] pairing).
-    expect(wrapper.find('label[for="theme-select"]').text()).toBe('Theme');
-    expect(select.element.value).toBe('system');
-    expect(wrapper.findAll('option').map((option) => option.text())).toEqual([
-      'System',
-      'Light',
-      'Dark',
-    ]);
-  });
+  it(
+    'renders the theme control with the three modes, system by default',
+    { timeout: 30_000 },
+    async () => {
+      const wrapper = await mountShell();
+      const select = wrapper.find('[data-testid="theme-select"]');
+      expect(select.exists()).toBe(true);
+      // The label is the select's accessible name (label[for] pairing).
+      expect(wrapper.find('label[for="theme-select"]').text()).toBe('Theme');
+      expect(select.element.value).toBe('system');
+      expect(wrapper.findAll('option').map((option) => option.text())).toEqual([
+        'System',
+        'Light',
+        'Dark',
+      ]);
+    },
+  );
 
-  it('selecting a mode applies it live through the data-theme attribute', async () => {
-    const wrapper = await mountShell();
-    const select = wrapper.find('[data-testid="theme-select"]');
+  it(
+    'selecting a mode applies it live through the data-theme attribute',
+    { timeout: 30_000 },
+    async () => {
+      const wrapper = await mountShell();
+      const select = wrapper.find('[data-testid="theme-select"]');
 
-    await select.setValue('dark');
-    await settleNavigation();
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
-    expect(select.element.value).toBe('dark');
+      await select.setValue('dark');
+      await settleNavigation();
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+      expect(select.element.value).toBe('dark');
 
-    await select.setValue('system');
-    await settleNavigation();
-    expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
-  });
+      await select.setValue('system');
+      await settleNavigation();
+      expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    },
+  );
 });

@@ -54,38 +54,50 @@ const healthyBody = healthyApiBody;
 const ROUTES = ['/', '/accounts', '/settings', '/login'] as const;
 
 describe('shared error wiring across pages (task 169, D-134)', () => {
-  it.each(ROUTES)('renders the shared notice on %s when the API is unreachable', async (path) => {
-    const fake = new FakeFetch(networkFailure());
-    const wrapper = await mountShell(path, fake.impl);
-    const notice = wrapper.find('[data-testid="api-error"]');
-    expect(notice.exists()).toBe(true);
-    expect(notice.text()).toBe(en.errors.network);
-    expect(notice.attributes('data-error-kind')).toBe('network');
-    // Every dispatched request went through the shared client to a §13
-    // route (the accounts page fires two loads; the probe pages one).
-    expect(fake.calls.length).toBeGreaterThan(0);
-    for (const call of fake.calls) {
-      expect(call.input.startsWith('/api/')).toBe(true);
-    }
-  });
+  // Shell mounts carry the full overview pipeline (charts seam included,
+  // task 177) — 2.7 s worst clean under the full suite, so the default
+  // 5 s budget flakes under parallel-worktree load (D-087/D-094 family,
+  // observed at 177's landing). Pinned to the 30 s house value.
+  it.each(ROUTES)(
+    'renders the shared notice on %s when the API is unreachable',
+    { timeout: 30_000 },
+    async (path) => {
+      const fake = new FakeFetch(networkFailure());
+      const wrapper = await mountShell(path, fake.impl);
+      const notice = wrapper.find('[data-testid="api-error"]');
+      expect(notice.exists()).toBe(true);
+      expect(notice.text()).toBe(en.errors.network);
+      expect(notice.attributes('data-error-kind')).toBe('network');
+      // Every dispatched request went through the shared client to a §13
+      // route (the accounts page fires two loads; the probe pages one).
+      expect(fake.calls.length).toBeGreaterThan(0);
+      for (const call of fake.calls) {
+        expect(call.input.startsWith('/api/')).toBe(true);
+      }
+    },
+  );
 
-  it.each(ROUTES)('renders no notice on %s when the API answers', async (path) => {
-    const fake = new FakeFetch((call) =>
-      Promise.resolve(jsonResponse(200, healthyBody(call.input))),
-    );
-    const wrapper = await mountShell(path, fake.impl);
-    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
-    // Real page content rendered beside the wiring: the overview's
-    // honest empty state (task 172), the accounts page's empty state
-    // (task 170), or the remaining placeholders' status line.
-    expect(
-      wrapper
-        .find(
-          '[data-testid="page-status"], [data-testid="overview-empty"], [data-testid="accounts-empty"]',
-        )
-        .exists(),
-    ).toBe(true);
-  });
+  it.each(ROUTES)(
+    'renders no notice on %s when the API answers',
+    { timeout: 30_000 },
+    async (path) => {
+      const fake = new FakeFetch((call) =>
+        Promise.resolve(jsonResponse(200, healthyBody(call.input))),
+      );
+      const wrapper = await mountShell(path, fake.impl);
+      expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+      // Real page content rendered beside the wiring: the overview's
+      // honest empty state (task 172), the accounts page's empty state
+      // (task 170), or the remaining placeholders' status line.
+      expect(
+        wrapper
+          .find(
+            '[data-testid="page-status"], [data-testid="overview-empty"], [data-testid="accounts-empty"]',
+          )
+          .exists(),
+      ).toBe(true);
+    },
+  );
 
   it('every page presents an envelope rejection through the same surface', async () => {
     // A hostile/other responder answering the §13 envelope: the pages

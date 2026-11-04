@@ -34,12 +34,16 @@ describe('app router', () => {
     expect(router.resolve('/login').name).toBe('login');
   });
 
+  // Direct navigation lazy-loads the page chunks (D-131) — the overview
+  // chunk pulls the chart seam's import graph, which under parallel-
+  // worktree load exceeded the default 5 s at 177's landing (D-087/
+  // D-094 family). 30 s house value.
   it.each([
     ['/', 'overview'],
     ['/accounts', 'accounts'],
     ['/settings', 'settings'],
     ['/login', 'login'],
-  ] as const)('direct navigation reaches %s', async (path, name) => {
+  ] as const)('direct navigation reaches %s', { timeout: 30_000 }, async (path, name) => {
     const router = createAppRouter(createMemoryHistory());
     await router.push(path);
     await router.isReady();
@@ -47,11 +51,15 @@ describe('app router', () => {
     expect(router.currentRoute.value.path).toBe(path);
   });
 
-  it('redirects unknown paths to the overview (no not-found page in §14)', async () => {
-    const router = createAppRouter(createMemoryHistory());
-    await router.push('/no/such/path');
-    await router.isReady();
-    expect(router.currentRoute.value.name).toBe('overview');
-    expect(router.currentRoute.value.path).toBe('/');
-  });
+  it(
+    'redirects unknown paths to the overview (no not-found page in §14)',
+    { timeout: 30_000 },
+    async () => {
+      const router = createAppRouter(createMemoryHistory());
+      await router.push('/no/such/path');
+      await router.isReady();
+      expect(router.currentRoute.value.name).toBe('overview');
+      expect(router.currentRoute.value.path).toBe('/');
+    },
+  );
 });
