@@ -1,10 +1,16 @@
-# Release workflow (spec §4.4, task 058).
+# Release workflow (spec §4.4, task 058; decisions D-008, D-152, task U-029).
 #
 # Publishes to npm only from a pushed vX.Y.Z tag, using npm trusted
 # publishing (OIDC) with provenance attestations. There are no long-lived
 # publish tokens in this repository: the only elevated permission is the
 # workflow-scoped id-token. One-time linking of this repository/workflow to
 # the npm package is documented in docs/release.md.
+#
+# The publish job never trusts the tag alone (D-008): it refuses to publish
+# unless the tagged commit carries a green `CI` check run (the same required
+# gate that protects `master`), then re-runs the artifact-critical gates
+# itself — the coverage-gated test suite, the web UI build, the build
+# verification, and the tarball allowlist — before the provenance publish.
 name: Release
 
 on:
@@ -13,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  checks: read # the green-CI gate reads the tagged commit's check runs
   id-token: write # npm trusted publishing / provenance
 
 jobs:
@@ -34,6 +41,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # npm ≥ 11.5 performs tokenless OIDC trusted publishing; the npm
+      # bundled with Node 22 (10.9.x) cannot. The pin and mechanism mirror
+      # ci.yml's bump step and the Dockerfile — keep the three in sync
+      # (pinned by test/unit/release-workflow.spec.ts).
+      - name: Update npm for OIDC trusted publishing
+        run: npm install -g npm@11.9.0
+
       - name: Verify the tag matches the package version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -42,6 +56,64 @@ jobs:
             echo "::error::Tag v$tag does not match package.json version $pkg"
             exit 1
           fi
+
+      # D-008 requires a green CI run on the tagged commit — a commit that
+      # passed CI on `master`. The full matrix (static checks, E2E,
+      # timezone matrix, install containers) ran there; these two checks
+      # verify it before this workflow publishes. Tags pushed before CI
+      # finished, pointing at a commit that never ran CI, or pointing off
+      # `master` (a green PR-head run does not qualify) are refused.
+      - name: Require a green CI run on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          relation="$(gh api "repos/${GITHUB_REPOSITORY}/compare/master...${GITHUB_SHA}" --jq .status)"
+          echo "master...${GITHUB_SHA}: ${relation}"
+          case "$relation" in
+            identical | behind) ;;
+            *)
+              echo "::error::The tagged commit is not on master (compare: ${relation}). Tags must point at a commit that passed CI on master (docs/release.md, Tagging)."
+              exit 1
+              ;;
+          esac
+          summary="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+            --jq '[.check_runs[] | select(.name == "CI")] | sort_by(.started_at) | last | if . == null then "" else "\(.status) \(.conclusion)" end')"
+          echo "Latest 'CI' check run on ${GITHUB_SHA}: ${summary:-none}"
+          case "$summary" in
+            'completed success')
+              echo "CI is green on the tagged commit."
+              ;;
+            'completed '*)
+              echo "::error::CI on the tagged commit concluded: ${summary#completed }. Publish refused."
+              exit 1
+              ;;
+            '')
+              echo "::error::No 'CI' check run exists on ${GITHUB_SHA}. Tags must point at a commit that passed CI on master (docs/release.md, Tagging)."
+              exit 1
+              ;;
+            *)
+              echo "::error::CI on the tagged commit is '${summary%% *}', not completed. Wait for the CI run to finish, then re-run this workflow."
+              exit 1
+              ;;
+          esac
+
+      # Release-relevant gate: the same coverage-gated suite CI's test job
+      # and `make check` run. Publishing a tag whose tests fail must never
+      # happen, even when the tagged commit's CI run was green.
+      - name: Run the test suite
+        run: npm run test:ci
+
+      # The published tarball ships the prebuilt web UI (spec §3, §17.2: no
+      # install-time build). DIST_DIR stays unset, so the build writes to
+      # ui/dist — the location the package manifest's `files` allowlist
+      # covers once task 184 lands it. Building before check:package and
+      # publish means the tarball check validates the built artifacts from
+      # the moment the allowlist knows about them.
+      - name: Build the web UI
+        run: npm run build:ui
+
+      - name: Verify build artifacts
+        run: npm run verify:build
 
       - name: Check tarball contents against the allowlist
         run: npm run check:package
