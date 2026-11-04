@@ -15,6 +15,16 @@ updates:
       prefix: 'chore(deps)'
     labels:
       - dependencies
+    ignore:
+      # TypeScript 7.0 (native compiler, 2026-07) ships without the programmatic
+      # API that typescript-eslint and vue-tsc/Volar embed: `npm ci` fails ERESOLVE
+      # on the typescript-eslint peer ">=4.8.4 <6.1.0" (PR #9, closed 2026-11-05).
+      # Hold the 6.x line — major bumps are ignored (7.1 would open red PRs until
+      # typescript-eslint supports the 7.x API, typescript-eslint#10940); 6.x
+      # minor/patch bumps stay enabled. Drop this rule when we migrate to 7.1+.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /

@@ -25,6 +25,8 @@ Weekly updates (npm + github-actions, `chore(deps)` / `chore(ci)` prefixes). Mer
 1. All must be `CLEAN` (branch protection requires an up-to-date branch), so merge **one at a time**.
 2. After each merge the rest become `BEHIND` — comment `@dependabot rebase` on each and wait for its CI to pass.
 
+Held updates: `typescript` major bumps are ignored in `dependabot.yml` (since 2026-11-05) — TypeScript 7.0 has no programmatic API, so `typescript-eslint` (peer `<6.1.0`) and `vue-tsc`/Volar cannot run on it; see the rule comment there. Revisit when TypeScript 7.1 ships a stable API and typescript-eslint supports it (typescript-eslint#10940).
+
 ## Releases
 
 - npm publishing happens **only from CI** on a pushed `vX.Y.Z` tag (`.github/workflows/release.yml`, OIDC trusted publishing, provenance; no tokens in the repo). `private: true` stays in `package.json`; the release workflow removes it.
