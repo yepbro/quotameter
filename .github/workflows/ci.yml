@@ -82,7 +82,15 @@ jobs:
     # (D-103) the suite's outcome pins assume. The image tag carries the
     # matrix's Node version; no setup-node is needed inside the container.
     runs-on: ubuntu-latest
-    container: node:${{ matrix.node }}
+    container:
+      image: node:${{ matrix.node }}
+      # Non-root: the permission-refusal arms (§6.3's 0700/0600 enforcement,
+      # EACCES paths) are meaningless for root, which bypasses file modes.
+      # The image's own `node` user and its /home/node keep ownership
+      # in-image — no mounted-home games.
+      options: --user node
+    env:
+      HOME: /home/node
     strategy:
       fail-fast: false
       # Spec §4.4/§17.2: cover Node.js 22 including the declared minimum

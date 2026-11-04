@@ -33,7 +33,11 @@ jobs:
     # node container too — the deterministic systemd-less class per job
     # (D-160 and its successor correction in DECISIONS.md).
     runs-on: ubuntu-latest
-    container: node:22.13.0
+    container:
+      image: node:22.13.0
+      options: --user node
+    env:
+      HOME: /home/node
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
