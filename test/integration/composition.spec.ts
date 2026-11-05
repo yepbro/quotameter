@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { QuotameterApp } from '../../src/server/app';
@@ -94,6 +94,8 @@ interface ComposeOptions {
   /** Extra environment beside the directory overrides. */
   readonly env?: Readonly<Record<string, string>>;
   readonly behavior?: ProviderBehavior;
+  /** Overrides the served built-UI directory — the `staticRoot` seam. */
+  readonly staticRoot?: string;
 }
 
 /** What {@link compose} hands the test body. */
@@ -138,6 +140,7 @@ async function withComposedApp(options: ComposeOptions, body: (h: Harness) => Pr
       logger: createLogger({ level: 'info', destination: sink }),
       providers: [providerOf(behavior)],
       port: 0,
+      ...(options.staticRoot === undefined ? {} : { staticRoot: options.staticRoot }),
     });
     const app = new QuotameterApp({ components: composed.components });
     await app.start();
@@ -746,6 +749,53 @@ describe('composeApplication — environment-sourced keys (spec §6.3)', () => {
           expect(h.sink.lines().join('\n')).not.toContain(MARKER_KEY_2);
         },
       );
+    },
+  );
+});
+
+describe('composeApplication — the staticRoot seam (§14.1)', () => {
+  it(
+    'serves the overridden built-UI directory, SPA fallback included',
+    { timeout: 20_000 },
+    async () => {
+      await withTempDir(async (dir) => {
+        const configDir = join(dir.path, 'config');
+        await mkdir(configDir, { recursive: true, mode: 0o700 });
+        await writeConfigFile(configFilePath(configDir), { app: { timezone: 'UTC' } });
+        // A stand-in built UI: one shell file the assertions can recognize.
+        const uiDir = join(dir.path, 'ui-dist');
+        await mkdir(uiDir, { recursive: true });
+        await writeFile(join(uiDir, 'index.html'), '<!doctype html><title>stand-in</title>');
+
+        const composed = await composeApplication({
+          env: {
+            QUOTAMETER_CONFIG_DIR: configDir,
+            QUOTAMETER_DATA_DIR: join(dir.path, 'data'),
+          },
+          clock: createFixedClock(T0),
+          logger: createLogger({ level: 'warn', destination: createMemoryLogSink() }),
+          providers: [providerOf(createBehavior())],
+          port: 0,
+          staticRoot: uiDir,
+        });
+        const app = new QuotameterApp({ components: composed.components });
+        await app.start();
+        try {
+          // The root serves the static shell; a UI deep link falls back to
+          // it (§14.1) — the same file, not an API envelope.
+          const root = await composed.httpServer.server.inject({ method: 'GET', url: '/' });
+          expect(root.statusCode).toBe(200);
+          expect(root.body).toContain('<title>stand-in</title>');
+          const deepLink = await composed.httpServer.server.inject({
+            method: 'GET',
+            url: '/accounts',
+          });
+          expect(deepLink.statusCode).toBe(200);
+          expect(deepLink.body).toContain('<title>stand-in</title>');
+        } finally {
+          await app.stop();
+        }
+      });
     },
   );
 });

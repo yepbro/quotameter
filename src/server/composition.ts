@@ -101,6 +101,13 @@ export interface ComposeApplicationOptions {
    * (minimum 1) deliberately cannot express.
    */
   readonly port?: number;
+  /**
+   * Overrides the served built-UI directory — the composition's test seam
+   * for environments whose frontend build lands outside the package tree
+   * (the container `DIST_DIR` volume; spec §14.1's `ui/dist` stays the
+   * production default the listener resolves on its own).
+   */
+  readonly staticRoot?: string;
 }
 
 /** The assembled application {@link composeApplication} returns. */
@@ -359,6 +366,7 @@ export async function composeApplication(
   const httpServer = createHttpServerComponent({
     host: config.server?.host ?? CONFIG_DEFAULTS.server.host,
     port: options.port ?? config.server?.port ?? CONFIG_DEFAULTS.server.port,
+    ...(options.staticRoot === undefined ? {} : { staticRoot: options.staticRoot }),
     auth: {
       mode: config.auth?.mode ?? CONFIG_DEFAULTS.auth.mode,
       passwordConfigured: () => reloader.current().config.auth?.passwordHash !== undefined,
