@@ -93,8 +93,20 @@ function guardWaitMarker(): { isAlive?: (pid: number) => boolean } {
   };
 }
 
-/** Blocks the child's main thread until `condition` holds (bounded). */
-function blockUntil(condition: () => boolean, timeoutMs = 15_000): void {
+/**
+ * Blocks the child's main thread until `condition` holds (bounded). The
+ * bound must outlast one in-pool boot of the sibling the orchestration
+ * waits for (worst ≈5.5 s measured in a full coverage `make check` under
+ * the six-hog rig, pool load ~16 — U-044/D-163) while staying finite so a
+ * parked child can never outlive a dead parent — and it must strictly
+ * exceed the spec-side marker-wait ceiling (`MARKER_WAIT_TIMEOUT_MS`,
+ * 20 s): the child's park clock starts at its own marker write, the
+ * parent's wait for the next marker only after observing it and spawning
+ * the sibling, so an equal ceiling would put the child's deadline first
+ * (the review round's P3-1). 25 s holds ≈4.5× the boot worst (D-094's
+ * bar is ≈3×) with that observe-and-spawn latency to spare.
+ */
+function blockUntil(condition: () => boolean, timeoutMs = 25_000): void {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     if (Date.now() > deadline) {
