@@ -179,6 +179,8 @@ class FakeSettingsBackend {
   };
   /** A one-shot refusal for the next matching call (the error arms). */
   refuseNext: ((call: RecordedCall) => ReturnType<typeof jsonResponse> | undefined) | null = null;
+  /** While set, the settings route waits for this promise (the initial-state arm). */
+  settingsGate: Promise<void> | null = null;
 
   constructor(
     settings: SettingsResponse = settingsResponse(),
@@ -186,7 +188,16 @@ class FakeSettingsBackend {
   ) {
     this.state = settings;
     this.providers = providers;
-    this.fake = new FakeFetch((call) => Promise.resolve(this.route(call)));
+    this.fake = new FakeFetch((call) => this.answer(call));
+  }
+
+  /** The gated settings answer: while `settingsGate` is held, the page's
+   * initial load stays pending (the loading-line arm). */
+  private async answer(call: RecordedCall): Promise<ReturnType<typeof jsonResponse>> {
+    if (call.method === 'GET' && call.input === '/api/settings' && this.settingsGate !== null) {
+      await this.settingsGate;
+    }
+    return this.route(call);
   }
 
   get impl(): FakeFetch['impl'] {
@@ -276,6 +287,30 @@ function putsOf(backend: FakeSettingsBackend): RecordedCall[] {
 /* ── The read-only surfaces and annotations ───────────────────────────── */
 
 describe('settings page: loads and read-only surfaces (task 179, §14.5)', () => {
+  it('renders the loading line while the settings load is in flight — never an error, never a fake page', async () => {
+    // The initial-state pin D-138 pinned for the overview only: the page
+    // states its loading honestly until the first answer arrives (the
+    // suite's settingsGate holds the GET /api/settings answer).
+    const backend = new FakeSettingsBackend();
+    let releaseSettings!: () => void;
+    backend.settingsGate = new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+    const wrapper = await mountView(backend);
+
+    const loading = wrapper.find('[data-testid="settings-loading"]');
+    expect(loading.exists()).toBe(true);
+    expect(loading.text()).toBe(en.settings.loading);
+    expect(wrapper.find('[data-testid="settings-general"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="settings-facts"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+
+    releaseSettings();
+    await settle();
+    expect(wrapper.find('[data-testid="settings-loading"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="settings-general"]').exists()).toBe(true);
+  });
+
   it('renders the facts, paths, forms, and schedule from the served view', async () => {
     const backend = new FakeSettingsBackend();
     const wrapper = await mountView(backend);

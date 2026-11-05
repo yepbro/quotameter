@@ -11,6 +11,12 @@ import {
   type StatusAccountView,
   type StatusResponse,
 } from '../../src/schemas/api/status';
+import {
+  LIMIT_TYPES,
+  METRIC_UNITS,
+  type LimitType,
+  type MetricUnit,
+} from '../../src/schemas/metrics';
 import OverviewView from '../../ui/src/views/OverviewView.vue';
 import MetricHistoryChart from '../../ui/src/components/MetricHistoryChart.vue';
 import { accountAttentionOf, type AccountAttention } from '../../ui/src/account-attention';
@@ -626,6 +632,106 @@ describe('overview metric cards: the §8.4 value matrix renders honestly', () =>
     );
     // The collection fact renders from the status row.
     expect(wrapper.find('[data-testid="overview-last-success"]').text()).toContain('1 hour ago');
+  });
+
+  it('renders every §8.4 limitType — the complete vocabulary, closed by the frozen enum', async () => {
+    // Task 182 (D-165): the quota-type switch's five branches were only
+    // three before (ROLLING_WINDOW, WEEKLY, MONTHLY) — DAILY and the
+    // OTHER fallback arm never rendered. The table is driven by the
+    // model's frozen enum so a future member fails here until it gains a
+    // sentence (windowSeconds null: the window suffix is its own arm
+    // below).
+    const limitTypePhrase: Record<LimitType, string> = {
+      ROLLING_WINDOW: en.overview.metric.limitType.rollingWindow,
+      DAILY: en.overview.metric.limitType.daily,
+      WEEKLY: en.overview.metric.limitType.weekly,
+      MONTHLY: en.overview.metric.limitType.monthly,
+      OTHER: en.overview.metric.limitType.other,
+    };
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([
+        [
+          'acc-1',
+          quota({
+            metrics: LIMIT_TYPES.map((limitType) =>
+              metric({
+                metricKey: `metric-${limitType}`,
+                limitType,
+                windowSeconds: null,
+              }),
+            ),
+          }),
+        ],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+
+    for (const limitType of LIMIT_TYPES) {
+      expect(cardOf(wrapper, `metric-${limitType}`).find('.quota-type').text()).toBe(
+        limitTypePhrase[limitType],
+      );
+    }
+  });
+
+  it('renders every §8.4 unit beside an absolute value — including percent as the unit', async () => {
+    // TOKENS never rendered before, and a PERCENT-unit metric WITH
+    // absolute values (§8.4 permits it: percentages are the unit the
+    // provider reports) never did either — the explicit-unit rule
+    // (§14.3) renders "42 percent", not a bare number and not a
+    // re-suffixed %.
+    const unitWord: Record<MetricUnit, string> = {
+      TOKENS: en.overview.metric.unit.tokens,
+      CREDITS: en.overview.metric.unit.credits,
+      REQUESTS: en.overview.metric.unit.requests,
+      PERCENT: en.overview.metric.unit.percent,
+    };
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([
+        [
+          'acc-1',
+          quota({
+            metrics: METRIC_UNITS.map((unit) =>
+              metric({ metricKey: `metric-${unit}`, unit, used: 42, limit: 100 }),
+            ),
+          }),
+        ],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+
+    for (const unit of METRIC_UNITS) {
+      expect(ddOf(cardOf(wrapper, `metric-${unit}`), 'metric-used')).toBe(`42 ${unitWord[unit]}`);
+    }
+  });
+
+  it('a rolling window with a non-integral length states the regime without the window phrase', async () => {
+    // The `windowHours === undefined` arm: §8.4 window lengths are seconds
+    // and only whole hours get the "· N-hour window" suffix — a 90-minute
+    // window must not round, truncate, or invent a phrase.
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ windowSeconds: 5_400 })] })]]),
+    });
+    const wrapper = await mountView(backend);
+
+    const quotaType = cardOf(wrapper, 'tokens-5h').find('.quota-type').text();
+    expect(quotaType).toBe(en.overview.metric.limitType.rollingWindow);
+  });
+
+  it('an invalid metric without a reason states the Unknown reason — never a bare prefix', async () => {
+    // The `invalidReason ?? Unknown` arm (§8.4 permits a null reason
+    // beside isValid false): the sentence stays grammatical and honest —
+    // the absence is the explicit unknown, per the §7.2 never-zero
+    // discipline's display half.
+    const backend = new FakeOverviewBackend({
+      quotaByAccount: new Map([
+        ['acc-1', quota({ metrics: [metric({ isValid: false, invalidReason: null })] })],
+      ]),
+    });
+    const wrapper = await mountView(backend);
+
+    expect(cardOf(wrapper, 'tokens-5h').find('[data-testid="metric-invalid"]').text()).toBe(
+      en.overview.metric.invalidValue.replace('{reason}', en.overview.metric.unknown),
+    );
   });
 });
 
@@ -1615,6 +1721,41 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     expect(wrapper.find('[data-range-id="30d"] [data-testid="history-range-reason"]').text()).toBe(
       en.overview.range.disabledReason.replace('{days}', '7'),
     );
+  });
+
+  it('announces the retention fallback in a polite live region and retires it on the next manual pick', async () => {
+    // The D-147 review-round addition never pinned: the auto-fallback is a
+    // SELECTION CHANGE the user did not make — §14.1 demands it heard, not
+    // only seen, so the live region states it once and retires with the
+    // next manual pick (a permanent notice would train readers to ignore
+    // the region).
+    const backend = new FakeOverviewBackend({
+      historyRetentionDays: 7,
+      quotaByAccount: new Map([['acc-1', quota({ metrics: [metric({ collectedAt: 1 })] })]]),
+    });
+    let releaseSettings!: () => void;
+    backend.settingsGate = new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.find('[data-testid="history-range-fallback"]').exists()).toBe(false);
+    await wrapper.find('[data-range-id="30d"] input').setChecked();
+    await settle();
+
+    releaseSettings();
+    await settle();
+    const announcement = wrapper.find('[data-testid="history-range-fallback"]');
+    expect(announcement.exists()).toBe(true);
+    expect(announcement.attributes('role')).toBe('status');
+    expect(announcement.text()).toBe(en.overview.range.fallbackNotice);
+
+    // The next manual pick owns the selection again — the notice retires
+    // and a fresh cycle (unknown retention keeping everything selectable)
+    // starts clean.
+    await wrapper.find('[data-range-id="24h"] input').setChecked();
+    await settle();
+    expect(wrapper.find('[data-testid="history-range-fallback"]').exists()).toBe(false);
   });
 
   it('re-dispatches both loads for the newly selected account', async () => {

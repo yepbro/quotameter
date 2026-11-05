@@ -8,6 +8,7 @@ import { createAppI18n } from '../../ui/src/i18n';
 import { createAppRouter } from '../../ui/src/router';
 import { createSession } from '../../ui/src/session';
 import { createAppTheme } from '../../ui/src/theme';
+import { en } from '../../ui/src/i18n/en';
 import { FakeThemeMedia, MemoryThemeStorage } from '../helpers/theme';
 import { FakeFetch, jsonResponse, healthyApiBody } from '../helpers/api';
 
@@ -224,6 +225,67 @@ describe('App shell', () => {
       expect(assign).toHaveBeenCalledWith('/');
       expect(session.state.value).toBe('unknown');
       assign.mockRestore();
+    },
+  );
+
+  it(
+    'locks and re-labels the sign-out control while the request is pending — no re-entry (task 182)',
+    { timeout: 30_000 },
+    async () => {
+      // The §14.1 pending-state pin: the control states its in-flight
+      // state as text and refuses a second dispatch while the logout is
+      // unanswered (the handler's pending guard — a double sign-out is a
+      // double document reload in the making).
+      const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
+      let releaseLogout!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseLogout = resolve;
+      });
+      const stalling = new FakeFetch((call) =>
+        call.input === '/api/auth/logout'
+          ? gate.then(() => jsonResponse(200, { revoked: true }))
+          : Promise.resolve(jsonResponse(200, healthyApiBody(call.input))),
+      );
+      const router = createAppRouter(createMemoryHistory());
+      await router.push('/settings');
+      await router.isReady();
+      const wrapper = mount(App, {
+        global: {
+          plugins: [
+            router,
+            createAppI18n(),
+            createAppTheme({ storage: new MemoryThemeStorage(), media: new FakeThemeMedia() }),
+            createApiClientPlugin({ fetchImpl: stalling.impl }),
+            createAccountSelection({ storage: new MemoryThemeStorage() }),
+            createSession(),
+          ],
+        },
+      });
+      await settleNavigation();
+      try {
+        const button = wrapper.find('[data-testid="session-signout"]');
+        await button.trigger('click');
+        await settleNavigation();
+
+        expect(
+          (button.element as HTMLButtonElement).disabled,
+          'the control locks while pending',
+        ).toBe(true);
+        expect(button.text()).toBe(en.app.session.signOutPending);
+
+        // A second click during the pending window dispatches nothing.
+        await button.trigger('click');
+        await settleNavigation();
+        expect(stalling.calls.filter((call) => call.input === '/api/auth/logout')).toHaveLength(1);
+
+        releaseLogout();
+        await settleNavigation();
+        expect(stalling.calls.filter((call) => call.input === '/api/auth/logout')).toHaveLength(1);
+        expect(assign).toHaveBeenCalledTimes(1);
+        expect(assign).toHaveBeenCalledWith('/');
+      } finally {
+        assign.mockRestore();
+      }
     },
   );
 

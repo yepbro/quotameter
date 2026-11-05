@@ -928,7 +928,15 @@ through `t()` from `useI18n()`. Components never carry string literals.
   catalog fails; a catalog key referenced nowhere fails (dead keys die
   with their pages — there are no reserved namespaces); a `t()` call
   whose argument is not a static string literal fails (dynamic keys
-  would be invisible to both directions).
+  would be invisible to both directions). Since task 182 (decision
+  D-165) the interpolation seam is proven too: every `{placeholder}` a
+  message carries is supplied at EVERY call site (or by the closed
+  chart-template table — the keys `MetricHistoryChart` renders raw and
+  the chart builder interpolates itself), no supplied name is dead, and
+  every key renders through the real composer (paramless verbatim,
+  parameterized without residual braces) — a drifted or half-supplied
+  placeholder fails the suite instead of rendering literal braces on
+  screen.
 - **The attribute blind spot is closed twice** (decision D-131 recorded
   it, D-132 closes it): ESLint's `@intlify/vue-i18n/no-raw-text` reads
   text nodes only, so it is configured with the rule's `attributes`

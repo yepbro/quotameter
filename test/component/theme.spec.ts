@@ -196,6 +196,94 @@ describe('theme controller (spec §14.1)', () => {
     expect(failures.map((error) => error.message).join('\n')).toMatch(/createAppTheme/);
   });
 
+  it('reads window.localStorage by default — the composition root wiring (task 182)', async () => {
+    // The default-seam arm the account-selection store already carries:
+    // `createAppTheme()` with no options resolves the production seams
+    // itself, so the persisted choice is honored without injection.
+    const original = window.localStorage.getItem(THEME_STORAGE_KEY);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, 'dark');
+      const controller = createAppTheme();
+      const wrapper = await mountProbe(controller);
+      expect(controller.theme.value).toBe('dark');
+      wrapper.unmount();
+    } finally {
+      if (original === null) window.localStorage.removeItem(THEME_STORAGE_KEY);
+      else window.localStorage.setItem(THEME_STORAGE_KEY, original);
+      document.documentElement.removeAttribute('data-theme');
+    }
+  });
+
+  it('wires window.matchMedia with the prefers-color-scheme query by default (task 182)', async () => {
+    // Only the media seam rides the default here (the storage seam is
+    // the previous test's subject, injected so this arm cannot inherit
+    // its state): the query is pinned and the seam proven live.
+    const hadOwn = Object.hasOwn(window, 'matchMedia');
+    const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+    const originalMatchMedia = window.matchMedia;
+    const captured: string[] = [];
+    const media = new FakeThemeMedia();
+    try {
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        writable: true,
+        value: (query: string) => {
+          captured.push(query);
+          return media;
+        },
+      });
+      const controller = createAppTheme({ storage: new MemoryThemeStorage() });
+      const wrapper = await mountProbe(controller);
+      expect(captured).toEqual(['(prefers-color-scheme: dark)']);
+
+      // The seam is live: the OS preference flip moves `system` mode.
+      media.setPrefersDark(true);
+      await nextTick();
+      expect(controller.resolvedTheme.value).toBe('dark');
+      wrapper.unmount();
+    } finally {
+      if (hadOwn && originalDescriptor !== undefined) {
+        Object.defineProperty(window, 'matchMedia', originalDescriptor);
+      } else {
+        Reflect.deleteProperty(window, 'matchMedia');
+        // The prototype method stays untouched by the own-property dance.
+        expect(window.matchMedia).toBe(originalMatchMedia);
+      }
+    }
+  });
+
+  it('degrades to the in-memory default when window.localStorage itself throws (task 182)', async () => {
+    // The locked-down-context arm (`defaultStorage()`'s catch): reading
+    // the storage property throws when all cookies are blocked — the
+    // choice then lives in memory, never breaking the shell (§14.1's
+    // persistence holds wherever the browser allows reading, and
+    // nowhere else is it possible). The media seam is injected so the
+    // resolved-mode assertions state THIS arm's behavior, not
+    // happy-dom's real preference answer.
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    expect(descriptor?.configurable, 'happy-dom exposes a configurable localStorage').toBe(true);
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied for this document', 'SecurityError');
+      },
+    });
+    try {
+      const controller = createAppTheme({ media: new FakeThemeMedia() });
+      const wrapper = await mountProbe(controller);
+      expect(controller.theme.value).toBe('system');
+      expect(controller.resolvedTheme.value).toBe('light');
+      expect(() => controller.setTheme('dark')).not.toThrow();
+      await nextTick();
+      expect(controller.theme.value).toBe('dark');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+      wrapper.unmount();
+    } finally {
+      if (descriptor !== undefined) Object.defineProperty(window, 'localStorage', descriptor);
+      document.documentElement.removeAttribute('data-theme');
+    }
+  });
+
   it('stops the attribute effect and the media listener on app unmount', async () => {
     const media = new FakeThemeMedia();
     const { controller } = controllerWith({}, media);

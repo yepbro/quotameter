@@ -233,9 +233,39 @@ function bodyOf(call: RecordedCall): Record<string, unknown> {
   return JSON.parse(call.body ?? '{}') as Record<string, unknown>;
 }
 
+/** A facts-row value by its label text (the manage card's dt/dd pairs). */
+function cardFactOf(wrapper: VueWrapper, label: string): string {
+  const row = wrapper
+    .findAll('[data-testid="account-card"] .facts div')
+    .find((div) => div.find('dt').text() === label);
+  expect(row, `the '${label}' fact renders`).toBeDefined();
+  return row!.find('dd').text();
+}
+
 /* ── The page, the selector, the selection store seam ─────────────────── */
 
 describe('accounts page: loading and selection (task 170, §14.2)', () => {
+  it('renders the loading line while the first list load is in flight — never an error, never a fake empty state', async () => {
+    // The initial-state pin D-138 pinned for the overview only: the page
+    // states its loading honestly until the first answer arrives (the
+    // 181 `stallNext` seam holds the GET /api/accounts answer).
+    const backend = new FakeAccountsBackend([account()]);
+    backend.stallNext = (call) => call.method === 'GET' && call.input === '/api/accounts';
+    const wrapper = await mountView(backend);
+
+    const loading = wrapper.find('[data-testid="accounts-loading"]');
+    expect(loading.exists()).toBe(true);
+    expect(loading.text()).toBe(en.accounts.loading);
+    expect(wrapper.find('[data-testid="account-card"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="accounts-empty"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="api-error"]').exists()).toBe(false);
+
+    backend.unstall();
+    await settle();
+    expect(wrapper.find('[data-testid="accounts-loading"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="account-card"]').exists()).toBe(true);
+  });
+
   it('lists the accounts, selects the first by default, and shows its card', async () => {
     const backend = new FakeAccountsBackend([account(), account({ id: 'acc-2', label: 'Second' })]);
     const wrapper = await mountView(backend);
@@ -251,6 +281,29 @@ describe('accounts page: loading and selection (task 170, §14.2)', () => {
     expect(card.text()).toContain('Z.ai Coding Plan');
     // The §13 mask, verbatim — a key VALUE never reaches the browser.
     expect(card.text()).toContain('********');
+  });
+
+  it('states the identity facts: the mask line exact, the absent key, and the lifecycle status', async () => {
+    // The remaining cells of the card's identity-row vocabulary (the
+    // environment-source sentence is pinned in the replace-key describe,
+    // the selector's archived marker in the archive describe; the first
+    // test pins the §13 mask by containment): the mask as the key fact's
+    // EXACT value (D-128 — content-free by construction), the explicit
+    // "Not set" for a keyless account, and the status line's
+    // Active/Archived pair — text, never color.
+    const masked = await mountView(new FakeAccountsBackend([account()]));
+    expect(cardFactOf(masked, en.accounts.card.key)).toBe('********');
+    expect(cardFactOf(masked, en.accounts.card.status)).toBe(en.accounts.card.statusActive);
+
+    const keyless = await mountView(
+      new FakeAccountsBackend([account({ hasKey: false, keyMask: null })]),
+    );
+    expect(cardFactOf(keyless, en.accounts.card.key)).toBe(en.accounts.card.keyNone);
+
+    const archived = await mountView(
+      new FakeAccountsBackend([account({ status: 'archived', archivedAt: 1, enabled: false })]),
+    );
+    expect(cardFactOf(archived, en.accounts.card.status)).toBe(en.accounts.card.statusArchived);
   });
 
   it('switching the selector swaps the card and persists the choice', async () => {
@@ -432,6 +485,27 @@ describe('accounts page: add (task 170, §14.2)', () => {
     expect('apiKey' in bodyOf(posts[0]!)).toBe(false);
   });
 
+  it('trims the label on create — the stored label is canonical (D-135)', async () => {
+    // The D-135 correction's create half: labels this UI creates are
+    // canonical, so no downstream surface (the purge gate's typed compare
+    // included) ever meets a padded label this form created. Only the
+    // purge-side trim was pinned before; the send-side trims were not.
+    const backend = new FakeAccountsBackend([]);
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="add-label"]').setValue('  Padded Label  ');
+    await wrapper.find('[data-testid="add-key"]').setValue('sk-marker-key-1');
+    await wrapper
+      .find('[data-testid="add-account-form"]')
+      .find('button[type="submit"]')
+      .trigger('submit');
+    await settle();
+
+    const posts = callsOf(backend, 'POST', '/api/accounts');
+    expect(posts).toHaveLength(1);
+    expect(bodyOf(posts[0]!)).toMatchObject({ label: 'Padded Label' });
+  });
+
   it('refuses a blank label and a blank key client-side — no request', async () => {
     const backend = new FakeAccountsBackend([account()]);
     const wrapper = await mountView(backend);
@@ -519,6 +593,22 @@ describe('accounts page: add (task 170, §14.2)', () => {
 /* ── Rename, enable/disable, replace key ──────────────────────────────── */
 
 describe('accounts page: rename, polling, replace key (task 170, §14.2)', () => {
+  it('trims the label on rename — the PATCH carries the canonical form (D-135)', async () => {
+    const backend = new FakeAccountsBackend([account()]);
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="rename-button"]').trigger('click');
+    await wrapper.find('[data-testid="rename-input"]').setValue('  Renamed Main  ');
+    await wrapper.find('[data-testid="rename-save"]').trigger('submit');
+    await settle();
+
+    const patch = backend.calls.find(
+      (call) => call.method === 'PATCH' && call.input === '/api/accounts/acc-1',
+    );
+    expect(patch).toBeDefined();
+    expect(bodyOf(patch!)).toEqual({ label: 'Renamed Main' });
+  });
+
   it('renames through PATCH with the label alone', async () => {
     const backend = new FakeAccountsBackend([account()]);
     const wrapper = await mountView(backend);

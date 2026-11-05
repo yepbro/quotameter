@@ -315,6 +315,301 @@ describe('vue-i18n English catalog (spec §14.1)', () => {
   });
 });
 
+/* ── Interpolation integrity and the whole-catalog render (task 182, D-165) ── */
+
+/**
+ * A named-interpolation placeholder of vue-i18n message format
+ * (`{count}` in `'{count}-hour window'`).
+ */
+const PLACEHOLDER_PATTERN = /\{(\w+)\}/gu;
+
+function placeholdersOf(value: string): string[] {
+  return [...value.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[1]!);
+}
+
+/** Every `t(` opening that carries a second argument (params or plural). */
+const T_SECOND_ARG_PATTERN = /\bt\(\s*(['"])((?:[^\\'"\n]|\\.)*)\1\s*,/g;
+
+/** Slices the balanced `{…}` block starting at `content[start] === '{'`. */
+function balancedBlock(content: string, start: number): string {
+  let depth = 0;
+  for (let index = start; index < content.length; index += 1) {
+    if (content[index] === '{') depth += 1;
+    else if (content[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return content.slice(start, index + 1);
+    }
+  }
+  throw new Error(`unbalanced object literal at offset ${start}`);
+}
+
+/** Splits an object literal's inner content on top-level commas. */
+function topLevelSegments(inner: string): string[] {
+  const segments: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const char of inner) {
+    if (char === '{' || char === '(' || char === '[') depth += 1;
+    else if (char === '}' || char === ')' || char === ']') depth -= 1;
+    if (char === ',' && depth === 0) {
+      segments.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim() !== '') segments.push(current);
+  return segments;
+}
+
+/** One `ui/src` file's comment-stripped content, by relative path. */
+function sourceOf(path: string): string {
+  const file = sources.find((entry) => entry.path === path);
+  if (file === undefined) throw new Error(`unknown source file ${path}`);
+  return file.content;
+}
+
+/**
+ * Resolves the same-file `const <identifier> = { … }` initializer that is
+ * in scope at `offset` — the NEAREST declaration before the call site,
+ * so two same-named consts in different functions cannot credit a site
+ * with the wrong member set — to its member names. The seam for param
+ * objects built beside their call site (`stamps` in
+ * AccountOverviewCard.vue today).
+ */
+function constObjectMembers(
+  identifier: string,
+  path: string,
+  offset: number,
+  depth: number,
+): string[] {
+  if (depth > 2) throw new Error(`spread chain too deep at ${path}: ${identifier}`);
+  const source = sourceOf(path);
+  const declaration = new RegExp(`const\\s+${identifier}\\s*=\\s*\\{`, 'g');
+  let scoped: RegExpExecArray | null = null;
+  for (let match = declaration.exec(source); match !== null; match = declaration.exec(source)) {
+    if (match.index >= offset) break;
+    scoped = match; // keep the nearest declaration before the call site
+  }
+  if (scoped === null) {
+    throw new Error(
+      `cannot resolve the param object '${identifier}' in ${path} (no declaration precedes the call site)`,
+    );
+  }
+  return objectMembers(
+    balancedBlock(source, scoped.index + scoped[0].length - 1),
+    path,
+    offset,
+    depth + 1,
+  );
+}
+
+/**
+ * The member names of an object literal slice: `name:` pairs, shorthands,
+ * and `...identifier` spreads resolved through their same-file
+ * initializers. Anything else (computed keys, expressions) fails loudly —
+ * the catalog's discipline is static, auditable call sites.
+ */
+function objectMembers(block: string, path: string, offset: number, depth: number): string[] {
+  const inner = block.slice(1, -1);
+  const names: string[] = [];
+  for (const segment of topLevelSegments(inner)) {
+    const member = segment.trim();
+    if (member === '') continue;
+    if (member.startsWith('...')) {
+      const identifier = member.slice(3).trim();
+      if (!/^\w+$/u.test(identifier)) {
+        throw new Error(`unexpected spread shape at ${path}: ${member}`);
+      }
+      names.push(...constObjectMembers(identifier, path, offset, depth));
+      continue;
+    }
+    const named = /^(\w+)\s*:/u.exec(member);
+    if (named !== null) {
+      names.push(named[1]!);
+      continue;
+    }
+    if (/^\w+$/u.test(member)) {
+      names.push(member); // shorthand
+      continue;
+    }
+    throw new Error(`unexpected param member at ${path}: ${member}`);
+  }
+  return names;
+}
+
+/**
+ * Parameterized keys rendered RAW — `t()` without params — and
+ * interpolated by the chart builder's own template engine (`interpolate`
+ * in `ui/src/charts/series.ts`; `MetricHistoryChart.vue` passes these
+ * catalog values verbatim, because ECharts formatters compose strings,
+ * not vue-i18n). Their substitution is behaviorally pinned in
+ * `test/component/chart-series.spec.ts` (the composed tooltip lines);
+ * this table pins each entry's placeholder-name set so renaming a
+ * placeholder in the catalog fails HERE with a named key instead of
+ * rendering literal braces inside a chart tooltip.
+ */
+const CHART_TEMPLATE_KEYS: Record<string, readonly string[]> = {
+  'overview.chart.peakHead': ['name', 'multiplier'],
+  'overview.chart.offPeakHead': ['multiplier'],
+  'overview.chart.bandTimes': ['start', 'end', 'zone'],
+  'overview.chart.gapBody': ['duration'],
+  'overview.chart.stoppedBody': ['duration'],
+  'overview.chart.resetTooltip': ['time'],
+  'overview.chart.errorAttempts': ['count'],
+  'overview.chart.errorStatus': ['status'],
+  'overview.chart.errorRetryAfter': ['seconds'],
+};
+
+/**
+ * One call site's param names, with its location for failure messages.
+ */
+interface SuppliedSite {
+  readonly path: string;
+  readonly names: ReadonlySet<string>;
+}
+
+/**
+ * The param names EVERY of a catalog key's call sites supplies, keyed by
+ * dot path — per site, not as a union, because a second site that
+ * omits a placeholder would render literal braces on screen while a
+ * union stayed green. Built once from the same comment-stripped sources
+ * the key scans read, so a `t('key', { … })` shape the harvest cannot
+ * parse fails the whole suite loudly (the dynamic-key discipline's
+ * param-side twin).
+ */
+function collectSuppliedParams(): Map<string, SuppliedSite[]> {
+  const supplied = new Map<string, SuppliedSite[]>();
+  const failures: string[] = [];
+  for (const { path, content } of sources) {
+    for (const match of content.matchAll(T_SECOND_ARG_PATTERN)) {
+      const key = match[2]!;
+      const after = (match.index ?? 0) + match[0].length;
+      const rest = content.slice(after).trimStart();
+      let names: string[];
+      if (rest.startsWith('{')) {
+        names = objectMembers(balancedBlock(content, content.indexOf('{', after)), path, after, 0);
+      } else {
+        const identifier = /^(\w+)/u.exec(rest)?.[1];
+        if (identifier === undefined) {
+          failures.push(`${path}: t('${key}', …${rest.slice(0, 16)}…) — not an object literal`);
+          continue;
+        }
+        names = constObjectMembers(identifier, path, after, 0);
+      }
+      supplied.set(key, [...(supplied.get(key) ?? []), { path, names: new Set(names) }]);
+    }
+  }
+  if (failures.length > 0) throw new Error(failures.join('\n'));
+  return supplied;
+}
+
+describe('vue-i18n interpolation integrity (task 182, D-165)', () => {
+  const supplied = collectSuppliedParams();
+
+  it('every placeholder is supplied at EVERY call site — and every supplied name is a placeholder', () => {
+    // Per site, not per key: one complete site does not vouch for a
+    // second, incomplete one — a site omitting a placeholder would
+    // render literal braces on screen whatever its siblings pass.
+    const problems: string[] = [];
+    for (const [key, value] of Object.entries(catalog)) {
+      const placeholders = placeholdersOf(value);
+      const sites = supplied.get(key);
+      if (sites === undefined) {
+        if (placeholders.length === 0) continue; // no params needed
+        if (key in CHART_TEMPLATE_KEYS) continue; // the chart builder seam
+        problems.push(
+          `${key}: carries {${placeholders.join('}, {')}} but no call site supplies them`,
+        );
+        continue;
+      }
+      for (const { path, names } of sites) {
+        for (const placeholder of placeholders) {
+          if (!names.has(placeholder)) {
+            problems.push(
+              `${path}: t('${key}') omits {${placeholder}} (got [${[...names].join(', ')}])`,
+            );
+          }
+        }
+        for (const name of names) {
+          if (!placeholders.includes(name)) {
+            problems.push(
+              `${path}: t('${key}') passes '${name}' but the message carries no {${name}}`,
+            );
+          }
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('the chart-template seam table is closed and exact — no drift in either direction', () => {
+    // Every allow-listed entry exists, is parameterized, renders raw (no
+    // t() call site passes params for it), and names exactly the
+    // placeholders the catalog carries; and every parameterized key with
+    // no param-supplying call site is allow-listed (a new one joins this
+    // table consciously, or the first test fails).
+    const problems: string[] = [];
+    for (const [key, expected] of Object.entries(CHART_TEMPLATE_KEYS)) {
+      const value = catalog[key];
+      if (value === undefined) {
+        problems.push(`${key}: allow-listed but absent from the catalog`);
+        continue;
+      }
+      const placeholders = placeholdersOf(value);
+      if (placeholders.length === 0)
+        problems.push(`${key}: allow-listed but carries no placeholders`);
+      if (JSON.stringify(placeholders) !== JSON.stringify(expected)) {
+        problems.push(
+          `${key}: placeholders [${placeholders.join(', ')}] ≠ the pinned [${expected.join(', ')}]`,
+        );
+      }
+      if (supplied.has(key)) problems.push(`${key}: allow-listed but a call site supplies params`);
+    }
+    for (const [key, value] of Object.entries(catalog)) {
+      if (placeholdersOf(value).length === 0) continue;
+      if (supplied.has(key) || key in CHART_TEMPLATE_KEYS) continue;
+      problems.push(`${key}: parameterized, unsupplied, and not in the chart-template table`);
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('renders every key through the real composer — paramless verbatim, parameterized without residue', () => {
+    // The runtime complement of the static scans: every message compiles
+    // and resolves through the actual vue-i18n pipeline. Paramless keys
+    // must render their value byte-for-byte (an accidental plural `|` or
+    // linked-message `@` would compile to something else); a
+    // parameterized key rendered with one synthetic marker per
+    // placeholder must contain every marker and leave no literal `{`/`}`
+    // behind — the exact failure a drifted placeholder would put on
+    // screen.
+    const { t } = createAppI18n().global as Composer;
+    const problems: string[] = [];
+    for (const [key, value] of Object.entries(catalog)) {
+      const placeholders = placeholdersOf(value);
+      if (placeholders.length === 0) {
+        const rendered = t(key);
+        if (rendered !== value) {
+          problems.push(`${key}: rendered '${rendered}' ≠ catalog '${value}'`);
+        }
+        continue;
+      }
+      const params: Record<string, string> = {};
+      for (const placeholder of placeholders) params[placeholder] = `⟨${placeholder}⟩`;
+      const rendered = t(key, params);
+      if (/[{}]/u.test(rendered)) {
+        problems.push(`${key}: residual braces in '${rendered}'`);
+      }
+      for (const placeholder of placeholders) {
+        if (!rendered.includes(`⟨${placeholder}⟩`)) {
+          problems.push(`${key}: the {${placeholder}} marker did not render`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+});
+
 describe('comment stripping (the completeness scans’ premise)', () => {
   it('drops t(…) mentions in line, block, and HTML comments', () => {
     expect(stripComments("const a = 1; // uses t('ghost.key')\n")).not.toContain('ghost.key');
