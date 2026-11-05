@@ -115,3 +115,19 @@ body {
   font-family: var(--qm-font-family);
   line-height: 1.5;
 }
+
+/*
+ * The keyboard focus indicator (§14.1 "support keyboard navigation"; task
+ * 181, D-164): one designed ring instead of the per-widget UA defaults.
+ * `:focus-visible` keeps pointer clicks unfocused-looking while every
+ * keyboard-reached control (links, buttons, inputs, selects, radios)
+ * paints the same high-contrast token ring in all three modes (the
+ * foreground-on-background pair, ≥ 7:1 everywhere — far past the 3:1
+ * non-text minimum). A stylesheet rule, never a `style=` attribute
+ * (D-127); the UA widgets keep their native focus behavior, only the
+ * paint is unified.
+ */
+:focus-visible {
+  outline: 2px solid var(--qm-color-foreground);
+  outline-offset: 2px;
+}

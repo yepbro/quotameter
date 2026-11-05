@@ -85,11 +85,14 @@ class FakeAccountsBackend {
   testResponse: AccountTestResponse = { outcome: 'ok' };
   /** A one-shot refusal for the next matching call (the error arms). */
   refuseNext: ((call: RecordedCall) => ReturnType<typeof jsonResponse> | undefined) | null = null;
+  /** A one-shot stall: the next matching call resolves only on `unstall()`. */
+  stallNext: ((call: RecordedCall) => boolean) | null = null;
+  private releaseStalled: (() => void) | null = null;
 
   constructor(initial: AccountView[], providers: ProviderView[] = PROVIDERS) {
     this.accounts = initial;
     this.providers = providers;
-    this.fake = new FakeFetch((call) => Promise.resolve(this.route(call)));
+    this.fake = new FakeFetch((call) => this.answer(call));
   }
 
   get impl(): FakeFetch['impl'] {
@@ -98,6 +101,22 @@ class FakeAccountsBackend {
 
   get calls(): RecordedCall[] {
     return this.fake.calls;
+  }
+
+  /** Resolves the held stall (a no-op when none is held). */
+  unstall(): void {
+    this.releaseStalled?.();
+    this.releaseStalled = null;
+  }
+
+  private answer(call: RecordedCall): Promise<ReturnType<typeof jsonResponse>> {
+    if (this.stallNext?.(call) === true) {
+      this.stallNext = null;
+      return new Promise((resolve) => {
+        this.releaseStalled = () => resolve(this.route(call));
+      });
+    }
+    return Promise.resolve(this.route(call));
   }
 
   private route(call: RecordedCall): ReturnType<typeof jsonResponse> {
@@ -658,6 +677,36 @@ describe('accounts page: rename, polling, replace key (task 170, §14.2)', () =>
     expect(callsOf(backend, 'PATCH', '/api/accounts/acc-1')).toHaveLength(0);
     expect(wrapper.text()).toContain(en.accounts.form.errorKeyBlank);
   });
+
+  it('Escape closes the inline forms and restores focus to the opener (task 181)', async () => {
+    // The keyboard dismissal contract: the panel that opened on a
+    // button closes on Escape, and focus returns to that button — the
+    // opener is the interaction's stable landmark (D-164).
+    const backend = new FakeAccountsBackend([account()]);
+    const wrapper = await mountView(backend);
+
+    // Rename: the input's Escape bubbles to the form's handler.
+    await wrapper.find('[data-testid="rename-button"]').trigger('click');
+    await settle();
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="rename-input"]').element);
+    await wrapper.find('[data-testid="rename-input"]').trigger('keydown', { key: 'Escape' });
+    await settle();
+    expect(wrapper.find('[data-testid="rename-input"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="rename-button"]').element);
+    expect(callsOf(backend, 'PATCH', '/api/accounts/acc-1')).toHaveLength(0);
+
+    // Replace key: same contract for the write-only field.
+    await wrapper.find('[data-testid="replace-key-button"]').trigger('click');
+    await settle();
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="replace-key-input"]').element);
+    await wrapper.find('[data-testid="replace-key-input"]').trigger('keydown', {
+      key: 'Escape',
+    });
+    await settle();
+    expect(wrapper.find('[data-testid="replace-key-input"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="replace-key-button"]').element);
+    expect(callsOf(backend, 'PATCH', '/api/accounts/acc-1')).toHaveLength(0);
+  });
 });
 
 /* ── Connection test (§14.2: results show immediately) ────────────────── */
@@ -812,6 +861,83 @@ describe('accounts page: archive and purge (task 170, §8.2)', () => {
 
     expect(wrapper.find('[data-testid="purge-confirm"]').exists()).toBe(false);
     expect(backend.calls.filter((call) => call.method === 'DELETE')).toHaveLength(0);
+  });
+
+  it('Escape closes the confirm panels and restores focus to the opener (task 181)', async () => {
+    // The keyboard dismissal contract on the destructive surfaces:
+    // Escape from either panel aborts (no request) and hands focus back
+    // to the opener — the destructive button is never left unfocused
+    // after a keyboard escape (D-164).
+    const backend = new FakeAccountsBackend([account()]);
+    const wrapper = await mountView(backend);
+
+    // Archive: focus sits on the safe control when the panel opens.
+    await wrapper.find('[data-testid="archive-button"]').trigger('click');
+    await settle();
+    await wrapper.find('[data-testid="archive-confirm"]').trigger('keydown', { key: 'Escape' });
+    await settle();
+    expect(wrapper.find('[data-testid="archive-confirm"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="archive-button"]').element);
+
+    // Purge: focus sits in the typed gate.
+    await wrapper.find('[data-testid="purge-button"]').trigger('click');
+    await settle();
+    await wrapper.find('[data-testid="purge-confirm"]').trigger('keydown', { key: 'Escape' });
+    await settle();
+    expect(wrapper.find('[data-testid="purge-confirm"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="purge-button"]').element);
+    expect(backend.calls.filter((call) => call.method === 'DELETE')).toHaveLength(0);
+  });
+
+  it('an IME composition Escape does not dismiss (the composition owns the key)', async () => {
+    const backend = new FakeAccountsBackend([account()]);
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="archive-button"]').trigger('click');
+    await settle();
+    await wrapper
+      .find('[data-testid="archive-confirm"]')
+      .trigger('keydown', { key: 'Escape', isComposing: true });
+    await settle();
+    expect(wrapper.find('[data-testid="archive-confirm"]').exists()).toBe(true);
+  });
+
+  it('Escape during a pending mutation is ignored — the request owns the panel', async () => {
+    // The review round's P2: resetting the call mid-flight would
+    // suppress the outcome while the request still applies. The panel
+    // stays until the request settles; the settled outcome behaves
+    // normally (success closes, emits, and restores focus).
+    const backend = new FakeAccountsBackend([account()]);
+    backend.stallNext = (call) => call.method === 'PATCH' && call.input === '/api/accounts/acc-1';
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="rename-button"]').trigger('click');
+    await wrapper.find('[data-testid="rename-input"]').setValue('Renamed');
+    await wrapper.find('[data-testid="rename-save"]').trigger('submit');
+    await flushPromises();
+
+    await wrapper.find('[data-testid="rename-input"]').trigger('keydown', { key: 'Escape' });
+    await settle();
+    expect(wrapper.find('[data-testid="rename-input"]').exists()).toBe(true);
+
+    backend.unstall();
+    await settle();
+    expect(wrapper.find('[data-testid="rename-input"]').exists()).toBe(false);
+    expect(callsOf(backend, 'PATCH', '/api/accounts/acc-1')).toHaveLength(1);
+    // The success path restores focus to the opener (task 181).
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="rename-button"]').element);
+  });
+
+  it('a removed account hands focus to the selector, not the body (task 181)', async () => {
+    const backend = new FakeAccountsBackend([account(), account({ id: 'acc-2', label: 'Second' })]);
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="archive-button"]').trigger('click');
+    await wrapper.find('[data-testid="archive-confirm-button"]').trigger('click');
+    await settle();
+
+    expect(wrapper.find('[data-testid="archive-confirm"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="account-select"]').element);
   });
 
   it('presents a refused purge through the shared notice', async () => {
