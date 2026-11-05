@@ -196,7 +196,7 @@ build: deps ## Build the UI and verify expected artifacts
 
 .PHONY: verify-runtime
 verify-runtime: container ## Verify minimum Node version and node:sqlite
-	@$(RUN) node scripts/verify-runtime.mjs
+	@$(RUN) npm run verify:runtime
 
 .PHONY: help
 help: ## Show this help
