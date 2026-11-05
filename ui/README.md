@@ -841,6 +841,73 @@ D-133):
   script) is impossible under the served CSP (D-127: no inline
   scripts); the flash is accepted.
 
+## Accessibility and responsive behavior
+
+Spec §14.1's four demands — WCAG AA contrast, keyboard operation,
+never color alone, and working from 360 px — are verified as a standing
+layer (task 181, decision D-164), not left to per-component care:
+
+- **Axe scans** (`test/e2e/a11y.spec.ts`, WCAG 2.1/2.2 AA tags through
+  `@axe-core/playwright`): every page's populated surface is scanned in
+  both explicit themes with the tokens verified applied (the explicit
+  `data-theme` states assert themselves before each scan; `system`
+  computes the identical cascade, pinned by the raw-token reads in
+  `test/e2e/theme.spec.ts`). Data-backed surfaces are served through
+  route interception — including the charts region with its full
+  annotation vocabulary (the chart `role="img"`, its aria summary with
+  the annotation counts, the percent/absolute toggle, a live ECharts
+  canvas in the scanned host), the populated accounts page with the
+  purge confirm panel open, and the login failure surface. Contrast
+  never rides a tone pair: status badge text stays
+  `--qm-color-foreground` in every tone, and the chart/annotation
+  tokens keep ≥ 3:1 against the mode background (non-text) beside
+  their text signals.
+- **Keyboard operation** (`test/e2e/keyboard.spec.ts`): the shell's Tab
+  order and Enter navigation, the arrow-operated theme select, the
+  login round trip by keyboard alone, the §14.4 range switch through
+  the native radio group (proven by the re-dispatched history window),
+  the inline panels' dismissal, and the time-zone suggestion seams
+  below. Interactive controls are native (buttons, radios, selects,
+  real anchors) so the platform's keyboard support applies by
+  construction.
+- **The designed focus indicator**: one global `:focus-visible` rule in
+  `src/assets/base.css` (a 2 px `--qm-color-foreground` outline with
+  offset) — the ring every keyboard-reached control paints, pinned by
+  computed-style assertions in the keyboard spec (solid outline on a
+  Tab-focused nav link; the outline COLOR flipping with the mode on a
+  focused select, so the token resolution — light and dark; system
+  resolves to one of the two per the theme spec's pins — is exercised).
+- **Panel dismissal** (`AccountManageCard.vue`): the four inline
+  surfaces (rename, replace-key, archive confirm, purge confirm) close
+  on Escape and return focus to the opener button — focus moves IN on
+  open (the archive confirm lands on the safe control) and BACK on
+  dismissal and on a successful save alike (a removed account hands
+  focus to the accounts selector from the parent). Escape during a
+  pending mutation is ignored: the dispatched request owns its panel
+  until it settles (resetting mid-flight would suppress the outcome
+  while the request still applies). IME composition owns the Escape
+  key while active. Component arms pin the contract per panel.
+- **The time-zone suggestion list** (task 179's declined combobox
+  follow-up): the field keeps the native-controls stance — the
+  suggestions are real focusable buttons — and carries the
+  ARIA-1.2-legal linkage (`aria-describedby` to the search hint,
+  `aria-autocomplete="list"`, and `aria-controls` rendered only while
+  the list exists; `aria-expanded` is prohibited on a plain textbox
+  and stays with the full combobox contract the project declined).
+  ArrowDown focuses the first suggestion; Enter picks one and returns
+  focus to the field (the picked button unmounts with the list);
+  Escape reverts the edit to the served value from the field or a
+  suggestion button.
+- **360 px**: all four pages pin `scrollWidth ≤ clientWidth` at a 360 px
+  viewport — the charts grid carries a `minmax(min(100%, …))` floor;
+  the other grids and tables (the metric cards, the facts rows, the
+  schedule table) simply fit the 360 px content column.
+- **Recorded residuals** (D-164): the chart zoom-in gesture is
+  pointer-only — the chart is a `role="img"` text alternative over data
+  fully available as text, the zoom **reset** is keyboard-operable, and
+  ECharts ships no keyboard dataZoom; full combobox semantics for the
+  zone search stay declined.
+
 ## Strings and the i18n catalog
 
 Repository artifacts are English-only (spec §4.1), and every user-facing

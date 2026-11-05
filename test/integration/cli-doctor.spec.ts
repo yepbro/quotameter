@@ -335,7 +335,19 @@ describe('quotameter doctor (real launcher)', () => {
     },
   );
 
-  it('pins the --raw option surface in --help', async () => {
+  // One launcher boot, the family's lightest cell (parse and print, no
+  // §5.5 check work — hence 30 s where the doctor-running siblings need
+  // 60 s): the 2026-11-04/05 waves expired it at Vitest's 5 s default
+  // repeatedly while every isolated run stayed green. Sized per D-094
+  // (U-044, decision D-163): measured 1.2 s ambient, 1.5 s worst under
+  // the six-hog rig in isolation, 4.1 s worst in a full coverage
+  // `make check` under the rig (pool load ~16), against the family's
+  // regime worst 5.9 s (U-039, load 16–21). The house 30 s — the value
+  // every other single-boot launcher suite pins for the same
+  // `jiti/register` boot shape — holds ≈5× that regime worst
+  // (D-094's bar is ≈3×), and a genuinely stuck boot still fails in
+  // 30 s.
+  it('pins the --raw option surface in --help', { timeout: 30_000 }, async () => {
     const dir = await createTempDir('qm-doctor-help-');
     try {
       const result = await runDoctor(dir, ['doctor', '--help']);

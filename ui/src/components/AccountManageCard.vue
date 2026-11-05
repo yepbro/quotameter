@@ -76,6 +76,12 @@ const renaming = ref(false);
 const renameLabel = ref('');
 const renameFieldError = ref(false);
 const renameInput = ref<HTMLInputElement | null>(null);
+// The opener buttons (task 181, D-164): a panel closing by keyboard
+// (Escape or the cancel control) returns focus to the control that
+// opened it — the opener is the stable landmark of the interaction.
+// Plain refs re-populate when the v-else branch re-renders the button,
+// so the cancel paths restore focus after the DOM settles.
+const renameButton = ref<HTMLButtonElement | null>(null);
 const {
   error: renameError,
   pending: renamePending,
@@ -94,10 +100,18 @@ async function startRename(): Promise<void> {
   renameInput.value?.focus();
 }
 
-function cancelRename(): void {
+async function cancelRename(): Promise<void> {
+  // A pending rename owns the panel until it settles: resetting the
+  // call now would suppress the outcome (the token bump) while the
+  // PATCH still applies — Escape cannot silently swallow a result.
+  if (renamePending.value) return;
   renaming.value = false;
   renameFieldError.value = false;
   resetRename();
+  // The opener button re-renders with the panel's closing — focus it
+  // once it exists again (keyboard dismissal, §14.1).
+  await nextTick();
+  renameButton.value?.focus();
 }
 
 async function saveRename(): Promise<void> {
@@ -107,6 +121,10 @@ async function saveRename(): Promise<void> {
   if (updated !== null) {
     renaming.value = false;
     emit('changed');
+    // The success path unmounts the submit button the user stands on —
+    // focus returns to the opener (the same contract as dismissal).
+    await nextTick();
+    renameButton.value?.focus();
   }
 }
 
@@ -128,6 +146,7 @@ const replacingKey = ref(false);
 const newKey = ref('');
 const keyFieldError = ref(false);
 const keyInput = ref<HTMLInputElement | null>(null);
+const replaceKeyButton = ref<HTMLButtonElement | null>(null);
 const {
   error: replaceKeyError,
   pending: replaceKeyPending,
@@ -145,11 +164,16 @@ async function startReplaceKey(): Promise<void> {
   keyInput.value?.focus();
 }
 
-function cancelReplaceKey(): void {
+async function cancelReplaceKey(): Promise<void> {
+  // Same pending rule as the rename form: the dispatched PATCH owns the
+  // panel until it settles.
+  if (replaceKeyPending.value) return;
   replacingKey.value = false;
   keyFieldError.value = false;
   newKey.value = '';
   resetReplaceKey();
+  await nextTick();
+  replaceKeyButton.value?.focus();
 }
 
 async function saveReplaceKey(): Promise<void> {
@@ -164,6 +188,8 @@ async function saveReplaceKey(): Promise<void> {
     // key's result does not survive its replacement.
     resetTest();
     emit('changed');
+    await nextTick();
+    replaceKeyButton.value?.focus();
   }
 }
 
@@ -171,6 +197,7 @@ async function saveReplaceKey(): Promise<void> {
 
 const confirmingArchive = ref(false);
 const archiveCancelButton = ref<HTMLButtonElement | null>(null);
+const archiveButton = ref<HTMLButtonElement | null>(null);
 const {
   error: archiveError,
   pending: archivePending,
@@ -187,9 +214,14 @@ async function openArchiveConfirm(): Promise<void> {
   archiveCancelButton.value?.focus();
 }
 
-function cancelArchive(): void {
+async function cancelArchive(): Promise<void> {
+  // A dispatched archive owns the panel until it settles (the rename
+  // form's rule): Escape must not suppress the DELETE's outcome.
+  if (archivePending.value) return;
   confirmingArchive.value = false;
   resetArchive();
+  await nextTick();
+  archiveButton.value?.focus();
 }
 
 async function confirmArchive(): Promise<void> {
@@ -204,6 +236,7 @@ async function confirmArchive(): Promise<void> {
 const confirmingPurge = ref(false);
 const purgeTyped = ref('');
 const purgeInput = ref<HTMLInputElement | null>(null);
+const purgeButton = ref<HTMLButtonElement | null>(null);
 const {
   error: purgeError,
   pending: purgePending,
@@ -227,10 +260,23 @@ async function openPurgeConfirm(): Promise<void> {
   purgeInput.value?.focus();
 }
 
-function cancelPurge(): void {
+async function cancelPurge(): Promise<void> {
+  // A dispatched purge owns the panel until it settles.
+  if (purgePending.value) return;
   confirmingPurge.value = false;
   purgeTyped.value = '';
   resetPurge();
+  await nextTick();
+  purgeButton.value?.focus();
+}
+
+/**
+ * The inline panels' dismissal key (task 181): Escape, but never the
+ * IME composition-cancel press — a composing user cancels the
+ * composition, not the panel (the review round's P3).
+ */
+function onPanelKeydown(event: KeyboardEvent, dismiss: () => void): void {
+  if (event.key === 'Escape' && !event.isComposing) dismiss();
 }
 
 async function confirmPurge(): Promise<void> {
@@ -307,7 +353,13 @@ async function confirmPurge(): Promise<void> {
       <!-- Rename: an inline form prefilled with the current label (the
         label is not a secret — prefilling is the point). -->
       <div class="action-block">
-        <form v-if="renaming" class="inline-form" novalidate @submit.prevent="saveRename">
+        <form
+          v-if="renaming"
+          class="inline-form"
+          novalidate
+          @submit.prevent="saveRename"
+          @keydown="onPanelKeydown($event, cancelRename)"
+        >
           <label for="rename-label">{{ t('accounts.actions.renameField') }}</label>
           <input
             id="rename-label"
@@ -328,7 +380,13 @@ async function confirmPurge(): Promise<void> {
           </p>
           <ApiErrorNotice v-if="renameError" :error="renameError" />
         </form>
-        <button v-else type="button" data-testid="rename-button" @click="startRename">
+        <button
+          v-else
+          ref="renameButton"
+          type="button"
+          data-testid="rename-button"
+          @click="startRename"
+        >
           {{ t('accounts.actions.rename') }}
         </button>
       </div>
@@ -354,7 +412,13 @@ async function confirmPurge(): Promise<void> {
       <!-- Replace key: only for file-sourced keys — the environment is
         the operator's channel (§6.3), the facts row already says so. -->
       <div v-if="account.keySource === 'file'" class="action-block">
-        <form v-if="replacingKey" class="inline-form" novalidate @submit.prevent="saveReplaceKey">
+        <form
+          v-if="replacingKey"
+          class="inline-form"
+          novalidate
+          @submit.prevent="saveReplaceKey"
+          @keydown="onPanelKeydown($event, cancelReplaceKey)"
+        >
           <label for="replace-key">{{ t('accounts.actions.keyField') }}</label>
           <input
             id="replace-key"
@@ -377,7 +441,13 @@ async function confirmPurge(): Promise<void> {
           </p>
           <ApiErrorNotice v-if="replaceKeyError" :error="replaceKeyError" />
         </form>
-        <button v-else type="button" data-testid="replace-key-button" @click="startReplaceKey">
+        <button
+          v-else
+          ref="replaceKeyButton"
+          type="button"
+          data-testid="replace-key-button"
+          @click="startReplaceKey"
+        >
           {{ t('accounts.actions.replaceKey') }}
         </button>
       </div>
@@ -387,13 +457,19 @@ async function confirmPurge(): Promise<void> {
       <div class="action-block">
         <button
           v-if="!confirmingArchive"
+          ref="archiveButton"
           type="button"
           data-testid="archive-button"
           @click="openArchiveConfirm"
         >
           {{ t('accounts.actions.archive') }}
         </button>
-        <div v-else class="confirm-panel" data-testid="archive-confirm">
+        <div
+          v-else
+          class="confirm-panel"
+          data-testid="archive-confirm"
+          @keydown="onPanelKeydown($event, cancelArchive)"
+        >
           <h4>{{ t('accounts.archive.title') }}</h4>
           <p>{{ t('accounts.archive.body') }}</p>
           <button
@@ -425,6 +501,7 @@ async function confirmPurge(): Promise<void> {
     <div class="action-block">
       <button
         v-if="!confirmingPurge"
+        ref="purgeButton"
         type="button"
         class="danger"
         data-testid="purge-button"
@@ -432,7 +509,12 @@ async function confirmPurge(): Promise<void> {
       >
         {{ t('accounts.purge.action') }}
       </button>
-      <div v-else class="confirm-panel danger-panel" data-testid="purge-confirm">
+      <div
+        v-else
+        class="confirm-panel danger-panel"
+        data-testid="purge-confirm"
+        @keydown="onPanelKeydown($event, cancelPurge)"
+      >
         <h4>{{ t('accounts.purge.title') }}</h4>
         <p>{{ t('accounts.purge.body') }}</p>
         <label for="purge-confirm-input">

@@ -1,15 +1,19 @@
 /**
  * The shared runtime-gate boundary matrix (task 129, spec §5.1/§17.2,
- * decision D-098).
+ * decision D-098; extended to the runtime-verify script by U-036/D-161).
  *
- * One list consumed by both gate suites: `test/unit/version.spec.ts`
- * asserts `src/util/version.ts`'s verdict for every case, and
+ * One list consumed by all three gate suites: `test/unit/version.spec.ts`
+ * asserts `src/util/version.ts`'s verdict for every case,
  * `test/integration/cli-bin-version-gate.spec.ts` runs the real launcher
  * (`bin/quotameter.mjs`, which keeps its own plain-JS comparison because
  * it must run before anything can be compiled) as a child process with the
- * case faked into `process.versions.node`. The two implementations cannot
- * import each other by design — this shared list is what pins them
- * equivalent, so adding a boundary case means adding it exactly here.
+ * case faked into `process.versions.node`, and
+ * `test/integration/runtime-verify-script.spec.ts` does the same for
+ * `scripts/verify-runtime.mjs` (a second plain-JS copy — the third
+ * implementation beside the canonical comparator and the launcher's —
+ * for the same reason). The implementations cannot import each other by
+ * design — this shared list is what pins them equivalent, so adding a
+ * boundary case means adding it exactly here.
  */
 
 /** What the gate concludes for a `process.versions.node` value. */
@@ -49,4 +53,7 @@ export const VERSION_GATE_CASES: readonly VersionGateCase[] = [
   { version: 'v22.13.0', outcome: 'invalid' },
   { version: '22.13.x', outcome: 'invalid' },
   { version: 'garbage', outcome: 'invalid' },
+  // Four segments are not a `major.minor.patch` prefix (U-036, D-161): the
+  // canonical parse rejects them loudly, the plain-JS copies fail closed.
+  { version: '22.13.0.1', outcome: 'invalid' },
 ];

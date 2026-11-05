@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type {
   SettingsView,
@@ -45,6 +45,15 @@ const emit = defineEmits<{
 // The browser's IANA list, read once — the same resolver that formats
 // every date in the UI (see ui/src/timezones.ts).
 const zones = browserTimeZones();
+
+// Task 181 (D-164): the suggestion list's keyboard seams — the input
+// keeps native typing and Tab order; ArrowDown hands focus to the first
+// suggestion button (real focusable buttons, no aria-activedescendant
+// combobox — D-156's native-controls stance, now with linkage), and
+// Escape abandons the edit (the draft reverts to the served truth, the
+// list collapses with it).
+const timezoneInput = ref<HTMLInputElement | null>(null);
+const timezoneList = ref<HTMLUListElement | null>(null);
 
 const timezone = ref(props.settings.app.timezone.value);
 const interval = ref(String(props.settings.app.pollingIntervalSeconds.value));
@@ -183,10 +192,56 @@ function onRetentionInput(event: Event): void {
   retention.value = (event.target as HTMLInputElement).value;
 }
 
-/** Applies a picked suggestion — a known-valid zone clears any stale error. */
-function pickZone(zone: string): void {
+/**
+ * Applies a picked suggestion — a known-valid zone clears any stale
+ * error — and returns focus to the field: the picked button unmounts
+ * with the collapsing list, so without this the keyboard user's focus
+ * falls to the document body (the review round's P1).
+ */
+async function pickZone(zone: string): Promise<void> {
   timezone.value = zone;
   timezoneError.value = null;
+  await nextTick();
+  timezoneInput.value?.focus();
+}
+
+/**
+ * Abandons the time-zone edit: the draft returns to the served truth and
+ * the suggestion list collapses with it (the list is a pure function of
+ * the draft). Keyboard dismissal, §14.1; also clears a stale field error
+ * — the reverted value is the served one the guards never judge.
+ */
+function revertTimezone(): void {
+  timezone.value = props.settings.app.timezone.value;
+  timezoneError.value = null;
+}
+
+/** The input's keyboard seams (see the task-181 block above). */
+function onTimezoneKeydown(event: KeyboardEvent): void {
+  // Escape is also the IME composition-cancel key — a composing user
+  // means to cancel the composition, not the edit.
+  if (event.isComposing) return;
+  if (event.key === 'Escape') {
+    revertTimezone();
+    return;
+  }
+  if (event.key === 'ArrowDown') {
+    const first = timezoneList.value?.querySelector('button') ?? null;
+    if (first !== null) {
+      // ArrowDown would only shuffle the caret; the list is the reason
+      // the key matters here.
+      event.preventDefault();
+      first.focus();
+    }
+  }
+}
+
+/** A suggestion button's Escape: revert and hand focus back to the field. */
+function onSuggestionKeydown(event: KeyboardEvent): void {
+  if (event.isComposing) return;
+  if (event.key !== 'Escape') return;
+  revertTimezone();
+  timezoneInput.value?.focus();
 }
 </script>
 
@@ -198,14 +253,21 @@ function pickZone(zone: string): void {
       <label for="settings-timezone">{{ t('settings.general.timezone') }}</label>
       <input
         id="settings-timezone"
+        ref="timezoneInput"
         v-model="timezone"
         data-testid="settings-timezone"
         type="text"
         autocomplete="off"
         :disabled="settings.app.timezone.source === 'environment'"
         :aria-invalid="timezoneError !== null || undefined"
+        aria-describedby="settings-timezone-hint"
+        :aria-controls="suggestions.length > 0 ? 'settings-timezone-suggestions' : undefined"
+        aria-autocomplete="list"
+        @keydown="onTimezoneKeydown"
       />
-      <p class="hint">{{ t('settings.general.timezoneHint') }}</p>
+      <p id="settings-timezone-hint" class="hint">
+        {{ t('settings.general.timezoneHint') }}
+      </p>
       <p
         v-if="settings.app.timezone.source === 'environment'"
         class="env-note"
@@ -215,8 +277,12 @@ function pickZone(zone: string): void {
       </p>
       <ul
         v-if="suggestions.length > 0"
+        id="settings-timezone-suggestions"
+        ref="timezoneList"
         class="suggestions"
+        :aria-label="t('settings.general.timezoneSuggestions')"
         data-testid="settings-timezone-suggestions"
+        @keydown="onSuggestionKeydown"
       >
         <li v-for="zone in suggestions" :key="zone">
           <button type="button" data-testid="settings-timezone-option" @click="pickZone(zone)">
@@ -377,7 +443,10 @@ function pickZone(zone: string): void {
   margin: 0;
   max-height: 12rem;
   overflow-y: auto;
-  padding: 0;
+  /* Room for the suggestion buttons' :focus-visible ring on all sides —
+   * the scroll container clips outlines that reach past its padding
+   * box (task 181): 0.25rem covers the 2px ring plus its 2px offset. */
+  padding: 0.25rem;
 }
 
 .suggestions button {

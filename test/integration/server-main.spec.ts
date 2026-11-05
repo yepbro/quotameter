@@ -81,7 +81,21 @@ function killIfAlive(child: ChildProcess): void {
   if (child.exitCode === null) child.kill('SIGKILL');
 }
 
-async function waitForFile(file: string, timeoutMs = 10_000): Promise<void> {
+/**
+ * Readiness-marker wait for the real-signal scenarios (`signals-ready` is
+ * the U-001 handshake: killing earlier races the OS-default disposition).
+ * Its latency is one full child boot — the runner transpiles the
+ * `runServer` module graph through `jiti/register` before installing the
+ * handlers. Measured per D-094 (U-044, decision D-163): 1.8–2.2 s ambient
+ * and under the six-hog rig in isolation, worst ≈4 s inside a full
+ * coverage `make check` under the rig (pool load ~16; the SIGTERM/SIGINT
+ * tests measured 4.7/5.5 s whole-test there). The 2026-11-04/05 waves
+ * tripped this wait at the old 10 s default while isolated runs stayed
+ * green. 20 s holds ≈5× the in-pool worst — D-094's bar is ≈3×.
+ */
+const MARKER_WAIT_TIMEOUT_MS = 20_000;
+
+async function waitForFile(file: string, timeoutMs = MARKER_WAIT_TIMEOUT_MS): Promise<void> {
   await vi.waitFor(
     () => {
       expect(existsSync(file), `expected ${file} to appear`).toBe(true);
@@ -604,7 +618,13 @@ describe('runServer (in-process)', () => {
 });
 
 describe('runServer (child process, real signals)', () => {
-  const CHILD_TIMEOUT = 20_000;
+  // One runner boot per test plus the signal-and-exit phase (measured
+  // 1.9–2.0 s ambient, 5.5 s worst in a full coverage `make check` under
+  // the six-hog rig, pool load ~16 — U-044/D-163). 30 s is the house
+  // value for the shape (the U-039 real-launcher pin) at ≈5× that worst;
+  // the 20 s marker-wait default above fits inside it with the exit
+  // phase to spare.
+  const CHILD_TIMEOUT = 30_000;
 
   async function runUntilCleanStop(signal: 'SIGTERM' | 'SIGINT'): Promise<void> {
     const dir: TempDir = await createTempDir(`quotameter-server-${signal.toLowerCase()}-`);

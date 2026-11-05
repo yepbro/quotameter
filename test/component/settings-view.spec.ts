@@ -606,6 +606,120 @@ describe('settings page: field validation (client guards before requests)', () =
   });
 });
 
+/* ── The time-zone suggestion keyboard semantics (task 181, D-164) ─────── */
+
+describe('settings page: the time-zone suggestion keyboard semantics (task 181)', () => {
+  it('the field announces the search affordance and controls the suggestion list', async () => {
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+
+    const field = wrapper.find('[data-testid="settings-timezone"]');
+    // The linkage (ARIA 1.2-clean: a plain textbox may not carry
+    // aria-expanded — that is the combobox contract D-156 declined): the
+    // hint's id describes the field (the search affordance is announced
+    // before anything is typed), and an aria-controls reference renders
+    // only beside a rendered list — axe rejects dangling ids.
+    expect(field.attributes('aria-describedby')).toBe('settings-timezone-hint');
+    expect(wrapper.find('#settings-timezone-hint').exists()).toBe(true);
+    expect(field.attributes('aria-autocomplete')).toBe('list');
+    expect(field.attributes('aria-controls')).toBeUndefined();
+    expect(wrapper.find('#settings-timezone-suggestions').exists()).toBe(false);
+
+    await field.setValue('Singapore');
+    const list = wrapper.find('[data-testid="settings-timezone-suggestions"]');
+    expect(list.exists()).toBe(true);
+    expect(list.attributes('aria-label')).toBe('Matching time zones');
+    expect(field.attributes('aria-controls')).toBe('settings-timezone-suggestions');
+    // The controlled id resolves to the rendered list.
+    expect(wrapper.find('#settings-timezone-suggestions').element).toBe(list.element);
+  });
+
+  it('ArrowDown hands focus to the first suggestion; Escape from the list reverts and refocuses', async () => {
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+
+    const field = wrapper.find('[data-testid="settings-timezone"]');
+    await field.setValue('Singapore');
+    await field.trigger('keydown', { key: 'ArrowDown' });
+    const options = wrapper.findAll('[data-testid="settings-timezone-option"]');
+    expect(options.length).toBeGreaterThan(0);
+    expect(document.activeElement).toBe(options[0]!.element);
+
+    await options[0]!.trigger('keydown', { key: 'Escape' });
+    await settle();
+    expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(field.element);
+    // The abandoned edit reverted to the served truth.
+    expect((field.element as HTMLInputElement).value).toBe('UTC');
+  });
+
+  it('Escape in the field reverts the edit, collapses the list, and clears the stale error', async () => {
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+
+    const field = wrapper.find('[data-testid="settings-timezone"]');
+    await field.setValue('Not/AZone');
+    await wrapper.find('[data-testid="settings-save"]').trigger('submit');
+    await settle();
+    expect(field.attributes('aria-invalid')).toBeDefined();
+
+    await field.setValue('Singapore');
+    expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(true);
+    await field.trigger('keydown', { key: 'Escape' });
+    await settle();
+    expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(false);
+    expect((field.element as HTMLInputElement).value).toBe('UTC');
+    expect(field.attributes('aria-invalid')).toBeUndefined();
+  });
+
+  it('ArrowDown without suggestions leaves the caret and focus alone', async () => {
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+
+    const field = wrapper.find('[data-testid="settings-timezone"]');
+    await field.setValue('Not/AZone');
+    // Focus the field the way a keyboard user would have it (VTU's
+    // trigger does not focus) — the no-op must not move it.
+    (field.element as HTMLInputElement).focus();
+    await field.trigger('keydown', { key: 'ArrowDown' });
+    expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(field.element);
+  });
+
+  it('a picked suggestion returns focus to the field (task 181)', async () => {
+    // The picked button unmounts with the collapsing list — without the
+    // hand-off, keyboard focus falls to the body (the review round's P1).
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+
+    const field = wrapper.find('[data-testid="settings-timezone"]');
+    await field.setValue('Singapore');
+    const options = wrapper.findAll('[data-testid="settings-timezone-option"]');
+    expect(options.length).toBeGreaterThan(0);
+    (options[0]!.element as HTMLElement).focus();
+    await options[0]!.trigger('click');
+    await settle();
+
+    expect((field.element as HTMLInputElement).value).toBe('Asia/Singapore');
+    expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(field.element);
+  });
+
+  it('an IME composition Escape does not revert the edit', async () => {
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+
+    const field = wrapper.find('[data-testid="settings-timezone"]');
+    await field.setValue('Singapore');
+    expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(true);
+    await field.trigger('keydown', { key: 'Escape', isComposing: true });
+    await settle();
+    // The composition owns the key press: the draft and list survive.
+    expect((field.element as HTMLInputElement).value).toBe('Singapore');
+    expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(true);
+  });
+});
+
 /* ── The save flow: minimal attempted writes and outcomes ─────────────── */
 
 describe('settings page: the save flow (D-130/D-140 minimal writes)', () => {

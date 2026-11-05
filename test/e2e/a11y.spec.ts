@@ -403,6 +403,172 @@ test('the settings page fits the 360 px viewport without horizontal overflow (ta
   expect(overflow, 'no horizontal overflow at 360 px').toBeLessThanOrEqual(0);
 });
 
+test('the charts region with annotations has no WCAG violations in either theme (task 181)', async ({
+  page,
+}) => {
+  // The §14.4 chart surface every earlier cell left unrendered: their
+  // fixtures answer the history load with an honest EMPTY series, so the
+  // `chart-empty` state rendered instead of the chart. This cell serves a
+  // points-bearing series (dual view, so the percent/absolute toggle
+  // renders) under the FULL annotation vocabulary — a reset, a gap, a
+  // failed cycle (the strip), a stopped region, and a windows-bearing
+  // peak-hours schedule (the bands) — so the scanned surface includes
+  // the chart image with its aria summary, the toggle fieldset, and the
+  // identity/range/metric regions around it, with a live ECharts canvas
+  // booted inside the scanned host.
+  await page.route('**/api/**', fulfillAnnotatedChartsBody);
+  await page.goto('/');
+  await expect(page.getByTestId('overview-charts')).toBeVisible();
+  await expect(page.getByTestId('chart-canvas')).toBeVisible();
+  await expect(page.getByTestId('chart-view-toggle')).toBeVisible();
+  // The ECharts instance booted — the scan runs against the live chart,
+  // not a bare host div.
+  await expect(page.locator('[data-testid="chart-canvas"] canvas')).toHaveCount(1);
+  // §14.1's non-color signals, stated in the chart's accessible name:
+  // ALL four annotation counts ride the aria summary as text (the
+  // component composes them in this order) — dropping any annotation
+  // class fails here, not just the first two.
+  await expect(page.getByTestId('chart-canvas')).toHaveAttribute(
+    'aria-label',
+    /quota resets.+collection gaps.+stopped periods.+failed collections/s,
+  );
+  await expect(page.getByTestId('api-error')).toHaveCount(0);
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
+test('the populated accounts page has no WCAG violations in either theme (task 181)', async ({
+  page,
+}) => {
+  // The management surface's populated arm — earlier cells scanned only
+  // the degradation surface (the failed-load notice). One account with
+  // a file-sourced key serves the selector, the management card's facts
+  // and action buttons, and the add form; the purge confirm panel opens
+  // once so its tinted danger surface and typed-label field join the
+  // scan (the panel persists across the theme flips below).
+  await page.route('**/api/**', (route) =>
+    fulfillOverviewBody(route, {
+      '/api/accounts': {
+        accounts: [
+          {
+            id: 'acc-1',
+            providerId: 'zai-coding-plan',
+            label: 'Main',
+            enabled: true,
+            status: 'active',
+            hasKey: true,
+            keySource: 'file',
+            keyMask: '********',
+            planName: null,
+            createdAt: null,
+            archivedAt: null,
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto('/accounts');
+  await expect(page.getByTestId('account-card')).toBeVisible();
+  await expect(page.getByTestId('add-account-form')).toBeVisible();
+  await page.getByTestId('purge-button').click();
+  await expect(page.getByTestId('purge-confirm')).toBeVisible();
+  await expect(page.getByTestId('api-error')).toHaveCount(0);
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
+test('the accounts page fits the 360 px viewport without horizontal overflow (task 181)', async ({
+  page,
+}) => {
+  // §14.1's 360 px floor against this page's widest content: the
+  // management card's facts grid (a fixed 8rem dt track) beside the
+  // selector and add form — the task-175/179 precedent cells cover the
+  // overview and settings; this closes the matrix for the third page.
+  await page.setViewportSize({ width: 360, height: 640 });
+  await page.route('**/api/**', (route) =>
+    fulfillOverviewBody(route, {
+      '/api/accounts': {
+        accounts: [
+          {
+            id: 'acc-1',
+            providerId: 'zai-coding-plan',
+            label: 'Main',
+            enabled: true,
+            status: 'active',
+            hasKey: true,
+            keySource: 'file',
+            keyMask: '********',
+            planName: null,
+            createdAt: null,
+            archivedAt: null,
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto('/accounts');
+  await expect(page.getByTestId('account-card')).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow, 'no horizontal overflow at 360 px').toBeLessThanOrEqual(0);
+});
+
+test('the login failure surface has no WCAG violations in either theme (task 181)', async ({
+  page,
+}) => {
+  // The §14.6 form's failure arm — the earlier login cell scanned the
+  // resting form only. One refused attempt renders the role="alert"
+  // sentence beside the aria-invalid field (D-146's
+  // invalid-credentials arm), and THAT surface goes through axe with
+  // its tokens applied per mode.
+  await page.route('**/auth/login', (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: {
+          code: 'UNAUTHENTICATED',
+          message: 'Authentication required',
+          details: { reason: 'invalid-credentials' },
+        },
+      }),
+    }),
+  );
+  await page.goto('/login');
+  await page.getByTestId('login-password').fill('a-wrong-candidate');
+  await page.getByTestId('login-submit').click();
+  await expect(page.getByTestId('login-failure')).toBeVisible();
+  await expect(page.getByTestId('login-password')).toHaveAttribute('aria-invalid', 'true');
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
+test('the login page fits the 360 px viewport without horizontal overflow (task 181)', async ({
+  page,
+}) => {
+  // §14.1's 360 px floor for the fourth page — the form's capped-width
+  // column and the shell header wrapping around it.
+  await page.setViewportSize({ width: 360, height: 640 });
+  await page.goto('/login');
+  await expect(page.getByTestId('login-form')).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow, 'no horizontal overflow at 360 px').toBeLessThanOrEqual(0);
+});
+
 /**
  * Fulfills one settings-page GET with the given per-path body overrides
  * on top of the standing providers default (the real registered provider
@@ -486,6 +652,239 @@ async function fulfillOverviewBody(
     // chart surface renders its stated no-schedule state, never an error.
     '/api/peak-hours': healthyPeakHoursBody(`${pathname}${search}`),
     ...overrides,
+  };
+  const answer = body[pathname];
+  await route.fulfill({
+    status: answer === undefined ? 404 : 200,
+    contentType: 'application/json',
+    body: JSON.stringify(
+      answer ?? { error: { code: 'NOT_FOUND', message: 'no route', details: null } },
+    ),
+  });
+}
+
+/* ── The task-181 annotation-bearing charts fixture ─────────────────────── */
+
+/** The wire shape of one account row (the §13 accounts surface). */
+function accountRow(): Record<string, unknown> {
+  return {
+    id: 'acc-1',
+    providerId: 'zai-coding-plan',
+    label: 'Main',
+    enabled: true,
+    status: 'active',
+    hasKey: true,
+    keySource: 'file',
+    keyMask: '********',
+    planName: null,
+    createdAt: null,
+    archivedAt: null,
+  };
+}
+
+/** One dual-view series point at the given instant. */
+function annotatedPointAt(at: number): Record<string, unknown> {
+  return {
+    kind: 'point',
+    collectedAt: at,
+    used: 120_000,
+    remaining: 30_000,
+    limit: 150_000,
+    percentUsed: 80,
+    percentRemaining: 20,
+    resetsAt: null,
+    isValid: true,
+    invalidReason: null,
+  };
+}
+
+/** `yyyy-MM-ddTHH:mm` — the D-073 local string in the schedule zone. */
+const SCHEDULE_ZONE = 'Asia/Singapore';
+function localTime(at: number): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SCHEDULE_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(at));
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? '00';
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
+}
+
+/**
+ * Serves the populated overview with the FULL §14.4 annotation
+ * vocabulary (task 181's axe fixture): a dual-view series (the toggle
+ * renders), a reset and a gap on the metric, a failed cycle and a
+ * stopped region (the account-level marks), and a windows-bearing
+ * peak-hours schedule (the bands) — every annotation surface the chart
+ * card can render, over the intercepted window like the sync suite's
+ * fixture.
+ */
+async function fulfillAnnotatedChartsBody(route: Route): Promise<void> {
+  const url = new URL(route.request().url());
+  const { pathname, search } = url;
+  const params = new URLSearchParams(search);
+  const requestedFrom = Date.parse(params.get('from') ?? '');
+  const requestedTo = Date.parse(params.get('to') ?? '');
+  const span = requestedTo - requestedFrom;
+  const at = (fraction: number): number => requestedFrom + Math.floor(span * fraction);
+  const range = {
+    outcome: 'ok',
+    requestedFrom,
+    requestedTo,
+    effectiveFrom: requestedFrom,
+    effectiveTo: requestedTo,
+    retentionHorizon: null,
+  };
+  // The range-keyed routes answer only range-bearing requests; every
+  // other GET (settings, accounts, status, quota, providers) skips the
+  // block entirely — their URLs carry no boundaries to echo.
+  const ranged =
+    Number.isFinite(requestedFrom) && Number.isFinite(requestedTo) && span > 0
+      ? {
+          '/api/history': {
+            accountId: params.get('accountId') ?? '',
+            metric: params.get('metric') ?? '',
+            unit: 'CREDITS',
+            limitType: 'ROLLING_WINDOW',
+            range,
+            downsampled: false,
+            resolutionMs: null,
+            sourcePointCount: 2,
+            points: [annotatedPointAt(at(0.25)), annotatedPointAt(at(0.75))],
+          },
+          '/api/events': {
+            accountId: params.get('accountId') ?? '',
+            metric: null,
+            range,
+            // Time-ascending (the wire contract's documented order).
+            events: [
+              {
+                kind: 'collection_error',
+                outcome: 'rate_limited',
+                fromEpochMs: at(0.1),
+                toEpochMs: at(0.1) + 30_000,
+                durationMs: 30_000,
+                httpStatus: 429,
+                message: 'Provider rate limited the request.',
+                attempts: 2,
+                retryAfterSeconds: 5,
+              },
+              {
+                kind: 'gap',
+                metricKey: 'mcp-monthly',
+                fromEpochMs: at(0.3),
+                toEpochMs: at(0.4),
+                elapsedMs: Math.floor(span * 0.1),
+                intervalSeconds: 300,
+                thresholdMs: 900_000,
+              },
+              {
+                kind: 'reset',
+                metricKey: 'mcp-monthly',
+                eventAt: at(0.5),
+                runId: null,
+                details: { reason: 'limit-change' },
+              },
+              {
+                kind: 'stopped_service',
+                fromEpochMs: at(0.6),
+                toEpochMs: at(0.7),
+                elapsedMs: Math.floor(span * 0.1),
+                intervalSeconds: 300,
+                thresholdMs: 900_000,
+              },
+            ],
+          },
+          '/api/peak-hours': {
+            accountId: params.get('accountId') ?? '',
+            providerId: 'zai-coding-plan',
+            timezone: 'Asia/Singapore',
+            offPeakMultiplier: 0.5,
+            range,
+            intervals: [
+              {
+                kind: 'off-peak',
+                start: requestedFrom,
+                end: at(0.5),
+                multiplier: 0.5,
+                localStart: localTime(requestedFrom),
+                localEnd: localTime(at(0.5)),
+              },
+              {
+                kind: 'peak',
+                start: at(0.5),
+                end: requestedTo,
+                multiplier: 1,
+                windowId: 'zai-weekday-peak',
+                name: 'Z.ai Coding Plan peak hours',
+                localStart: localTime(at(0.5)),
+                localEnd: localTime(requestedTo),
+              },
+            ],
+          },
+        }
+      : {};
+  const body: Record<string, unknown> = {
+    '/api/accounts': { accounts: [accountRow()] },
+    '/api/providers': {
+      providers: [
+        {
+          id: 'zai-coding-plan',
+          name: 'Z.ai Coding Plan',
+          peakHours: {
+            timezone: 'Asia/Singapore',
+            offPeakMultiplier: 0.5,
+            windows: [
+              {
+                id: 'zai-weekday-peak',
+                name: 'Z.ai Coding Plan peak hours',
+                days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+                start: '14:00',
+                end: '18:00',
+                multiplier: 1,
+              },
+            ],
+          },
+          metrics: [{ metricKey: 'mcp-monthly', label: 'Monthly MCP tool quota' }],
+        },
+      ],
+    },
+    '/api/status': {
+      status: 'ok',
+      pollingIntervalSeconds: 300,
+      accounts: [{ id: 'acc-1', status: 'fresh', lastSuccessAt: null, lastError: null }],
+    },
+    '/api/settings': healthySettingsBody(),
+    '/api/quota': {
+      accountId: 'acc-1',
+      status: 'fresh',
+      collectedAt: 1,
+      planName: null,
+      metrics: [
+        {
+          metricKey: 'mcp-monthly',
+          limitType: 'MONTHLY',
+          unit: 'REQUESTS',
+          windowSeconds: null,
+          used: 1,
+          remaining: null,
+          limit: null,
+          percentUsed: null,
+          percentRemaining: null,
+          resetsAt: null,
+          isValid: true,
+          invalidReason: null,
+          derivedFields: null,
+          collectedAt: 1,
+        },
+      ],
+    },
+    ...ranged,
   };
   const answer = body[pathname];
   await route.fulfill({

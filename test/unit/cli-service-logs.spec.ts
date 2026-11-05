@@ -587,12 +587,14 @@ describe('runLogsCommand (seam-driven matrix)', () => {
 
 describe('runLogsCommand (production defaults)', () => {
   /**
-   * The container and the systemd-less CI test runners (the pinned 24.04
-   * image, D-160) ship no systemd and no quotameter
-   * installation, so the default seams are exercised on the branches those
-   * environments deterministically produce — the entry-evaluated seam
-   * consts cover the `??` default arms the moment the command runs, before
-   * any gate decides whether journalctl actually streams.
+   * The default seams are exercised with the capability probe pinned to the
+   * absent class: no hosted CI environment deterministically produces it
+   * since the runner-image migration put a live user systemd on every image
+   * (D-160), and the container's own systemd-less real probe is covered by
+   * the integration suite. Everything else — owner, disk, lock — resolves
+   * through the production defaults on the branches those pins produce, and
+   * the entry-evaluated seam consts cover the `??` default arms the moment
+   * the command runs, before any gate decides whether journalctl streams.
    */
   function recorder(): { ctx: CliContext; out(): string; err(): string } {
     const outLines: string[] = [];
@@ -623,7 +625,9 @@ describe('runLogsCommand (production defaults)', () => {
           QUOTAMETER_DATA_DIR: join(dir.path, 'data'),
         },
         async () => {
-          const code = await runLogsCommand()(sink.ctx);
+          const code = await runLogsCommand({
+            probeCapabilities: async () => ({ systemd: false, userManager: false }),
+          })(sink.ctx);
           expect(code).toBe(1);
         },
       );
@@ -651,7 +655,9 @@ describe('runLogsCommand (production defaults)', () => {
           QUOTAMETER_DATA_DIR: join(dir.path, 'data'),
         },
         async () => {
-          const code = await runLogsCommand()(sink.ctx);
+          const code = await runLogsCommand({
+            probeCapabilities: async () => ({ systemd: false, userManager: false }),
+          })(sink.ctx);
           expect(code).toBe(1);
         },
       );

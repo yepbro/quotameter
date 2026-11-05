@@ -368,6 +368,9 @@ export const en = {
       heading: 'General',
       timezone: 'Display time zone',
       timezoneHint: 'An explicit IANA zone — type to search, then pick a match.',
+      // The suggestion list's accessible name (task 181, D-164): the
+      // input's aria-controls points here.
+      timezoneSuggestions: 'Matching time zones',
       timezoneBlank: 'A display time zone is required.',
       timezoneInvalid: 'Enter a valid IANA time-zone name.',
       interval: 'Polling interval (seconds)',

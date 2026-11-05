@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AccountView } from '../../../src/schemas/api/accounts';
 import type { ProviderView } from '../../../src/schemas/api/providers';
@@ -113,8 +113,21 @@ function onAccountChanged(): void {
   void reload();
 }
 
-function onAccountRemoved(): void {
-  void reload();
+/** The selector the removed account's focus hand-off targets (task 181). */
+const accountSelect = ref<HTMLSelectElement | null>(null);
+
+/**
+ * A removed account takes its whole card — and the focused control
+ * inside it — out of the DOM: after the list settles, focus moves to
+ * the selector (the management surface's stable control) instead of
+ * falling to the document body. The last account's removal unmounts
+ * the selector too; the honest degradation is the body (the add form
+ * below remains the next tab stop's page flow).
+ */
+async function onAccountRemoved(): Promise<void> {
+  await reload();
+  await nextTick();
+  accountSelect.value?.focus();
 }
 
 function onAccountCreated(): void {
@@ -146,6 +159,7 @@ function onAccountCreated(): void {
         <label for="account-select">{{ t('accounts.selector.label') }}</label>
         <select
           id="account-select"
+          ref="accountSelect"
           data-testid="account-select"
           :value="selection.selectedId.value"
           @change="onSelect"

@@ -97,7 +97,23 @@ function killIfAlive(child: ChildProcess): void {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
 }
 
-async function waitForFile(file: string, timeoutMs = 10_000): Promise<void> {
+/**
+ * Readiness-marker wait for the real-process scenarios below. Every marker
+ * (`held`, `signals-ready`, `saw-stale`, `captured`, `guard-waiting`) is one
+ * causal file handshake (U-001/U-002) whose latency is one full child boot:
+ * the runner transpiles the `runServer` module graph through
+ * `jiti/register` before it can write anything. Measured per D-094 (U-044,
+ * decision D-163): 1.8–2.2 s per marker ambient and under the six-hog rig in
+ * isolation, worst ≈5.5 s per boot inside a full coverage `make check` under
+ * the rig (pool load ~14–17; the three-boot U-017 arms measured 13.9–17.4 s
+ * whole-test across the full-rig runs). The 2026-11-04/05 waves expired these waits at the old
+ * 10 s default twice (the U-017 guard-waiting and saw-stale assertions,
+ * ~28 s into the test under host load 20–35) while isolated runs stayed
+ * green. 20 s holds ≈3.6× the in-pool boot worst — D-094's bar is ≈3×.
+ */
+const MARKER_WAIT_TIMEOUT_MS = 20_000;
+
+async function waitForFile(file: string, timeoutMs = MARKER_WAIT_TIMEOUT_MS): Promise<void> {
   await vi.waitFor(
     () => {
       expect(existsSync(file), `expected ${file} to appear`).toBe(true);
@@ -958,7 +974,14 @@ describe('runServer integration', () => {
 });
 
 describe('real processes (child, via singleInstanceRunner)', () => {
-  const CHILD_TIMEOUT = 20_000;
+  // Each test pays one or two runner boots. Full-rig samples varied with
+  // pool scheduling: 3.7–3.9 s ambient, 5.8/6.2 s and 10.6/11.1 s worst
+  // across full coverage `make check` runs under the six-hog rig (pool
+  // load ~15–17 — U-044/D-163), so the pinned value sizes from the hot
+  // pool: 45 s holds ≈4× the 11.1 s worst (D-094's bar is ≈3×), and the
+  // 20 s marker-wait default above fits inside it with the exit phase
+  // to spare.
+  const CHILD_TIMEOUT = 45_000;
 
   it(
     'makes a second real process exit 1 with an actionable error',
@@ -1053,6 +1076,17 @@ describe('real processes (child, via singleInstanceRunner)', () => {
     CHILD_TIMEOUT,
   );
 
+  // The two U-017 arms below pay three runner boots each plus the
+  // orchestration handshakes; their 60 s pins predate U-044 and are
+  // re-margined, not raised: measured 5.5 s ambient and 13.9–17.4 s
+  // across three full coverage `make check` runs under the six-hog rig
+  // (pool load ~14–17, U-044/D-163), so 60 s holds ≈3.4× the rig worst —
+  // D-094's bar is ≈3×, applied to the measured whole-test worst (not
+  // the sum of the inner 20 s wait ceilings: waits are failure ceilings,
+  // not budgets, and only a pathological chain of just-under-ceiling
+  // boots could make the test timeout pre-empt a marker wait's own
+  // message). Both 2026-11-04/05 flakes were the inner marker waits
+  // (now 20 s), never this pin.
   it('keeps mutual exclusion when a stale break races a live holder and a third starter (U-017 regression)', async () => {
     const dir = await createTempDir('quotameter-lock-u017-review-');
     // The reviewer's stale starter lock: a dead pid no process ever has.
