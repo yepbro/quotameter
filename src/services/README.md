@@ -331,21 +331,29 @@ environment per D-114), and §14.3's overview are the consumers.
 Landed: [`polling-persist.ts`](./polling-persist.ts) — the run writer behind
 the scheduler's settle seam (task 110, decision D-069):
 `createCycleRecorder({ account, provider, repository, clock, intervalSeconds })`
-produces one account's D-066 closure pair: `attempt(signal)` stamps the
+produces one account's D-066 closures: `attempt(signal)` stamps the
 cycle's wall-clock start (§7.1's actual collection timestamps) and makes the
 raw `fetchSnapshot` call D-059's wrapper needs unwrapped;
 `settleCycle(result)` classifies the retried cycle with task 105, persists it
 through `persistCollectionCycle` (D-060's §11.1 transaction — one
 `collection_runs` row per cycle, the snapshot with its metric rows only for a
 successful one, the §7.4 sanitized payload beside a parse-error run), and
-returns the classification the engine gates on. A provider-level success
-whose value fails §8.4 validation (the seam's input is `unknown`) becomes a
-`parse_error` run without a snapshot; a caller abort classifies `'cancelled'`
-and is deliberately unpersisted (service lifecycle — §12.2's no-record
-class); an error outside both taxonomies throws, contained per §7.2. The
-adapter parse failure is recognized structurally (`reason`/
-`sanitizedPayload`/`httpStatus` — the layout forbids importing the adapter
-island), `retry_after_seconds` is `deferNextPoll`'s decision at the settle
+returns the classification the engine gates on; `abandonCycle()` drops the
+start stamp when the wrapper itself threw and no settle can ever come —
+the engine's notification hook (U-035, D-169) without which a thrown
+wrapper's stamp bled into the next run row's `started_at`. A provider-level
+success whose value fails §8.4 validation (the seam's input is `unknown`)
+becomes a `parse_error` run without a snapshot; a caller abort classifies
+`'cancelled'` and is deliberately unpersisted (service lifecycle — §12.2's
+no-record class); an error outside both taxonomies throws, contained per
+§7.2. Since U-035 (D-169) a successful run retains the snapshot's optional
+transport evidence — the delivered 2xx of the exchange that produced it —
+as §11.2's `http_status`, through the same classification the failure
+statuses ride. The adapter parse failure is recognized structurally
+(`reason`/`sanitizedPayload`/`httpStatus`/`contentType` — the layout forbids
+importing the adapter island), its observed `Content-Type` rides the §7.4
+payload as §11.2's raw-response "content type",
+`retry_after_seconds` is `deferNextPoll`'s decision at the settle
 reading (D-062: seconds only for a deferred 429, `NULL` otherwise),
 `intervalSeconds` is read at settle (§11.2's "interval in effect"), and §12.1
 reset-event detection (tasks 117/118) plugs into the success write's empty
@@ -368,11 +376,14 @@ the wall clock feeds only the epoch-expressed gates — the D-062
 and the D-064 suspension cadence (hourly verification probes through
 `admitVerification`, releases by key change via `setAccounts`, manual test
 via `requestManualTest`, or a successful probe). Each account is an
-injectable closure pair: `attempt(signal)` (the raw fetch, wrapped in
+injectable closure set: `attempt(signal)` (the raw fetch, wrapped in
 D-059's `runCycleWithRetries` by the engine, seams passed through) and
 `settleCycle(result)` — task 110's classify+persist seam, whose returned
 D-048 classification drives every scheduling decision; a throwing seam is
-contained (the account reschedules on the plain interval, §7.2 isolation).
+contained (the account reschedules on the plain interval, §7.2 isolation) —
+plus the optional `abandonCycle()` hook the engine invokes when the wrapper
+itself threw, so a never-settling cycle leaves no per-cycle state behind
+(U-035/D-169).
 `setAccounts`/`setIntervalMs` handle mid-run changes (added accounts poll
 immediately; a key change mid-flight discards the stale cycle's outcome —
 an old key's 401 never suspends a new key; interval changes re-anchor);

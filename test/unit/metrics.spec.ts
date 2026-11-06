@@ -368,6 +368,23 @@ describe('findProviderSnapshotProblems', () => {
     ).toEqual(['planName: must be a non-empty string when present']);
   });
 
+  it('accepts the optional transport-evidence status and rejects a bogus one (D-169)', () => {
+    // Absent is legal (an adapter that stamps nothing) and so is every
+    // status §11.2's `collection_runs_http_status_range` CHECK admits.
+    expect(findProviderSnapshotProblems(validSnapshot())).toEqual([]);
+    expect(findProviderSnapshotProblems(validSnapshot({ httpStatus: 100 }))).toEqual([]);
+    expect(findProviderSnapshotProblems(validSnapshot({ httpStatus: 599 }))).toEqual([]);
+    const problem = 'httpStatus: must be an integer in [100, 599] when present';
+    expect(findProviderSnapshotProblems(validSnapshot({ httpStatus: 99 }))).toEqual([problem]);
+    expect(findProviderSnapshotProblems(validSnapshot({ httpStatus: 600 }))).toEqual([problem]);
+    expect(findProviderSnapshotProblems(validSnapshot({ httpStatus: 200.5 }))).toEqual([problem]);
+    expect(
+      findProviderSnapshotProblems(
+        validSnapshot({ httpStatus: '200' } as unknown as ProviderSnapshot),
+      ),
+    ).toEqual([problem]);
+  });
+
   it('rejects a non-array metrics field outright', () => {
     const snapshot = validSnapshot({ metrics: undefined as unknown as NormalizedMetric[] });
     expect(findProviderSnapshotProblems(snapshot)).toEqual([

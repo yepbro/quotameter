@@ -11,7 +11,7 @@
  * `Retry-After` deferral (D-062's `notBeforeEpochMs`) and task 108's
  * suspension cadence (D-064) — and for the settle context task 110 will
  * timestamp. Nothing here persists anything or classifies providers: each
- * account arrives as an injectable closure pair, and the run writer (110)
+ * account arrives as injectable closures, and the run writer (110)
  * is the seam that turns a retried cycle into a classified, stored run.
  *
  * Composition of the landed seams:
@@ -30,7 +30,10 @@
  * - a failure for one account never stops the others (§7.2): provider
  *   failures arrive as `CycleRetryResult` values, and even a **throwing**
  *   `settleCycle` seam is contained — the account simply reschedules on
- *   the plain interval.
+ *   the plain interval. A **throwing wrapper** (a broken sleep seam, an
+ *   invalid random roll) gets the same containment plus the optional
+ *   `abandonCycle` notification, so a cycle that can never settle leaves
+ *   no per-cycle state behind (U-035/D-169).
  *
  * The one interplay the spec leaves open is decided in D-066: what
  * "sequential" means when a cycle hangs. The dispatcher is strictly
@@ -162,6 +165,17 @@ export interface PollingAccount {
    * others.
    */
   readonly settleCycle: (result: CycleRetryResult<unknown>) => CycleOutcome | Promise<CycleOutcome>;
+  /**
+   * Optional notification that a cycle will never settle: the engine calls
+   * it exactly when D-059's wrapper itself threw (a broken sleep seam, an
+   * invalid random roll — contained per §7.2 like a throwing settle), so the
+   * account closure can drop per-cycle state that would otherwise leak into
+   * the next cycle. Task 110's recorder drops its cycle-start stamp here
+   * (U-035/D-169: without this, a thrown wrapper's stamp bled into the next
+   * run row's `started_at`). A throwing `abandonCycle` is contained the same
+   * way; absent means the engine simply proceeds.
+   */
+  readonly abandonCycle?: () => void;
 }
 
 /* ── Options ───────────────────────────────────────────────────────────── */
@@ -359,6 +373,9 @@ function requireAccounts(accounts: readonly PollingAccount[], caller: string): v
     }
     if (typeof account.settleCycle !== 'function') {
       throw new TypeError(`${caller}: settleCycle must be a function`);
+    }
+    if (account.abandonCycle !== undefined && typeof account.abandonCycle !== 'function') {
+      throw new TypeError(`${caller}: abandonCycle must be a function when present`);
     }
     if (seen.has(account.accountId)) {
       throw new TypeError(`${caller}: duplicate account id '${account.accountId}'`);
@@ -569,11 +586,26 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
     const operation = inFlightTracker?.begin();
     const settled = (async (): Promise<void> => {
       try {
-        const result = await runCycleWithRetries(() => account.attempt(flight.controller.signal), {
-          signal: flight.controller.signal,
-          random,
-          sleep,
-        });
+        let result: CycleRetryResult<unknown>;
+        try {
+          result = await runCycleWithRetries(() => account.attempt(flight.controller.signal), {
+            signal: flight.controller.signal,
+            random,
+            sleep,
+          });
+        } catch {
+          // The wrapper itself threw (a broken sleep seam, an invalid random
+          // roll — D-059's programming-mistake throws): this cycle can never
+          // settle, so the account closure is told before per-cycle state can
+          // outlive it (U-035, D-169 — the recorder's start stamp would
+          // otherwise bleed into the next run row's `started_at`). A throwing
+          // abandon hook is one more programming mistake on this already-
+          // contained path: it propagates to the outer catch below, which
+          // makes the same plain-interval fallback — no separate containment.
+          account.abandonCycle?.();
+          rescheduleBestEffort(entry);
+          return;
+        }
         let classified: CycleOutcome;
         try {
           classified = await account.settleCycle(result);
@@ -604,8 +636,9 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
         entry.notBeforeEpochMs = defer.deferred ? defer.notBeforeEpochMs : Number.NEGATIVE_INFINITY;
         scheduleNextPoll(entry);
       } catch {
-        // Programming mistakes only (a fail-fast random roll, a broken
-        // sleep seam): same containment, same plain-interval fallback.
+        // Programming mistakes only (a fail-fast random roll, a broken sleep
+        // seam, a throwing abandon hook): same containment, same
+        // plain-interval fallback.
         rescheduleBestEffort(entry);
       } finally {
         // Cleanup first, third-party seams last: a throwing tracker must

@@ -7,7 +7,7 @@
  * one transaction." Task 089 built that transaction
  * (`persistCollectionCycle`, D-060); task 109 built the engine that runs the
  * cycles (D-066); this module is the seam between them —
- * {@link createCycleRecorder} produces one account's D-066 closure pair:
+ * {@link createCycleRecorder} produces one account's D-066 closures:
  *
  * - `attempt(signal)` is the raw §8.1 cycle attempt — the single
  *   `fetchSnapshot` call D-059's wrapper needs unwrapped (retry eligibility
@@ -23,6 +23,16 @@
  *   classification is the return value the engine gates on (suspension
  *   transitions, `Retry-After` deferral, the next schedule); nothing here
  *   re-decides any of their policies.
+ * - `abandonCycle()` drops the start stamp when the wrapper itself threw and
+ *   no settle can ever come — the stale-stamp leak U-035 closes (D-169).
+ *
+ * Evidence columns this seam completes (U-035, D-169): a successful cycle
+ * retains the snapshot's optional transport evidence — §8.4's
+ * `ProviderSnapshot.httpStatus` (the delivered 2xx of the exchange that
+ * produced it) — as §11.2's `http_status` through the very classification
+ * the failure statuses ride; and the §7.4 raw response carries the adapter's
+ * observed `Content-Type` header (§11.2's raw-response "content type",
+ * sanitized at the adapter) instead of a hardcoded NULL.
  *
  * Pinned interpretations (D-069):
  *
@@ -52,7 +62,8 @@
  *   import a concrete adapter (the layout's adapter-island rule), so the
  *   parse failure is recognized by its public field shape — `reason`
  *   (non-blank static English), `sanitizedPayload` (the already-sanitized
- *   §7.4 body), `httpStatus` (absent or 100–599) — mirroring the Z.ai
+ *   §7.4 body), `httpStatus` (absent or 100–599), `contentType` (absent,
+ *   blank-as-absent, or a non-empty string; D-169) — mirroring the Z.ai
  *   adapter's `SnapshotParseError`; the unit spec pins the narrowing against
  *   that real class.
  * - **`retry_after_seconds` is D-062's decision at the settle reading.**
@@ -131,11 +142,13 @@ export interface CycleRecorderOptions {
 }
 
 /**
- * One account's cycle wiring — D-066's closure pair, shaped to spread into a
+ * One account's cycle wiring — D-066's closures, shaped to spread into a
  * {@link import('./polling-scheduler').PollingAccount} beside its
- * `accountId`/`keyIdentity`. The pair shares one per-cycle timing cell, safe
- * because the engine's per-account serialization is structural (an account
- * with a live flight is never dispatchable).
+ * `accountId`/`keyIdentity`. The closures share one per-cycle timing cell,
+ * safe because the engine's per-account serialization is structural (an
+ * account with a live flight is never dispatchable); `abandonCycle` is the
+ * cell's third owner — the engine's notification that a cycle will never
+ * settle.
  */
 export interface CycleRecorder {
   /**
@@ -156,6 +169,19 @@ export interface CycleRecorder {
    * per §7.2 isolation.
    */
   readonly settleCycle: (result: CycleRetryResult<unknown>) => CycleOutcome;
+  /**
+   * Drops the per-cycle start stamp for a cycle that will never settle: the
+   * engine calls this when D-059's wrapper itself threw (a broken sleep
+   * seam, an invalid random roll — the wrapper's own programming-mistake
+   * throws, contained by the engine's §7.2 isolation). Without it the
+   * orphaned stamp would bleed into the next cycle's first attempt
+   * (`attempt`'s `??=` keeps a set stamp), and the next run row's
+   * `started_at` — D-069's "real reading at the cycle's first attempt" —
+   * would name a cycle up to an hour earlier (a `Retry-After` deferral or
+   * suspension cadence away). A no-op when no stamp is held; never persists
+   * anything — the dead cycle stays in §12.2's no-record class.
+   */
+  readonly abandonCycle: () => void;
 }
 
 /* ── Internal helpers ──────────────────────────────────────────────────── */
@@ -194,20 +220,27 @@ function findSnapshotProblems(value: unknown, providerId: string): string[] {
 interface AdapterParseFailure {
   readonly reason: string;
   readonly httpStatus: number | undefined;
+  /** §11.2's raw-response "content type" (D-051/D-169); `null` = absent. */
+  readonly contentType: string | null;
   readonly sanitizedPayload: string;
 }
 
 /**
  * Recognizes an adapter parse failure structurally: an `Error` carrying the
  * non-blank static-English `reason`, the sanitized §7.4 `sanitizedPayload`,
- * and — when present — an HTTP status in §11.2's 100–599 retention range.
- * Services may not import a concrete adapter, so the field shape (pinned on
- * the Z.ai `SnapshotParseError`) is the contract; anything else returns
- * `undefined` and falls through to the fail-fast branch.
+ * and — when present — an HTTP status in §11.2's 100–599 retention range and
+ * a content type (a string; a blank one reads as absent — the seam's
+ * stricter-than-SQL choice, since the column's own CHECK rejects only the
+ * empty string). Services may not import a concrete adapter, so the field
+ * shape (pinned on the Z.ai `SnapshotParseError`) is the contract; anything
+ * else returns `undefined` and falls through to the fail-fast branch.
  */
 function adapterParseFailure(error: unknown): AdapterParseFailure | undefined {
   if (!(error instanceof Error)) return undefined;
-  const { reason, httpStatus, sanitizedPayload } = error as unknown as Record<string, unknown>;
+  const { reason, httpStatus, contentType, sanitizedPayload } = error as unknown as Record<
+    string,
+    unknown
+  >;
   if (typeof reason !== 'string' || reason.trim() === '') return undefined;
   if (typeof sanitizedPayload !== 'string') return undefined;
   if (httpStatus !== undefined) {
@@ -220,7 +253,20 @@ function adapterParseFailure(error: unknown): AdapterParseFailure | undefined {
       return undefined;
     }
   }
-  return { reason, httpStatus: httpStatus as number | undefined, sanitizedPayload };
+  // The column admits NULL or non-empty (`raw_responses_content_type_nonempty`
+  // rejects only the empty string — whitespace would pass it): reading a
+  // blank value as absent is this seam's stricter choice, because a
+  // whitespace-only media type is no media type; a non-string is a bogus
+  // field and falls through to the fail-fast branch.
+  if (typeof contentType !== 'string' && contentType !== undefined) return undefined;
+  const typeOrNull =
+    typeof contentType === 'string' && contentType.trim() !== '' ? contentType : null;
+  return {
+    reason,
+    httpStatus: httpStatus as number | undefined,
+    contentType: typeOrNull,
+    sanitizedPayload,
+  };
 }
 
 /**
@@ -293,10 +339,10 @@ function failureCycleWrite(
 /* ── The factory ───────────────────────────────────────────────────────── */
 
 /**
- * Creates one account's cycle recorder. The returned pair is complete wiring
- * for D-066's engine: register it beside the account's `accountId` and
- * `keyIdentity`, and every cycle the engine runs for that account lands in
- * `collection_runs` (with its snapshot exactly when the provider cycle
+ * Creates one account's cycle recorder. The returned closures are complete
+ * wiring for D-066's engine: register them beside the account's `accountId`
+ * and `keyIdentity`, and every cycle the engine runs for that account lands
+ * in `collection_runs` (with its snapshot exactly when the provider cycle
  * succeeded at §8.4 validation).
  */
 export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorder {
@@ -339,16 +385,29 @@ export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorde
   // One cell per recorder: the engine never runs a second cycle for an
   // account while one is in flight (D-066), so attempt→settle pairs cannot
   // interleave. Cleared at settle, so a settle without a preceding attempt —
-  // or a second settle for one cycle — is a loud wiring bug.
+  // or a second settle for one cycle — is a loud wiring bug; cleared by
+  // `abandonCycle` when the wrapper itself threw and no settle can ever come
+  // (the stale-stamp leak U-035 closes), so the next cycle stamps fresh.
   let cycleStartedAtEpochMs: number | undefined;
 
   const attempt = (signal: AbortSignal): Promise<ProviderSnapshot> => {
     // The cycle's start is the FIRST attempt's: D-059's wrapper invokes this
     // closure up to four times per cycle, and §11.2's run row spans them all
     // (attempts 4 with a 60 s started_at→ended_at span would understate a
-    // worst-case cycle by ~195 s). Taken once and kept; cleared at settle.
+    // worst-case cycle by ~195 s). Taken once and kept; cleared at settle or
+    // abandonment.
     cycleStartedAtEpochMs ??= wallNow(clock);
     return provider.fetchSnapshot(account, signal);
+  };
+
+  /**
+   * The wrapper-throw counterpart of settle's clearing: safe to call at any
+   * time (an empty cell is a no-op), and deliberately silent — the engine
+   * invokes it from inside its own containment, where diagnostics are
+   * deferred to the logger wiring (D-066's recorded deferral).
+   */
+  const abandonCycle = (): void => {
+    cycleStartedAtEpochMs = undefined;
   };
 
   const settleCycle = (result: CycleRetryResult<unknown>): CycleOutcome => {
@@ -371,7 +430,12 @@ export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorde
       if (problems.length === 0) {
         // Sound: the problem finder has verified every §8.4 field of value.
         const snapshot = result.value as ProviderSnapshot;
-        const classified = classifySuccess();
+        // §11.2's `http_status` on success (D-169, closing D-069's recorded
+        // gap): the snapshot's optional transport evidence — the delivered
+        // 2xx of the exchange that produced it — flows through the same
+        // classification the failure statuses ride; an adapter that stamps
+        // nothing stores NULL (the recorded absent-when-no-response rule).
+        const classified = classifySuccess(snapshot.httpStatus);
         // §12.1 detection runs before the write opens its transaction — an
         // explicit reading, not object-literal evaluation order (D-078 pin
         // 3): the series read must see only prior cycles' points, so the
@@ -417,7 +481,7 @@ export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorde
       const rawResponse: CycleRawResponseInput = {
         capturedAt: endedAt,
         httpStatus: parseFailure.httpStatus ?? null,
-        contentType: null,
+        contentType: parseFailure.contentType,
         body: parseFailure.sanitizedPayload,
       };
       persistCollectionCycle(repository, failureCycleWrite(classified, evidence, rawResponse));
@@ -431,5 +495,5 @@ export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorde
     );
   };
 
-  return { attempt, settleCycle };
+  return { attempt, settleCycle, abandonCycle };
 }

@@ -29,7 +29,7 @@ import { createFixedClock, type Clock } from '../../src/util/clock';
 
 /**
  * Task 110's seam (spec §7.2, §11.1; decision D-069): every cycle the engine
- * runs settles through `createCycleRecorder`'s closure pair — one run row per
+ * runs settles through `createCycleRecorder`'s closures — one run row per
  * cycle, a snapshot only for a successful one, the classification returned to
  * the engine. The suite drives the production composition: the real
  * `runCycleWithRetries` around `attempt` (its backoff stubbed through the
@@ -327,6 +327,33 @@ describe('a successful cycle', () => {
     expect(repo.metrics).toHaveLength(0);
   });
 
+  it('retains the snapshot transport evidence as the run http_status (U-035, D-169)', async () => {
+    const stamped = harness(async () => snapshot({ httpStatus: 200 }));
+    const unstamped = harness(async () => snapshot());
+
+    await stamped.runCycle();
+    await unstamped.runCycle();
+
+    // The delivered 2xx rides the same classification the failure statuses
+    // travel on; an adapter that stamps nothing keeps the recorded
+    // absent-when-no-response reading (NULL).
+    expect(stamped.repo.runs[0]).toMatchObject({ outcome: 'success', httpStatus: 200 });
+    expect(unstamped.repo.runs[0]).toMatchObject({ outcome: 'success', httpStatus: null });
+  });
+
+  it('classifies an out-of-range snapshot status as a parse_error run, never a crash', async () => {
+    const { repo, runCycle } = harness(async () => snapshot({ httpStatus: 42 }));
+
+    const outcome = await runCycle();
+
+    // The §8.4 boundary rejected the value, so the cycle is a Format-changed
+    // run without a snapshot — the same narrowing as any other invalid field.
+    expect(outcome.outcome).toBe('parse_error');
+    expect(repo.runs).toHaveLength(1);
+    expect(repo.runs[0]).toMatchObject({ outcome: 'parse_error', httpStatus: null });
+    expect(repo.snapshots).toHaveLength(0);
+  });
+
   it('reads the interval seam at settle time (§11.2 "in effect")', async () => {
     let interval = 300;
     const { recorder, repo } = harness(async () => snapshot(), {
@@ -564,6 +591,53 @@ describe('adapter parse failures', () => {
     expect(repo.raws).toHaveLength(0);
   });
 
+  it('carries the observed Content-Type into the §7.4 payload (U-035, D-169)', async () => {
+    const { repo, runCycle } = harness(async () => {
+      throw new SnapshotParseError(
+        'response envelope was not the expected object',
+        200,
+        '{"code":0}',
+        undefined,
+        'application/json; charset=utf-8',
+      );
+    });
+
+    const outcome = await runCycle();
+
+    expect(outcome.outcome).toBe('parse_error');
+    expect(repo.raws[0]).toMatchObject({
+      httpStatus: 200,
+      contentType: 'application/json; charset=utf-8',
+      body: '{"code":0}',
+    });
+  });
+
+  it('reads a blank Content-Type as absent — stricter than the column’s CHECK', async () => {
+    const { repo, runCycle } = harness(async () => {
+      throw new SnapshotParseError('reason', 200, '{}', undefined, '   ');
+    });
+
+    await runCycle();
+
+    expect(repo.raws[0]).toMatchObject({ contentType: null });
+  });
+
+  it('falls through to fail-fast when the parse shape carries a bogus content type', async () => {
+    const bogus = Object.assign(new Error('not really a parse failure'), {
+      reason: 'looks like one',
+      sanitizedPayload: '{}',
+      contentType: 42,
+    });
+    const { recorder, repo } = harness(async () => {
+      throw bogus;
+    });
+
+    const result = await runCycleWithRetries(() => recorder.attempt(new AbortController().signal));
+
+    expect(() => recorder.settleCycle(result)).toThrow(TypeError);
+    expect(repo.runs).toHaveLength(0);
+  });
+
   it('falls through to fail-fast when the parse shape carries a bogus status', async () => {
     const bogus = Object.assign(new Error('not really a parse failure'), {
       reason: 'looks like one',
@@ -648,6 +722,93 @@ describe('cancellation and fail-fast branches', () => {
     expect(() => recorder.settleCycle({ ok: true, value: snapshot(), attempts: 1 })).toThrow(
       TypeError,
     );
+  });
+
+  it('re-stamps after a wrapper throw: abandonCycle drops the orphaned stamp (U-035, D-169)', async () => {
+    const clock = createFixedClock(T0);
+    const repo = recordingRepository();
+    const recorder = createCycleRecorder({
+      account: accountContext(),
+      provider: fakeProvider('zai-coding-plan', async () => {
+        throw new TransportTimeoutError(15_000);
+      }),
+      repository: repo.repository,
+      clock,
+      intervalSeconds: () => 300,
+    });
+
+    // Cycle 1: the wrapper itself throws (a broken sleep seam — D-059's
+    // programming-mistake throw), so no settle can ever come; the engine's
+    // containment answers with the abandon notification.
+    await expect(
+      runCycleWithRetries(() => recorder.attempt(new AbortController().signal), {
+        random: () => 0,
+        sleep: () => Promise.reject(new Error('broken sleep seam')),
+      }),
+    ).rejects.toThrow(/broken sleep seam/u);
+    recorder.abandonCycle();
+
+    // An hour later — past a Retry-After deferral or a suspension cadence —
+    // the next cycle runs and settles.
+    clock.advance(3_600_000);
+    const result = await runCycleWithRetries(() => recorder.attempt(new AbortController().signal), {
+      random: () => 0,
+      sleep: async () => {},
+    });
+    clock.advance(CYCLE_MS);
+    recorder.settleCycle(result);
+
+    // §11.2/D-069: `started_at` is a reading at THIS cycle's first attempt —
+    // without the abandonment it would still name the thrown cycle's T0.
+    expect(repo.runs).toHaveLength(1);
+    expect(repo.runs[0]).toMatchObject({
+      outcome: 'timeout',
+      startedAt: T0 + 3_600_000,
+      endedAt: T0 + 3_600_000 + CYCLE_MS,
+    });
+  });
+
+  it('keeps the orphaned stamp when no abandonment comes — the seam an unwired engine leaves', async () => {
+    const clock = createFixedClock(T0);
+    const repo = recordingRepository();
+    const recorder = createCycleRecorder({
+      account: accountContext(),
+      provider: fakeProvider('zai-coding-plan', async () => {
+        throw new TransportTimeoutError(15_000);
+      }),
+      repository: repo.repository,
+      clock,
+      intervalSeconds: () => 300,
+    });
+
+    await expect(
+      runCycleWithRetries(() => recorder.attempt(new AbortController().signal), {
+        random: () => 0,
+        sleep: () => Promise.reject(new Error('broken sleep seam')),
+      }),
+    ).rejects.toThrow(/broken sleep seam/u);
+    // `abandonCycle` is optional on the engine's account seam (PollingAccount):
+    // a wiring that never calls it reproduces the stamp bleed U-035 closes —
+    // pinned here so the recorder's `??=` semantics stay honest.
+    clock.advance(3_600_000);
+    const result = await runCycleWithRetries(() => recorder.attempt(new AbortController().signal), {
+      random: () => 0,
+      sleep: async () => {},
+    });
+    clock.advance(CYCLE_MS);
+    recorder.settleCycle(result);
+
+    expect(repo.runs[0]).toMatchObject({ startedAt: T0 });
+  });
+
+  it('abandonCycle is a no-op on an empty cell', async () => {
+    const { recorder, repo, runCycle } = harness(async () => snapshot());
+
+    recorder.abandonCycle(); // no stamp held
+    const outcome = await runCycle();
+
+    expect(outcome.outcome).toBe('success');
+    expect(repo.runs).toHaveLength(1);
   });
 
   it('throws on a second settle for one cycle', async () => {
