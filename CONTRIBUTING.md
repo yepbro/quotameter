@@ -61,4 +61,4 @@ Agent skills and MCP servers used in this repository are part of its tooling and
 
 ## Development environment
 
-The reproducible Docker-based development environment is defined by Stage 1 of the plan. Until it exists, do not rely on host-installed tooling for anything that CI must reproduce.
+All routine work runs inside the pinned Docker container (Node.js 22.13.0) — no host-installed Node.js is required, and nothing that CI must reproduce may depend on host tooling. The container, the `make` command surface, and per-worktree isolation are documented in the [README's development-environment section](README.md#development-environment); Docker, docktree, and generated-output rules live in [docs/agents/environment.md](docs/agents/environment.md).

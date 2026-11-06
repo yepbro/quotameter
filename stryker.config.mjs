@@ -1,14 +1,20 @@
 /**
- * Stryker mutation-testing configuration (spec §17.3, task 055).
+ * Stryker mutation-testing configuration (spec §17.3, task 055; cadence
+ * decision D-045).
  *
- * Scope today: everything under src/. The enforced scope for the future is
- * the four critical modules named by the specification — reset detection,
- * peak-hours schedule calculation, response sanitization, and history
- * downsampling — which must join `mutate` as soon as they exist, each with
- * their own threshold (see docs/architecture/trust-boundaries.md for the
- * module map).
+ * Scope: everything under src/. The four critical modules §17.3 names —
+ * reset detection (`src/services/events-detection.ts`), peak-hours
+ * schedule calculation (`src/services/peak-hours-*.ts`), response
+ * sanitization (`src/providers/sanitize.ts`), and history downsampling
+ * (`src/services/history-downsample.ts`) — all exist and are inside the
+ * scope through the `src/**` glob (module map:
+ * docs/architecture/package-layout.md).
  *
- * `test:mutation` runs the full suite per mutant against the Vitest runner.
+ * Mutation testing is not a push gate: it runs once per day on `master`
+ * via `.github/workflows/mutation.yml` with rolling-issue triage (D-045;
+ * how it works and how to triage: docs/mutation-testing.md). `npm run
+ * test:mutation` (or `make mutation`) runs the full suite per mutant
+ * against the Vitest runner for manual runs.
  */
 
 // Container runs redirect reports into the isolated data volume (see
@@ -35,8 +41,14 @@ export default {
   },
   tempDirName: tempDir,
   thresholds: {
-    // Bootstrap baseline for the small current codebase; the critical
-    // modules raise this when they land (target 80+ for all of them).
+    // One global break threshold (D-045): a score below 60 fails the
+    // daily workflow. Per-module mutation thresholds for the four
+    // §17.3 mutation-critical modules (reset detection, peak-hours,
+    // sanitization, downsampling) remain the recorded D-045 follow-up
+    // ("revisit the mutate scope and per-module thresholds from the
+    // daily report's data"). Coverage is a separate §17.3 list —
+    // time-zone logic, peak-hours, sanitization, secret-handling —
+    // held at 100% per file in vitest.config.ts.
     high: 80,
     low: 60,
     break: 60,

@@ -8,15 +8,15 @@ quality target comes from spec §17.3 (see
 
 ## What runs where
 
-| Concern    | Answer                                                                                                                                                   |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Trigger    | `schedule` cron `17 2 * * *` — daily at **02:17 UTC = 09:17 (UTC+7)** — plus manual `workflow_dispatch`                                                  |
-| Executor   | GitHub-hosted runner, pinned `ubuntu-24.04` (the systemd-less image the full suite requires, D-160) — GitHub's infrastructure, nothing local is involved |
-| Definition | [`.github/workflows/mutation.yml`](../.github/workflows/mutation.yml) on the default branch (`master`)                                                   |
-| Subject    | The tip of `master` at run start (fresh checkout)                                                                                                        |
-| Tool       | Stryker via `npm run test:mutation`, configured by [`stryker.config.mjs`](../stryker.config.mjs)                                                         |
-| Cost       | Free — Actions minutes are not billed for public repositories                                                                                            |
-| Output     | Run artifact (JSON + HTML) and the rolling `mutation-report` issue                                                                                       |
+| Concern    | Answer                                                                                                                                          |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trigger    | `schedule` cron `17 2 * * *` — daily at **02:17 UTC = 09:17 (UTC+7)** — plus manual `workflow_dispatch`                                         |
+| Executor   | GitHub-hosted runner (`ubuntu-latest`); the job runs in the `node:22.13.0` container — the fresh, systemd-less class the suite requires (D-162) |
+| Definition | [`.github/workflows/mutation.yml`](../.github/workflows/mutation.yml) on the default branch (`master`)                                          |
+| Subject    | The tip of `master` at run start (fresh checkout)                                                                                               |
+| Tool       | Stryker via `npm run test:mutation`, configured by [`stryker.config.mjs`](../stryker.config.mjs)                                                |
+| Cost       | Free — Actions minutes are not billed for public repositories                                                                                   |
+| Output     | Run artifact (JSON + HTML) and the rolling `mutation-report` issue                                                                              |
 
 The pipeline inside the run: checkout → `npm ci` → Stryker
 (`continue-on-error`, so a below-threshold score still produces the
@@ -124,13 +124,19 @@ configured break threshold`. Thresholds live in
    reach by construction (a guard makes the index total, a language
    invariant makes the element exist) is dead code to remove, not a
    test to write.
-3. **Job red (below break threshold)** — treat as a regression of the
-   quality gate: triage the worst files first, land killing tests, and
-   re-run the workflow manually (`gh workflow run mutation.yml`) to
-   confirm instead of waiting a day. Do not lower thresholds to make a
-   report green; raising them when the §17.3 critical modules
-   (reset detection, peak-hours, sanitization, downsampling) land is the
-   expected direction (task 055 plan).
+3. **Job red** — first check whether the run produced a scored report
+   at all: since 2026-11-01 the daily runs die in Stryker's initial
+   test run before any scoring (U-045), and the workflow currently
+   reports such a crash as a phantom "below threshold" with an emptied
+   issue body (U-046, the tracked fix) — a crashed run needs its
+   failing initial-run tests looked at, not survivor triage. A scored
+   report below the break threshold is a regression of the quality
+   gate: triage the worst files first, land killing tests, and re-run
+   the workflow manually (`gh workflow run mutation.yml`) to confirm
+   instead of waiting a day. Do not lower thresholds to make a report
+   green; the four §17.3 critical modules (reset detection, peak-hours,
+   sanitization, downsampling) have all landed, and per-module
+   thresholds remain the recorded D-045 follow-up.
 4. **Turning findings into work.** During the development cycle, a triage
    conclusion becomes a normal planned task or an `U-NNN` entry in the
    "Unplanned tasks" section of [`plan/tasks.md`](../plan/tasks.md); the

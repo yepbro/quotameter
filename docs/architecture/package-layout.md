@@ -34,17 +34,17 @@ Layers form a DAG. A layer may import only itself and the layers listed in its
 row ("—" means leaf: no relative imports outside the layer's own directory).
 `server` and `cli` are top-level consumers: they see everything below them.
 
-| Layer               | Path                    | Owns                                                                                                          | May import                                               |
-| ------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `schemas`           | `src/schemas/`          | TypeBox contracts + validated types for all trust boundaries (§8.4 model, §6.2 config, §13 API)               | —                                                        |
-| `util`              | `src/util/`             | dependency-free helpers: clock/time and rolling ranges (§10), redacting logger (§16), version helpers         | —                                                        |
-| `config`            | `src/config/`           | configuration mechanics: XDG paths, loading, validation, atomic writes, permissions, env overrides (§6)       | `schemas`, `util`                                        |
-| `providers:core`    | `src/providers/*.ts`    | `QuotaProvider`/`AccountContext` contracts, `ProviderRegistry`, shared transport, sanitization (§8.1)         | `schemas`, `util`                                        |
-| `providers:adapter` | `src/providers/<id>/**` | one adapter per provider with all provider-specific parsing (§8.3)                                            | `schemas`, `util`, `providers:core`                      |
-| `storage`           | `src/storage/`          | all `node:sqlite` access: connection, migrations, `QuotaRepository`, retention (§3, §11)                      | `schemas`, `util`                                        |
-| `services`          | `src/services/`         | `PollingService`, `HistoryService`, `EventService`, `PeakHoursService`, `ConfigService`, `AuthService` (§8.1) | `schemas`, `util`, `config`, `providers:core`, `storage` |
-| `server`            | `src/server/`           | composition root: entry point, lifecycle, Fastify app, HTTP API, static serving, security (§13, §15)          | everything except `cli`                                  |
-| `cli`               | `src/cli/`              | `quotameter` commands: init, run, service, reload, status, logs, passwd, doctor (§5.2)                        | everything except `providers:adapter`                    |
+| Layer               | Path                    | Owns                                                                                                                              | May import                                               |
+| ------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `schemas`           | `src/schemas/`          | TypeBox contracts + validated types for the config (§6.2) and API (§13) boundaries, plus the §8.4 normalized model (`metrics.ts`) | —                                                        |
+| `util`              | `src/util/`             | dependency-free helpers: clock/time and rolling ranges (§10), redacting logger (§16), version helpers                             | —                                                        |
+| `config`            | `src/config/`           | configuration mechanics: XDG paths, loading, validation, atomic writes, permissions, env overrides (§6)                           | `schemas`, `util`                                        |
+| `providers:core`    | `src/providers/*.ts`    | `QuotaProvider`/`AccountContext` contracts, `ProviderRegistry`, shared transport, sanitization (§8.1)                             | `schemas`, `util`                                        |
+| `providers:adapter` | `src/providers/<id>/**` | one adapter per provider with all provider-specific parsing (§8.3)                                                                | `schemas`, `util`, `providers:core`                      |
+| `storage`           | `src/storage/`          | all `node:sqlite` access: connection, migrations, `QuotaRepository`, retention (§3, §11)                                          | `schemas`, `util`                                        |
+| `services`          | `src/services/`         | `PollingService`, `HistoryService`, `EventService`, `PeakHoursService`, `ConfigService`, `AuthService` (§8.1)                     | `schemas`, `util`, `config`, `providers:core`, `storage` |
+| `server`            | `src/server/`           | composition root: entry point, lifecycle, Fastify app, HTTP API, static serving, security (§13, §15)                              | everything except `cli`                                  |
+| `cli`               | `src/cli/`              | `quotameter` commands: init, run, service, reload, status, logs, passwd, doctor (§5.2)                                            | everything except `providers:adapter`                    |
 
 Additional invariants:
 
@@ -55,6 +55,13 @@ Additional invariants:
   the composition root (`src/server/`), which registers it in the registry.
   This is what makes "add a provider without rewriting the scheduler,
   persistence, history endpoints, or charts" (§8.1) mechanically true.
+- **Provider responses never validate through `src/schemas/`.** The §8.4
+  normalized model in `src/schemas/metrics.ts` is a type-level contract:
+  adapters consume it through type-only imports and validate provider
+  responses locally — hand-written envelope, container, and field checks
+  inside `src/providers/<id>/` (decisions D-047/D-053). TypeBox schemas
+  executed by Ajv belong to the configuration and API boundaries
+  ([trust-boundaries.md](trust-boundaries.md), boundaries 1 and 3).
 - **One database gate.** SQL exists only inside `src/storage/`. Services
   consume `QuotaRepository` (`src/storage/repository.ts`, task 088); spec
   §8.1 names it among the core services, and spec §3 requires all database
