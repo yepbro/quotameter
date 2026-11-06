@@ -18,6 +18,30 @@ import {
  * randomness (two hashes of one password differ), and the byte lengths.
  */
 
+/**
+ * The nine scrypt-bearing cells below (hashPassword's five, verifyPassword's
+ * four deriving cells) are compute-bound — the D-094 sizing class, not a
+ * synchronization defect: each walks the §15.2 KDF one to three times, a
+ * full `N=65536` derivation per call (the string-parameters fixture derives
+ * at the cheaper `N=16384` its stored string carries). Measured 2026-11-06
+ * (U-049, the D-094 rig method — six busy-hog cores over a full coverage
+ * `make check`, host loadavg ~24 on top of the ambient parallel-worktree
+ * ~18–20): the eight full-cost cells measured 302–916 ms clean each (worst
+ * of three isolated runs) and 2.145–5.085 s under the rig — the 5.085 s
+ * worst is the very expiry U-047's stability matrix observed against
+ * Vitest's 5 s default, and it is censored (the default killed the cell
+ * mid-derivation) — while the N=16384 fixture cell measured 176–220 ms
+ * clean and 0.984 s under the rig, borderline against the census's ≥ ~1 s
+ * rig arm and included as a same-family KDF cell. 20 s ≈ 3.9× that
+ * censored worst — ≈3× holds for any true worst up to ~6.7 s — so
+ * deliberate CPU starvation cannot trip the default while a genuinely
+ * stuck derivation still fails fast. The other 20 cells do no KDF work
+ * (the 17 malformed-parse rows plus the absent, non-string, and
+ * node-refused guards; ≤3 ms under the rig) and stay on the default,
+ * keeping the census statement meaningful.
+ */
+const COMPUTE_BOUND_TIMEOUT_MS = 20_000;
+
 /** The exact parameter prefix every produced hash carries. */
 const PARAMETER_FIELD = `N=${SCRYPT_PARAMETERS.N},r=${SCRYPT_PARAMETERS.r},p=${SCRYPT_PARAMETERS.p},keylen=${SCRYPT_PARAMETERS.keyLengthBytes}`;
 
@@ -32,50 +56,68 @@ function field(encoded: string, index: number): string {
 const PASSWORD = 'unit-test-password';
 
 describe('hashPassword (spec §15.2 encoding)', () => {
-  it('produces the self-describing scrypt encoding', async () => {
-    const encoded = await hashPassword(PASSWORD);
-    expect(encoded.split('$')).toHaveLength(4);
-    expect(field(encoded, 0)).toBe('scrypt');
-    expect(field(encoded, 1)).toBe(PARAMETER_FIELD);
-    expect(Buffer.from(field(encoded, 2), 'base64')).toHaveLength(
-      SCRYPT_PARAMETERS.saltLengthBytes,
-    );
-    expect(Buffer.from(field(encoded, 3), 'base64')).toHaveLength(SCRYPT_PARAMETERS.keyLengthBytes);
-  });
+  it(
+    'produces the self-describing scrypt encoding',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      const encoded = await hashPassword(PASSWORD);
+      expect(encoded.split('$')).toHaveLength(4);
+      expect(field(encoded, 0)).toBe('scrypt');
+      expect(field(encoded, 1)).toBe(PARAMETER_FIELD);
+      expect(Buffer.from(field(encoded, 2), 'base64')).toHaveLength(
+        SCRYPT_PARAMETERS.saltLengthBytes,
+      );
+      expect(Buffer.from(field(encoded, 3), 'base64')).toHaveLength(
+        SCRYPT_PARAMETERS.keyLengthBytes,
+      );
+    },
+  );
 
-  it('draws a fresh random salt per hash', async () => {
+  it('draws a fresh random salt per hash', { timeout: COMPUTE_BOUND_TIMEOUT_MS }, async () => {
     const [first, second] = await Promise.all([hashPassword(PASSWORD), hashPassword(PASSWORD)]);
     expect(first).not.toBe(second);
     expect(field(first, 2)).not.toBe(field(second, 2));
   });
 
-  it('matches a derivation recomputed from the exported constants (known answer)', async () => {
-    const salt = Buffer.from('0123456789abcdef'); // 16 bytes, deterministic
-    const encoded = await hashPassword(PASSWORD, { salt });
-    const expected = scryptSync(PASSWORD, salt, SCRYPT_PARAMETERS.keyLengthBytes, {
-      N: SCRYPT_PARAMETERS.N,
-      r: SCRYPT_PARAMETERS.r,
-      p: SCRYPT_PARAMETERS.p,
-      maxmem: SCRYPT_PARAMETERS.maxmemBytes,
-    });
-    expect(field(encoded, 2)).toBe(salt.toString('base64'));
-    expect(field(encoded, 3)).toBe(expected.toString('base64'));
-  });
+  it(
+    'matches a derivation recomputed from the exported constants (known answer)',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      const salt = Buffer.from('0123456789abcdef'); // 16 bytes, deterministic
+      const encoded = await hashPassword(PASSWORD, { salt });
+      const expected = scryptSync(PASSWORD, salt, SCRYPT_PARAMETERS.keyLengthBytes, {
+        N: SCRYPT_PARAMETERS.N,
+        r: SCRYPT_PARAMETERS.r,
+        p: SCRYPT_PARAMETERS.p,
+        maxmem: SCRYPT_PARAMETERS.maxmemBytes,
+      });
+      expect(field(encoded, 2)).toBe(salt.toString('base64'));
+      expect(field(encoded, 3)).toBe(expected.toString('base64'));
+    },
+  );
 
-  it('is deterministic for the same password and salt', async () => {
-    const salt = Buffer.from('fixed-salt-16byt');
-    const first = await hashPassword(PASSWORD, { salt });
-    const second = await hashPassword(PASSWORD, { salt });
-    expect(first).toBe(second);
-  });
+  it(
+    'is deterministic for the same password and salt',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      const salt = Buffer.from('fixed-salt-16byt');
+      const first = await hashPassword(PASSWORD, { salt });
+      const second = await hashPassword(PASSWORD, { salt });
+      expect(first).toBe(second);
+    },
+  );
 
-  it('carries the work parameters inside the string, not just the constants', async () => {
-    // The verifier reads the parameters from the stored string — this
-    // pins that the string and the exported constants are the same
-    // values, so a raised cost changes both together.
-    const encoded = await hashPassword(PASSWORD);
-    expect(encoded.startsWith(`scrypt$${PARAMETER_FIELD}$`)).toBe(true);
-  });
+  it(
+    'carries the work parameters inside the string, not just the constants',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      // The verifier reads the parameters from the stored string — this
+      // pins that the string and the exported constants are the same
+      // values, so a raised cost changes both together.
+      const encoded = await hashPassword(PASSWORD);
+      expect(encoded.startsWith(`scrypt$${PARAMETER_FIELD}$`)).toBe(true);
+    },
+  );
 });
 
 /* ── verifyPassword (task 153, D-122) ─────────────────────────────────── */
@@ -120,30 +162,46 @@ const TABLE_SALT_BASE64 = Buffer.alloc(16, 0x42).toString('base64');
 const TABLE_HASH_BASE64 = Buffer.alloc(32, 0x43).toString('base64');
 
 describe('verifyPassword (spec §15.2 verification)', () => {
-  it('accepts the password its own hashPassword encoded', async () => {
-    const stored = await hashPassword(PASSWORD);
-    await expect(verifyPassword(stored, PASSWORD)).resolves.toBe(true);
-  });
+  it(
+    'accepts the password its own hashPassword encoded',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      const stored = await hashPassword(PASSWORD);
+      await expect(verifyPassword(stored, PASSWORD)).resolves.toBe(true);
+    },
+  );
 
-  it('rejects a wrong password under the same stored hash', async () => {
-    const stored = await hashPassword(PASSWORD);
-    await expect(verifyPassword(stored, WRONG_PASSWORD)).resolves.toBe(false);
-  });
+  it(
+    'rejects a wrong password under the same stored hash',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      const stored = await hashPassword(PASSWORD);
+      await expect(verifyPassword(stored, WRONG_PASSWORD)).resolves.toBe(false);
+    },
+  );
 
-  it('verifies a unicode password and rejects a different unicode candidate', async () => {
-    const stored = await hashPassword(UNICODE_PASSWORD);
-    await expect(verifyPassword(stored, UNICODE_PASSWORD)).resolves.toBe(true);
-    await expect(verifyPassword(stored, 'другой-пароль-🔐')).resolves.toBe(false);
-  });
+  it(
+    'verifies a unicode password and rejects a different unicode candidate',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      const stored = await hashPassword(UNICODE_PASSWORD);
+      await expect(verifyPassword(stored, UNICODE_PASSWORD)).resolves.toBe(true);
+      await expect(verifyPassword(stored, 'другой-пароль-🔐')).resolves.toBe(false);
+    },
+  );
 
-  it('derives under the parameters the string carries, not the module constants', async () => {
-    // N=16384 and keylen=32 disagree with SCRYPT_PARAMETERS on purpose:
-    // a stored hash from a lower-cost era (or a future raise) must keep
-    // verifying — the string is the only source of truth.
-    const stored = storedUnderStringParameters();
-    await expect(verifyPassword(stored, PASSWORD)).resolves.toBe(true);
-    await expect(verifyPassword(stored, WRONG_PASSWORD)).resolves.toBe(false);
-  });
+  it(
+    'derives under the parameters the string carries, not the module constants',
+    { timeout: COMPUTE_BOUND_TIMEOUT_MS },
+    async () => {
+      // N=16384 and keylen=32 disagree with SCRYPT_PARAMETERS on purpose:
+      // a stored hash from a lower-cost era (or a future raise) must keep
+      // verifying — the string is the only source of truth.
+      const stored = storedUnderStringParameters();
+      await expect(verifyPassword(stored, PASSWORD)).resolves.toBe(true);
+      await expect(verifyPassword(stored, WRONG_PASSWORD)).resolves.toBe(false);
+    },
+  );
 
   it.each([
     ['empty stored hash', ''],
