@@ -43,7 +43,9 @@
  *   concern, and §10's rolling ranges legitimately end at `now`).
  * - **The bounds share the landed reads' closed-interval convention**
  *   (`collected_at >= from AND … <= to`, D-068) — not the half-open
- *   intervals of D-073's peak-hours timeline, a different surface. The
+ *   intervals of D-073's peak-hours timeline, a different surface and the
+ *   deliberate closed-vs-half-open seam decision D-171 documents and pins
+ *   cross-module in `test/unit/range-inclusivity-seam.spec.ts`. The
  *   horizon **is** D-063's exported `historyCutoff` — consumed, not
  *   re-derived, the single definition site D-091 records — and the deletes
  *   there are strict-before,

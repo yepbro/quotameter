@@ -651,3 +651,39 @@ describe('gap-shifted windows overlap in instant space; the timeline unions them
     expect(timeline.intervals[1]).toMatchObject({ windowId: 'w-big' });
   });
 });
+
+describe('the returned timeline is deeply frozen (decision D-171)', () => {
+  it('freezes the timeline, the intervals array, and every interval of a mixed timeline', () => {
+    // One peak clipped by off-peak stretches on both sides — both union
+    // members of the interval discriminated union, built by both of the
+    // module's construction sites.
+    const from = iso('2026-11-02T15:00:00Z');
+    const to = iso('2026-11-03T03:00:00Z');
+    const timeline = calculatePeakHoursIntervals(
+      schedule({ windows: [window({ days: ['mon', 'tue'], start: '14:00', end: '18:00' })] }),
+      { from, to },
+    );
+    expect(timeline.intervals.length).toBeGreaterThanOrEqual(2);
+    expect(timeline.intervals.map((interval) => interval.kind)).toContain('peak');
+    expect(timeline.intervals.map((interval) => interval.kind)).toContain('off-peak');
+    // The sibling value-object convention of the services layer
+    // (history-downsample's buckets, D-081): frozen at construction —
+    // one policy for the whole returned value, no per-read cost.
+    expect(Object.isFrozen(timeline)).toBe(true);
+    expect(Object.isFrozen(timeline.intervals)).toBe(true);
+    for (const interval of timeline.intervals) {
+      expect(Object.isFrozen(interval)).toBe(true);
+    }
+  });
+
+  it('freezes the empty timeline of an empty range too', () => {
+    const at = iso('2026-11-02T00:00:00Z');
+    const timeline = calculatePeakHoursIntervals(schedule({ windows: [window()] }), {
+      from: at,
+      to: at,
+    });
+    expect(timeline.intervals).toEqual([]);
+    expect(Object.isFrozen(timeline)).toBe(true);
+    expect(Object.isFrozen(timeline.intervals)).toBe(true);
+  });
+});

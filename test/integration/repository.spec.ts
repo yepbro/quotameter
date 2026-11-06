@@ -1044,7 +1044,12 @@ describe('repository quota events (task 088, spec §11.2, §12.1, D-046)', () =>
       });
 
       expect(repository.listQuotaEvents('work', { metricKey: 'weekly-requests' })).toHaveLength(1);
-      expect(repository.listQuotaEvents('work', { from: T0 + 1, to: T0 + 700_000 })).toHaveLength(
+      // Both closed-interval edges in one filter (D-068/D-171): the
+      // monthly event at T0 sits below `from` and stays out; the weekly
+      // event lands exactly ON `to` and stays in — flipping the read's
+      // `event_at <= ?` to `< ?` fails here, the seam pin's SQL-level
+      // face beside test/unit/range-inclusivity-seam.spec.ts.
+      expect(repository.listQuotaEvents('work', { from: T0 + 1, to: T0 + 600_000 })).toHaveLength(
         1,
       );
 

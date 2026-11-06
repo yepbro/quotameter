@@ -43,8 +43,10 @@ never calls `Date.now()`, `new Date()`, or machine-local zone APIs itself.
   would accept pseudo-zones such as `local` or `utc+4` that resolve to
   machine-local readings) and checks Luxon `.isValid`, so unsupported zones
   and non-finite or out-of-range epochs throw English errors instead of
-  producing `NaN`s. `isValidTimeZone` memoizes results, so formatting loops
-  do not pay an `Intl.DateTimeFormat` construction per call.
+  producing `NaN`s. `isValidTimeZone` memoizes results up to
+  `ZONE_CHECK_MEMO_CAPACITY` distinct names (decision D-171), so formatting
+  loops do not pay an `Intl.DateTimeFormat` construction per call while the
+  cache's growth stays bounded by the module itself, never by its callers.
 - **Deliberately absent:** local wall-clock → epoch conversion. That
   direction is where DST nonexistent/ambiguous times live, and spec §9.3
   fixes their resolution policy — task 115 owns it; peak-hours intervals

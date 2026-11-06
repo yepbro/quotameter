@@ -20,7 +20,19 @@
  *   highlighting (spec §9.3, §14) needs — no gaps, no double coverage.
  * - Intervals are half-open `[start, end)` in UTC epoch milliseconds; the
  *   range is `[from, to)` likewise. `from === to` is an empty timeline, not
- *   an error; anything non-finite or inverted fails loudly.
+ *   an error; anything non-finite or inverted fails loudly. The sibling
+ *   range seams — the rolling-range bounds (D-068) and the retention
+ *   bounds (D-082) — are **closed** `[from, to]` for point membership, and
+ *   that seam is deliberate: closed suits "a row stamped exactly at `to`
+ *   is inside the read", half-open suits interval partitioning (adjacent
+ *   ranges tile with no gap and no double coverage). Decision D-171
+ *   documents the seam; `test/unit/range-inclusivity-seam.spec.ts` pins it
+ *   cross-module so neither side is silently normalized.
+ * - Every emitted interval object is frozen at construction (D-171): the
+ *   timeline and its intervals array have been frozen since D-073, and the
+ *   deep-immutability convention the layer's sibling value objects follow
+ *   (`history-downsample.ts`'s buckets, D-081) now covers the intervals
+ *   themselves — one policy for the whole returned value.
  * - The walk runs on **local calendar days** of the schedule zone (the day
  *   set of a window selects days there, spec §9.2), one day before the
  *   range's first local day included, so a window ending at `24:00` is
@@ -331,16 +343,22 @@ export function calculatePeakHoursIntervals(
     if (start > uncoveredStart) {
       intervals.push(offPeakInterval(uncoveredStart, start, offPeakMultiplier, timeZone));
     }
-    intervals.push({
-      kind: 'peak',
-      start,
-      end: peak.end,
-      multiplier: peak.multiplier,
-      windowId: peak.windowId,
-      name: peak.name,
-      localStart: formatLocalWallTime(start, timeZone),
-      localEnd: formatLocalWallTime(peak.end, timeZone),
-    });
+    intervals.push(
+      // Frozen at construction — the layer's value-object convention
+      // (D-171): the downsample buckets (D-081) and the rolling-range
+      // bounds (D-068) freeze at their build sites, and since D-171 so
+      // does every interval of this timeline.
+      Object.freeze({
+        kind: 'peak',
+        start,
+        end: peak.end,
+        multiplier: peak.multiplier,
+        windowId: peak.windowId,
+        name: peak.name,
+        localStart: formatLocalWallTime(start, timeZone),
+        localEnd: formatLocalWallTime(peak.end, timeZone),
+      }),
+    );
     uncoveredStart = peak.end;
   }
   if (uncoveredStart < to) {
@@ -388,14 +406,15 @@ function offPeakInterval(
   multiplier: number,
   timeZone: TimeZone,
 ): OffPeakInterval {
-  return {
+  // Frozen at construction, like every interval of the timeline (D-171).
+  return Object.freeze({
     kind: 'off-peak',
     start,
     end,
     multiplier,
     localStart: formatLocalWallTime(start, timeZone),
     localEnd: formatLocalWallTime(end, timeZone),
-  };
+  });
 }
 
 function requireValid(dateTime: DateTime, what: string): DateTime {

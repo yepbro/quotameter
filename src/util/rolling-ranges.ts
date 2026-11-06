@@ -23,7 +23,14 @@
  * - The bounds form a closed interval `[from, to]` — both ends inclusive.
  *   The spec is silent on inclusivity; the pin lives here so the server-side
  *   filter (`collected_at >= from AND collected_at <= to`, Stage 12) and the
- *   `rollingRangeContains` predicate cannot drift apart.
+ *   `rollingRangeContains` predicate cannot drift apart. The closed
+ *   convention is shared by the retention bounds (D-082) and is a
+ *   **deliberate seam** against the peak-hours timeline's half-open
+ *   `[from, to)` partition (D-073): closed for point membership — a row
+ *   stamped exactly at `to` is inside the read — half-open for interval
+ *   tiling. Decision D-171 documents the seam;
+ *   `test/unit/range-inclusivity-seam.spec.ts` pins it cross-module so
+ *   neither side is silently normalized.
  */
 
 import type { EpochMs } from './clock';
