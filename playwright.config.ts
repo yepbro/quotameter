@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
+import { resolveE2eJunitOutputFile } from './test/helpers/e2e-report';
+
 /**
  * Playwright E2E configuration.
  *
@@ -8,14 +10,14 @@ import { defineConfig } from '@playwright/test';
  * the preview server in later stages; the contract tested here is the page
  * the user opens in a browser.
  */
+const junitOutputFile = resolveE2eJunitOutputFile();
+
 export default defineConfig({
   testDir: 'test/e2e',
   timeout: 30_000,
   fullyParallel: true,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI
-    ? [['list'], ['junit', { outputFile: 'reports/e2e-junit.xml' }]]
-    : 'list',
+  reporter: process.env.CI ? [['list'], ['junit', { outputFile: junitOutputFile }]] : 'list',
   // Container runs write artifacts into the isolated data volume (see
   // compose.yaml) to avoid ownership conflicts with host-generated output.
   outputDir: process.env.E2E_OUTPUT_DIR ?? 'test-results',
