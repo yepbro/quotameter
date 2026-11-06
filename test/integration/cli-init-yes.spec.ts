@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configFilePath } from '../../src/config/load';
+import { hermeticChildEnv } from '../helpers/hermetic-child-env';
 import { createTempDir, type TempDir } from '../helpers/isolation';
 
 /**
@@ -20,6 +21,16 @@ import { createTempDir, type TempDir } from '../helpers/isolation';
  * Since task 133 a keyed invocation runs the initial connection test —
  * guard-blocked here into the deterministic `provider-unavailable` failure
  * class, explained and continued (§5.3 step 6, D-102).
+ *
+ * Since U-045 (D-173) every child environment is hermetic: the session
+ * variables (`XDG_RUNTIME_DIR`, the `DBUS_*` session addresses) never reach
+ * the launcher, so the §5.3 step-7 service-setup probe cannot observe — or,
+ * through the user-unit route, act on — a live session manager of the
+ * machine the suite happens to run on (the daily mutation failures of
+ * 2026-11-02→04: on the hosted runner's live systemd the two runs of the
+ * reproducibility cell diverged in the service-setup block). The
+ * reproducibility assertion itself is unchanged: identical bytes are still
+ * required — the environment the bytes are defined over is now pinned.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -73,10 +84,20 @@ function runInitYes(args: readonly string[], env: NodeJS.ProcessEnv): Promise<Ru
   });
 }
 
+/**
+ * The environment every child derives from (U-045, D-173): the parent
+ * environment minus the session-manager variables, so the §5.3 step-7
+ * probe stays deterministic on any machine (see the suite header and
+ * `test/helpers/hermetic-child-env.ts`).
+ */
+function childEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...hermeticChildEnv(), ...overrides } as NodeJS.ProcessEnv;
+}
+
 const SECRET = 'sk-integration-key-value';
-const KEY_ENV = { ...process.env, QM_E2E_TEST_KEY: SECRET } as NodeJS.ProcessEnv;
+const KEY_ENV = childEnv({ QM_E2E_TEST_KEY: SECRET });
 /** The same environment minus the key variable, for the unset-var cases. */
-const NO_KEY_ENV = { ...process.env } as NodeJS.ProcessEnv;
+const NO_KEY_ENV = childEnv();
 delete NO_KEY_ENV.QM_E2E_TEST_KEY;
 
 const FULL_ARGS = [
@@ -98,9 +119,9 @@ const FULL_ARGS = [
 /** The marker password of the --password-env runs (§15.2 minimum met). */
 const PASSWORD = 'yes-integration-password-42';
 /** The environment holding it, beside the key variable. */
-const PASSWORD_ENV = { ...process.env, QM_E2E_TEST_PASSWORD: PASSWORD } as NodeJS.ProcessEnv;
+const PASSWORD_ENV = childEnv({ QM_E2E_TEST_PASSWORD: PASSWORD });
 /** The same environment minus the password variable, for the unset cases. */
-const NO_PASSWORD_ENV = { ...process.env } as NodeJS.ProcessEnv;
+const NO_PASSWORD_ENV = childEnv();
 delete NO_PASSWORD_ENV.QM_E2E_TEST_PASSWORD;
 
 /**
@@ -192,7 +213,11 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
     // D-100's reproducibility pin, adjusted for task 132: the summary now
     // names the file it wrote, so each run gets its own fresh directory and
     // the paths are normalized before the byte comparison — everything
-    // except the directory is deterministic output of flags + environment.
+    // except the directory is deterministic output of flags + environment
+    // (the environment hermetic since U-045, D-173). The comparison dumps
+    // BOTH full normalized stdouts on mismatch: Stryker truncates assertion
+    // strings to ~40 characters, and the 2026-11-02→04 daily failures hid
+    // the diverging bytes behind exactly that truncation.
     const firstDir = await freshConfigDir();
     const secondDir = await freshConfigDir();
     try {
@@ -202,12 +227,90 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
       expect(second.code).toBe(0);
       const normalize = (text: string, dir: TempDir): string =>
         text.split(dir.path).join('<config-dir>');
-      expect(normalize(second.stdout, secondDir)).toBe(normalize(first.stdout, firstDir));
+      const firstOut = normalize(first.stdout, firstDir);
+      const secondOut = normalize(second.stdout, secondDir);
+      const firstErr = normalize(first.stderr, firstDir);
+      const secondErr = normalize(second.stderr, secondDir);
+      let divergeAt = 0;
+      while (
+        divergeAt < Math.min(firstOut.length, secondOut.length) &&
+        firstOut[divergeAt] === secondOut[divergeAt]
+      ) {
+        divergeAt += 1;
+      }
+      const message =
+        'the two real-launcher runs must print identical bytes; ' +
+        `first divergence after ${Buffer.byteLength(firstOut.slice(0, divergeAt), 'utf8')} ` +
+        'UTF-8 bytes of normalized stdout\n' +
+        `first stdout (normalized): ${JSON.stringify(firstOut)}\n` +
+        `second stdout (normalized): ${JSON.stringify(secondOut)}\n` +
+        `first stderr (normalized): ${JSON.stringify(firstErr)}\n` +
+        `second stderr (normalized): ${JSON.stringify(secondErr)}`;
+      // Two-argument expect keeps the message AND the built-in diff — the
+      // 2026-11-02→04 failures were undiagnosed for days because Stryker's
+      // truncation left only the identical first 40 bytes visible.
+      expect(secondOut, message).toBe(firstOut);
+      // stderr is deterministic under the hermetic environment (D-173) and
+      // carried the diagnosis in the recorded failure class (the enable
+      // failure detail) — it is compared, not just dumped.
+      expect(secondErr, message).toBe(firstErr);
     } finally {
       await firstDir.remove();
       await secondDir.remove();
     }
   }, 20_000);
+
+  it('builds the launcher environment hermetically: session-manager variables never reach the child (U-045, D-173)', () => {
+    // The spawn-boundary contract behind the reproducibility cell: the §5.3
+    // step-7 probe reads an own-property XDG_RUNTIME_DIR and the user-unit
+    // route acts on the session manager it names — the child environment
+    // must therefore carry none of it, on any machine the suite runs on,
+    // while everything the invocation genuinely needs passes through. The
+    // cell pins the full helper contract: the strip set, verbatim
+    // pass-through of everything else, the fresh-object guarantee (the
+    // parent environment is never mutated — the D-028 discipline), and the
+    // process.env default base the suite's own spawns rely on.
+    const base = {
+      PATH: '/usr/local/bin:/usr/bin:/bin',
+      HOME: '/home/runner',
+      QM_E2E_TEST_KEY: SECRET,
+      QM_U045_UNRELATED: 'passes-through-verbatim',
+      QUOTAMETER_CONFIG_DIR: '/tmp/qm-hermetic-pin',
+      QUOTAMETER_DATA_DIR: '/tmp/qm-hermetic-pin/data',
+      XDG_RUNTIME_DIR: '/run/user/1001',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1001/bus',
+      DBUS_STARTER_ADDRESS: 'unix:path=/run/user/1001/bus',
+      DBUS_STARTER_BUS_TYPE: 'session',
+    } as NodeJS.ProcessEnv;
+    const env = hermeticChildEnv(base);
+    expect(env.XDG_RUNTIME_DIR).toBeUndefined();
+    expect(env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined();
+    expect(env.DBUS_STARTER_ADDRESS).toBeUndefined();
+    expect(env.DBUS_STARTER_BUS_TYPE).toBeUndefined();
+    expect(env.PATH).toBe('/usr/local/bin:/usr/bin:/bin');
+    expect(env.HOME).toBe('/home/runner');
+    expect(env.QM_E2E_TEST_KEY).toBe(SECRET);
+    expect(env.QM_U045_UNRELATED).toBe('passes-through-verbatim');
+    expect(env.QUOTAMETER_CONFIG_DIR).toBe('/tmp/qm-hermetic-pin');
+    expect(env.QUOTAMETER_DATA_DIR).toBe('/tmp/qm-hermetic-pin/data');
+    // Fresh object: the caller's base (process.env in production) is left
+    // untouched — the stripped keys survive on it, the result is not it.
+    expect(env).not.toBe(base);
+    expect(base.XDG_RUNTIME_DIR).toBe('/run/user/1001');
+    expect(base.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/run/user/1001/bus');
+    // The no-argument default is the parent process environment: a
+    // variable this process carries (sentinel set and restored around the
+    // call, the withQuotameterEnv restore discipline) must arrive in the
+    // child environment — an empty or whitelisted default base would fail
+    // here and starve every real spawn of PATH and friends.
+    const sentinel = 'QM_U045_DEFAULT_BASE_SENTINEL';
+    process.env[sentinel] = 'present';
+    try {
+      expect(hermeticChildEnv()[sentinel]).toBe('present');
+    } finally {
+      delete process.env[sentinel];
+    }
+  });
 
   it('running twice in one directory: the second run reports the existing config and keeps it', async () => {
     const dir = await freshConfigDir();
@@ -264,7 +367,7 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
   it('a service environment override does not satisfy the missing flag', async () => {
     const dir = await freshConfigDir();
     try {
-      const env = inDir(dir, { ...process.env, QUOTAMETER_APP_TIMEZONE: 'Europe/Berlin' });
+      const env = inDir(dir, childEnv({ QUOTAMETER_APP_TIMEZONE: 'Europe/Berlin' }));
       const result = await runInitYes(['--yes'], env);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain('--timezone is required with --yes');
@@ -360,7 +463,7 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
           '--api-key-env',
           'QUOTAMETER_KEY',
         ],
-        inDir(dir, { ...process.env, QUOTAMETER_KEY: SECRET }),
+        inDir(dir, childEnv({ QUOTAMETER_KEY: SECRET })),
       );
       expect(result.code).toBe(1);
       expect(result.stderr).toContain('must not use the reserved QUOTAMETER_ prefix');
@@ -439,7 +542,7 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
   it('a too-short --password-env value fails naming the rule, never the value', async () => {
     const dir = await freshConfigDir();
     try {
-      const short = { ...process.env, QM_E2E_SHORT_PASSWORD: 'tiny-pw-x9' } as NodeJS.ProcessEnv;
+      const short = childEnv({ QM_E2E_SHORT_PASSWORD: 'tiny-pw-x9' });
       const result = await runInitYes(
         ['--yes', '--timezone', 'UTC', '--password-env', 'QM_E2E_SHORT_PASSWORD'],
         inDir(dir, short),
