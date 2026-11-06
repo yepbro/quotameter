@@ -272,7 +272,7 @@ describe('accounts page: loading and selection (task 170, §14.2)', () => {
 
     const select = wrapper.find('[data-testid="account-select"]');
     expect(select.exists()).toBe(true);
-    expect(select.element.value).toBe('acc-1');
+    expect((select.element as HTMLSelectElement).value).toBe('acc-1');
     expect(select.findAll('option').map((option) => option.text())).toEqual(['Main', 'Second']);
 
     const card = wrapper.find('[data-testid="account-card"]');
@@ -937,7 +937,9 @@ describe('accounts page: archive and purge (task 170, §8.2)', () => {
     // The account is gone from the backend's list and the selector, and
     // the selection moved to the remaining account.
     expect(backend.accounts.map((entry) => entry.id)).toEqual(['acc-2']);
-    expect(wrapper.find('[data-testid="account-select"]').element.value).toBe('acc-2');
+    expect(
+      (wrapper.find('[data-testid="account-select"]').element as HTMLSelectElement).value,
+    ).toBe('acc-2');
     expect(wrapper.find('[data-testid="account-card"]').find('h3').text()).toBe('Second');
   });
 

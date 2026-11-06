@@ -164,7 +164,7 @@ describe('App shell', () => {
       expect(select.exists()).toBe(true);
       // The label is the select's accessible name (label[for] pairing).
       expect(wrapper.find('label[for="theme-select"]').text()).toBe('Theme');
-      expect(select.element.value).toBe('system');
+      expect((select.element as HTMLSelectElement).value).toBe('system');
       expect(wrapper.findAll('option').map((option) => option.text())).toEqual([
         'System',
         'Light',
@@ -183,7 +183,7 @@ describe('App shell', () => {
       await select.setValue('dark');
       await settleNavigation();
       expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
-      expect(select.element.value).toBe('dark');
+      expect((select.element as HTMLSelectElement).value).toBe('dark');
 
       await select.setValue('system');
       await settleNavigation();

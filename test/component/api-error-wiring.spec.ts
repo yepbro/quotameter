@@ -1,4 +1,4 @@
-import { mount, flushPromises } from '@vue/test-utils';
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { createMemoryHistory } from 'vue-router';
 import { createApp, defineComponent, h, nextTick } from 'vue';
 import { describe, expect, it } from 'vitest';

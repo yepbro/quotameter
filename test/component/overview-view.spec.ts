@@ -1,4 +1,4 @@
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import { flushPromises, mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils';
 import { createMemoryHistory } from 'vue-router';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AccountView } from '../../src/schemas/api/accounts';
@@ -282,11 +282,11 @@ class RecordingChartHandle implements ChartHandle {
     this.disposed = true;
   }
 
-  on(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+  on(_event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
     this.dataZoomHandlers.push(handler);
   }
 
-  off(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+  off(_event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
     const index = this.dataZoomHandlers.indexOf(handler);
     if (index >= 0) this.dataZoomHandlers.splice(index, 1);
   }
@@ -305,7 +305,7 @@ class RecordingChartRuntime implements ChartRuntime {
   readonly handles: RecordingChartHandle[] = [];
   readonly syncGroups: (string | undefined)[] = [];
 
-  createChart(element: HTMLElement, options?: { readonly syncGroup?: string }): ChartHandle {
+  createChart(_element: HTMLElement, options?: { readonly syncGroup?: string }): ChartHandle {
     const handle = new RecordingChartHandle();
     this.handles.push(handle);
     this.syncGroups.push(options?.syncGroup);
@@ -357,7 +357,7 @@ afterEach(() => {
   while (wrappers.length > 0) wrappers.pop()?.unmount();
 });
 
-function cardOf(wrapper: VueWrapper, metricKey: string): VueWrapper {
+function cardOf(wrapper: VueWrapper, metricKey: string): DOMWrapper<Element> {
   const card = wrapper
     .findAll('[data-testid="metric-card"]')
     .find((element) => element.attributes('data-metric-key') === metricKey);
@@ -365,7 +365,7 @@ function cardOf(wrapper: VueWrapper, metricKey: string): VueWrapper {
   return card!;
 }
 
-function ddOf(card: VueWrapper, testid: string): string {
+function ddOf(card: DOMWrapper<Element>, testid: string): string {
   return card.find(`[data-testid="${testid}"]`).text();
 }
 
@@ -901,7 +901,7 @@ describe('overview selection (the D-135 consumer rule)', () => {
     const wrapper = await mountView(backend, storage);
 
     const select = wrapper.find('[data-testid="overview-account-select"]');
-    expect(select.element.value).toBe('acc-1');
+    expect((select.element as HTMLSelectElement).value).toBe('acc-1');
     expect(cardOf(wrapper, 'tokens-5h')).toBeDefined();
 
     await select.setValue('acc-2');
@@ -932,7 +932,9 @@ describe('overview selection (the D-135 consumer rule)', () => {
       honored,
       new MemoryThemeStorage({ 'quotameter.selected-account': 'acc-2' }),
     );
-    expect(wrapper.find('[data-testid="overview-account-select"]').element.value).toBe('acc-2');
+    expect(
+      (wrapper.find('[data-testid="overview-account-select"]').element as HTMLSelectElement).value,
+    ).toBe('acc-2');
     expect(honored.calls.some((call) => call.input === '/api/quota?accountId=acc-2')).toBe(true);
 
     const stale = new FakeOverviewBackend({
@@ -944,7 +946,9 @@ describe('overview selection (the D-135 consumer rule)', () => {
       new MemoryThemeStorage({ 'quotameter.selected-account': 'purged-elsewhere' }),
     );
     await settle();
-    expect(wrapper2.find('[data-testid="overview-account-select"]').element.value).toBe('acc-1');
+    expect(
+      (wrapper2.find('[data-testid="overview-account-select"]').element as HTMLSelectElement).value,
+    ).toBe('acc-1');
     // The stale id never reached the wire; the reconciled first
     // account's quota did.
     expect(stale.calls.some((call) => call.input.includes('purged-elsewhere'))).toBe(false);
@@ -1672,7 +1676,7 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
       false,
     );
 
-    await wrapper.find('[data-range-id="24h"] input').setChecked();
+    await wrapper.find('[data-range-id="24h"] input').setValue();
     await settle();
     const last = backend.historyCalls.at(-1);
     expect(last, 'the 24-hour window was dispatched').toBeDefined();
@@ -1704,7 +1708,7 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     // While retention is unknown nothing is disabled: 30 days is an
     // honest request (the server’s range report stays the authority).
     expect(wrapper.find('[data-testid="history-range-reason"]').exists()).toBe(false);
-    await wrapper.find('[data-range-id="30d"] input').setChecked();
+    await wrapper.find('[data-range-id="30d"] input').setValue();
     await settle();
     expect(spanOf(backend.historyCalls.at(-1)!)).toBe(30 * 86_400_000);
 
@@ -1740,7 +1744,7 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     const wrapper = await mountView(backend);
 
     expect(wrapper.find('[data-testid="history-range-fallback"]').exists()).toBe(false);
-    await wrapper.find('[data-range-id="30d"] input').setChecked();
+    await wrapper.find('[data-range-id="30d"] input').setValue();
     await settle();
 
     releaseSettings();
@@ -1753,7 +1757,7 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     // The next manual pick owns the selection again — the notice retires
     // and a fresh cycle (unknown retention keeping everything selectable)
     // starts clean.
-    await wrapper.find('[data-range-id="24h"] input').setChecked();
+    await wrapper.find('[data-range-id="24h"] input').setValue();
     await settle();
     expect(wrapper.find('[data-testid="history-range-fallback"]').exists()).toBe(false);
   });
@@ -1858,7 +1862,7 @@ describe('overview rolling-range controls (task 174, D-147)', () => {
     const wrapper = await mountView(backend);
     expect(backend.peakHoursCalls).toHaveLength(1);
 
-    await wrapper.find('[data-range-id="24h"] input').setChecked();
+    await wrapper.find('[data-range-id="24h"] input').setValue();
     await settle();
     expect(backend.peakHoursCalls).toHaveLength(2);
     expect(spanOf(backend.peakHoursCalls[1]!)).toBe(24 * 3_600_000);

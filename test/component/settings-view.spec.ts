@@ -84,7 +84,13 @@ interface SettingsOverrides {
 function settingsResponse(overrides: SettingsOverrides = {}): SettingsResponse {
   const env = new Set<EnvironmentField>(overrides.environment ?? []);
   const restartTrio = overrides.restartTrio ?? true;
-  const annotated = (value: string | number, source: FieldSource, restart: boolean) => ({
+  // Generic over the value so each field's literal type (string, number,
+  // or a closed union member) survives into the served shape.
+  const annotated = <T extends string | number>(
+    value: T,
+    source: FieldSource,
+    restart: boolean,
+  ) => ({
     value,
     source,
     restartRequired: restart,
@@ -795,7 +801,9 @@ describe('settings page: the save flow (D-130/D-140 minimal writes)', () => {
     expect(options.map((option) => option.text())).toContain('Asia/Singapore');
 
     await options.find((option) => option.text() === 'Asia/Singapore')!.trigger('click');
-    expect(wrapper.find('[data-testid="settings-timezone"]').element.value).toBe('Asia/Singapore');
+    expect(
+      (wrapper.find('[data-testid="settings-timezone"]').element as HTMLInputElement).value,
+    ).toBe('Asia/Singapore');
     // The exact match collapses the suggestion list.
     expect(wrapper.find('[data-testid="settings-timezone-suggestions"]').exists()).toBe(false);
 
@@ -846,7 +854,9 @@ describe('settings page: the save flow (D-130/D-140 minimal writes)', () => {
     expect(
       backend.calls.filter((call) => call.method === 'GET' && call.input === '/api/settings'),
     ).toHaveLength(2);
-    expect(wrapper.find('[data-testid="settings-interval"]').element.value).toBe('600');
+    expect(
+      (wrapper.find('[data-testid="settings-interval"]').element as HTMLInputElement).value,
+    ).toBe('600');
     // An empty restartRequired outcome renders no restart notice.
     expect(wrapper.find('[data-testid="settings-restart-pending"]').exists()).toBe(false);
   });
@@ -884,7 +894,9 @@ describe('settings page: the save flow (D-130/D-140 minimal writes)', () => {
     expect(notice.text()).toBe(en.errors.codes.forbidden);
     expect(notice.attributes('data-error-code')).toBe('FORBIDDEN');
     // The operator's edit survives the refusal.
-    expect(wrapper.find('[data-testid="settings-interval"]').element.value).toBe('600');
+    expect(
+      (wrapper.find('[data-testid="settings-interval"]').element as HTMLInputElement).value,
+    ).toBe('600');
     expect(wrapper.find('[data-testid="settings-saved"]').exists()).toBe(false);
   });
 });
@@ -920,7 +932,7 @@ describe('settings page: the password change (§15.2, D-124/D-126)', () => {
     const field = wrapper.find('[data-testid="settings-password-input"]');
     expect(field.attributes('type')).toBe('password');
     expect(field.attributes('autocomplete')).toBe('new-password');
-    expect(field.element.value).toBe('');
+    expect((field.element as HTMLInputElement).value).toBe('');
   });
 
   it('a short password renders the field error and dispatches nothing', async () => {
@@ -940,9 +952,9 @@ describe('settings page: the password change (§15.2, D-124/D-126)', () => {
     // the input, it is not a dispatched attempt (the accounts form's
     // rule); clearing happens after every DISPATCHED attempt, pinned by
     // the success and server-refusal cases below.
-    expect(wrapper.find('[data-testid="settings-password-input"]').element.value).toBe(
-      'elevenchars',
-    );
+    expect(
+      (wrapper.find('[data-testid="settings-password-input"]').element as HTMLInputElement).value,
+    ).toBe('elevenchars');
   });
 
   it('a whitespace-only password is never a value (D-011)', async () => {
@@ -987,7 +999,9 @@ describe('settings page: the password change (§15.2, D-124/D-126)', () => {
     expect(JSON.parse(puts[0]!.body ?? '{}')).toEqual({
       auth: { password: 'a-fine-new-password' },
     });
-    expect(wrapper.find('[data-testid="settings-password-input"]').element.value).toBe('');
+    expect(
+      (wrapper.find('[data-testid="settings-password-input"]').element as HTMLInputElement).value,
+    ).toBe('');
     expect(wrapper.find('[data-testid="settings-password-changed"]').text()).toContain(
       'All sessions were revoked',
     );
@@ -1013,7 +1027,9 @@ describe('settings page: the password change (§15.2, D-124/D-126)', () => {
     await settle();
 
     expect(wrapper.find('[data-testid="api-error"]').text()).toBe(en.errors.codes.validation);
-    expect(wrapper.find('[data-testid="settings-password-input"]').element.value).toBe('');
+    expect(
+      (wrapper.find('[data-testid="settings-password-input"]').element as HTMLInputElement).value,
+    ).toBe('');
     expect(wrapper.find('[data-testid="settings-password-changed"]').exists()).toBe(false);
   });
 });
@@ -1108,15 +1124,21 @@ describe('settings page: the theme row agrees with the header control (D-133)', 
     const wrapper = await mountShell(new FakeSettingsBackend(), storage);
 
     // Both controls start at the controller's value.
-    expect(wrapper.find('[data-testid="settings-theme"]').element.value).toBe('system');
-    expect(wrapper.find('[data-testid="theme-select"]').element.value).toBe('system');
+    expect(
+      (wrapper.find('[data-testid="settings-theme"]').element as HTMLSelectElement).value,
+    ).toBe('system');
+    expect((wrapper.find('[data-testid="theme-select"]').element as HTMLSelectElement).value).toBe(
+      'system',
+    );
 
     await wrapper.find('[data-testid="settings-theme"]').setValue('dark');
     await settle();
 
     // The header select follows, the attribute flips, and the choice
     // persists through the shared controller's storage.
-    expect(wrapper.find('[data-testid="theme-select"]').element.value).toBe('dark');
+    expect((wrapper.find('[data-testid="theme-select"]').element as HTMLSelectElement).value).toBe(
+      'dark',
+    );
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(storage.getItem('quotameter.theme')).toBe('dark');
   });
@@ -1127,6 +1149,8 @@ describe('settings page: the theme row agrees with the header control (D-133)', 
     await wrapper.find('[data-testid="theme-select"]').setValue('light');
     await settle();
 
-    expect(wrapper.find('[data-testid="settings-theme"]').element.value).toBe('light');
+    expect(
+      (wrapper.find('[data-testid="settings-theme"]').element as HTMLSelectElement).value,
+    ).toBe('light');
   });
 });

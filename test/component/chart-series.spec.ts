@@ -926,6 +926,7 @@ function annotatedOption(): MetricChartOption {
           to: T2,
           start: T0 + 1_800_000,
           end: T2,
+          name: null,
           multiplier: 0.75,
           localStart: '2026-11-04T19:30',
           localEnd: '2026-11-04T21:00',
@@ -1039,7 +1040,7 @@ describe('buildMetricChartOption: the error strip (§14.4/§12.2)', () => {
     expect(strip).toHaveProperty('xAxisIndex', 1);
     // Bands exist in this fixture, so the strip's y-axis follows them.
     expect(strip).toHaveProperty('yAxisIndex', 2);
-    if (!('data' in strip) || !('itemStyle' in strip)) throw new Error('unreachable');
+    if (strip.type !== 'scatter') throw new Error('expected the error strip');
     expect(strip.itemStyle.color).toBe('#danger-color');
     expect(strip.data.map((datum) => datum.symbol)).toEqual(['triangle', 'diamond']);
     expect(strip.data[0]!.value).toEqual([T0 + 300_000, 0.5]);

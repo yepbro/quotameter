@@ -146,7 +146,7 @@ describe('HistoryRangeControls: selection', () => {
   it('checks the modelValue option and emits update:modelValue on a change', async () => {
     const wrapper = mountControls({ modelValue: '7d' });
     expect((optionOf(wrapper, '7d').find('input').element as HTMLInputElement).checked).toBe(true);
-    await optionOf(wrapper, '24h').find('input').setChecked();
+    await optionOf(wrapper, '24h').find('input').setValue();
     const emitted = wrapper.emitted('update:modelValue');
     expect(emitted).toEqual([['24h']]);
   });

@@ -20,6 +20,8 @@
 
 Tests are `*.spec.ts`; every test cleans up after itself; no execution-order dependencies.
 
+Type-check ownership: `test/component/**` belongs to exactly one tsconfig project — `ui/tsconfig.json` (server `tsc` cannot parse `.vue` imports, so the root project excludes the directory). The override `"exclude": ["**/node_modules"]` in `ui/tsconfig.json` is load-bearing: without it the config inherits the root's `exclude: ["test/component"]` through `extends` and the specs are type-checked by no project at all (U-030).
+
 ## Hard rules
 
 - **No-network guard** is active in every Vitest project: requests to non-loopback hosts throw. HTTP tests use `test/helpers/mockProviderServer.ts` (status/body/delay/socket-termination control) on 127.0.0.1.

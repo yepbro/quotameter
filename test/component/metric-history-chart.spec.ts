@@ -83,11 +83,11 @@ class RecordingChartHandle implements ChartHandle {
     this.disposed = true;
   }
 
-  on(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+  on(_event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
     this.dataZoomHandlers.push(handler);
   }
 
-  off(event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
+  off(_event: 'dataZoom', handler: (payload: ChartDataZoomEvent) => void): void {
     const index = this.dataZoomHandlers.indexOf(handler);
     if (index >= 0) this.dataZoomHandlers.splice(index, 1);
   }
@@ -794,6 +794,17 @@ describe('metric chart: states and the D-147 residual', () => {
 
 /* ── Theme restyle and the instance lifecycle (D-133) ─────────────────── */
 
+/**
+ * The `lineStyle.color` of a line series in the handle's latest option —
+ * the theme-restyle target; narrows the option's series union to its
+ * line members by the discriminant.
+ */
+function lastOptionLineColor(handle: RecordingChartHandle, index: number): string {
+  const series = handle.setOptions.at(-1)?.option.series[index];
+  if (series?.type !== 'line') throw new Error(`expected a line series at index ${index}`);
+  return series.lineStyle.color;
+}
+
 describe('metric chart: theme restyle and lifecycle', () => {
   it('re-reads the tokens and re-sets the option when the theme flips (D-133)', async () => {
     applyTokens(LIGHT_TOKENS);
@@ -802,7 +813,7 @@ describe('metric chart: theme restyle and lifecycle', () => {
     });
     const handle = runtime.handles[0]!;
     const before = handle.setOptions.length;
-    expect(handle.setOptions.at(-1)!.option.series[0]?.lineStyle.color).toBe('#1b4fa0');
+    expect(lastOptionLineColor(handle, 0)).toBe('#1b4fa0');
 
     // The live flip: the token cascade changes with the mode (inline here
     // as the stylesheet does in the browser) and the controller follows.
@@ -811,8 +822,8 @@ describe('metric chart: theme restyle and lifecycle', () => {
     await settle();
 
     expect(handle.setOptions.length).toBe(before + 1);
-    expect(handle.setOptions.at(-1)!.option.series[0]?.lineStyle.color).toBe('#8ab4f8');
-    expect(handle.setOptions.at(-1)!.option.series[1]?.lineStyle.color).toBe('#9fdcae');
+    expect(lastOptionLineColor(handle, 0)).toBe('#8ab4f8');
+    expect(lastOptionLineColor(handle, 1)).toBe('#9fdcae');
   });
 
   it('releases the chart on unmount', async () => {

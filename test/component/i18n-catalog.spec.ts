@@ -191,7 +191,7 @@ function collectUsedKeys(): Map<string, string[]> {
   const used = new Map<string, string[]>();
   for (const { path, content } of sources) {
     for (const match of content.matchAll(T_LITERAL_PATTERN)) {
-      const key = match[2];
+      const key = match[2]!;
       used.set(key, [...(used.get(key) ?? []), path]);
     }
   }
@@ -267,7 +267,7 @@ describe('vue-i18n English catalog (spec §14.1)', () => {
     for (const { path, content } of sources) {
       if (!path.endsWith('.vue')) continue;
       for (const match of templateMarkupOf(content).matchAll(STATIC_ATTRIBUTE_PATTERN)) {
-        if (match[3].trim() !== '') {
+        if (match[3]!.trim() !== '') {
           statics.push(`${path}: ${match[1]}="${match[3]}"`);
         }
       }
