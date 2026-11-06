@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -42,6 +43,10 @@ import { createTempDir } from '../helpers/isolation';
  * without taking the test runner down, so its real-child proof lives in
  * `test/integration/cli-service-logs.spec.ts` (the U-001 discipline), and
  * the handler-level interrupt arms run against the seam double below.
+ * The backpressure cell drives the child's chunk boundaries by an
+ * explicit signal/marker handshake (U-047, D-167) — the child writes
+ * chunks only when the test signals, so no assertion depends on when the
+ * OS pipe happens to coalesce reads.
  */
 
 /** Representative owner; a regular account, never root (D-105 guarantees it). */
@@ -937,71 +942,208 @@ describe('runJournalctlPassthrough (real children)', () => {
     'gates forwarding on the sink until it drains (backpressure)',
     { timeout: 15_000 },
     async () => {
-      // A full sink (`write` returning false) must stop the forwarding
-      // until `drain` fires — `--lines=all` over a slow pipe cannot queue
-      // the whole journal in memory. The flood child stays alive while
-      // gated (its own exit would resume the stream, as the runner
-      // guarantees for `close`), so the gate itself is what holds.
+      // The backpressure gate, proven by an explicit parent↔child
+      // handshake (U-047, D-167) instead of OS pipe luck: the child
+      // writes chunks ONLY when the test signals — SIGUSR2 writes
+      // `CHUNK<n>` and creates the marker `wrote-<n>` from the write
+      // callback (the callback fires once the bytes reached the OS pipe,
+      // so the marker proves the chunk is pending on this side), SIGTERM
+      // writes `FINAL` and exits 0, and the `PID:` announcement is the
+      // child's first write, made only after both handlers are installed
+      // (the U-001 discipline — nothing is signalled before it). Every
+      // wait below is causal; the poll bounds exist to report failures,
+      // not to guess phases (D-087/D-163). The previous shape flooded 200
+      // lines in a tight loop and needed the pipe to deliver at least two
+      // reads; under load the flood coalesced into one read, the re-pause
+      // never happened, and the cell flaked three full runs (U-039's rig
+      // run 3, U-044's final-value rig run — D-163 — and task 181's
+      // landing check). The gate pins are unchanged in strength and now
+      // non-vacuous: the refused write pauses the stream — with a chunk
+      // PROVEN to sit in the pipe (marker), forwarding stays silent
+      // because resume() is causally impossible (this test holds the
+      // only drain listener, and the child exits only on this test's
+      // signal), a causality the settle window then OBSERVES (a holding
+      // pause makes the window vacuously stable — no event can exist —
+      // while the marker proves a pause-less runner MUST forward inside
+      // it: loop-turn lateness, not a race); the first drain forwards
+      // exactly the pending chunk and re-pauses, and the tracked drain
+      // set pins that the new listener REPLACES the old one (one at a
+      // time); releasing the sink plus the second drain resumes
+      // forwarding, and the joined forwarded calls reconstruct the whole
+      // stream byte-exactly — content, not write counts, because the
+      // ungated phase may still coalesce reads (the pipe preserves order,
+      // not boundaries).
+      const dir = await createTempDir('qm-logs-backpressure-');
+      const markerOf = (chunk: number): string => join(dir.path, `wrote-${chunk}`);
+      const childSource = [
+        "const fs = require('node:fs');",
+        // The pid file is the LEAK GUARD, not the readiness marker: the
+        // finally must be able to kill the child even when phase 1's wait
+        // expired without a forwarded announcement, so it is the child's
+        // very first action.
+        `fs.writeFileSync(${JSON.stringify(join(dir.path, 'pid'))}, String(process.pid));`,
+        `const markerFor = (n) => ${JSON.stringify(join(dir.path, 'wrote-'))} + n;`,
+        'let chunks = 0;',
+        "process.on('SIGUSR2', () => {",
+        '  chunks += 1;',
+        "  process.stdout.write('CHUNK' + chunks + '\\n', () => {",
+        '    fs.writeFileSync(markerFor(chunks), "");',
+        '  });',
+        '});',
+        "process.on('SIGTERM', () => {",
+        "  process.stdout.write('FINAL\\n', () => process.exit(0));",
+        '});',
+        'setInterval(() => {}, 60_000);',
+        "process.stdout.write('PID:' + process.pid + '\\n');",
+      ].join('\n');
       const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => false);
       let drainListener: (() => void) | undefined;
+      // The drain listeners the runner has pending, as the real emitter
+      // would hold them: `once('drain')` adds, `removeListener('drain')`
+      // removes — this is what pins the REPLACEMENT claim (a runner that
+      // stacked a second listener without removing the first would leave
+      // both in the set). Non-drain registrations and removals are
+      // delegated to the real methods, so nothing else in the worker
+      // loses its listener during the cell.
+      const drainListeners = new Set<() => void>();
+      const realOnce = process.stdout.once.bind(process.stdout);
       const onceSpy = vi.spyOn(process.stdout, 'once').mockImplementation(((
-        _event: string,
+        event: string,
         listener: () => void,
       ) => {
-        drainListener = listener;
+        if (event === 'drain') {
+          drainListener = listener;
+          drainListeners.add(listener);
+        } else {
+          realOnce(event as never, listener as never);
+        }
         return process.stdout;
       }) as unknown as typeof process.stdout.once);
-      let outcome: Promise<LogViewerOutcome> | undefined;
-      try {
-        outcome = runJournalctlPassthrough([
-          process.execPath,
-          '-e',
-          "for (let i = 0; i < 200; i++) process.stdout.write('flood' + i + '\\n');" +
-            'setTimeout(() => process.exit(0), 5000);',
-        ]);
-        // Wait until the first chunk was forwarded, then let the flood
-        // finish behind the paused pipe: the gating must hold.
-        const until = Date.now() + 5000;
-        while (writeSpy.mock.calls.length === 0) {
-          if (Date.now() >= until) throw new Error('the flood child never forwarded a chunk');
+      const realRemoveListener = process.stdout.removeListener.bind(process.stdout);
+      const removeSpy = vi.spyOn(process.stdout, 'removeListener').mockImplementation(((
+        event: string,
+        listener: () => void,
+      ) => {
+        if (event === 'drain') {
+          drainListeners.delete(listener);
+        } else {
+          realRemoveListener(event as never, listener as never);
+        }
+        return process.stdout;
+      }) as unknown as typeof process.stdout.removeListener);
+      const pidFromFile = (): number | undefined => {
+        try {
+          const pid = Number(readFileSync(join(dir.path, 'pid'), 'utf8'));
+          return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+        } catch {
+          return undefined; // the child never got far enough to write it
+        }
+      };
+      const forwarded = (): string => writeSpy.mock.calls.map((call) => String(call[0])).join('');
+      const until = async (what: string, probe: () => boolean): Promise<void> => {
+        const deadline = Date.now() + 5000;
+        while (!probe()) {
+          if (Date.now() >= deadline) throw new Error(`${what} (waited 5000 ms)`);
           await new Promise((wait) => setTimeout(wait, 25));
         }
-        const gated = writeSpy.mock.calls.length;
-        await new Promise((wait) => setTimeout(wait, 200));
-        expect(writeSpy.mock.calls.length, 'forwarding is gated while the sink is full').toBe(
-          gated,
-        );
+      };
+      let childPid: number | undefined;
+      let settled = false;
+      let testFailure: unknown;
+      let killFailure: unknown;
+      try {
+        const outcome = runJournalctlPassthrough([process.execPath, '-e', childSource]);
+        // Phase 1 — the announcement: the pid line is the child's only
+        // write so far (each chunk waits for our signal), so the first
+        // read delivered exactly it and the gate closed on it.
+        await until('the child never announced its pid', () => {
+          const match = /^PID:(\d+)$/m.exec(forwarded());
+          if (match === null) return false;
+          childPid = Number(match[1]);
+          return true;
+        });
+        expect(writeSpy.mock.calls.length, 'exactly the announcement was forwarded').toBe(1);
+        expect(forwarded()).toBe(`PID:${childPid}\n`);
         expect(drainListener, 'a drain listener was registered').toBeDefined();
-        // Drain with the sink still reporting full: the next chunk pauses
-        // again and REPLACES the pending drain listener (one at a time).
+        expect([...drainListeners], 'exactly one drain listener is pending').toEqual([
+          drainListener!,
+        ]);
+        // Phase 2 — the gate holds against PROVEN pending data: the
+        // marker exists only after chunk 1 reached the pipe, and no
+        // resume() can fire (we hold the only drain listener; the child
+        // exits only on our signal) — the causality the settle window
+        // below then observes: with the pause holding, no data event can
+        // exist, so the window cannot flake; with a pause-less runner,
+        // the already-pending bytes MUST be forwarded inside it.
+        process.kill(childPid!, 'SIGUSR2');
+        await until('chunk 1 never reached the pipe', () => existsSync(markerOf(1)));
+        expect(
+          writeSpy.mock.calls.length,
+          'forwarding is gated while the sink is full and data is pending',
+        ).toBe(1);
+        await new Promise((wait) => setTimeout(wait, 200));
+        expect(writeSpy.mock.calls.length, 'the gate held across the settle window').toBe(1);
+        // Phase 3 — the first drain forwards exactly the pending chunk,
+        // the still-full sink re-pauses it, and the new drain listener
+        // REPLACES the old one (one at a time).
         const firstDrain = drainListener!;
         firstDrain();
-        const untilReplaced = Date.now() + 5000;
-        while (drainListener === firstDrain) {
-          if (Date.now() >= untilReplaced) {
-            throw new Error('the re-pause never registered a second drain listener');
-          }
-          await new Promise((wait) => setTimeout(wait, 25));
-        }
+        let secondDrain: (() => void) | undefined;
+        await until('the re-pause never registered a second drain listener', () => {
+          if (drainListener === undefined || drainListener === firstDrain) return false;
+          secondDrain = drainListener;
+          return true;
+        });
+        expect(writeSpy.mock.calls.length, 'the pending chunk was forwarded, then re-paused').toBe(
+          2,
+        );
+        expect(forwarded()).toBe(`PID:${childPid}\nCHUNK1\n`);
+        expect([...drainListeners], 'the re-pause replaced the pending drain listener').toEqual([
+          secondDrain!,
+        ]);
+        // Phase 4 — release the sink and drain: forwarding resumes, the
+        // further signalled chunk and the final line flow ungated, and
+        // the run resolves as a clean success. The marker for chunk 2
+        // orders the exit signal strictly after chunk 2's bytes.
         writeSpy.mockImplementation(() => true);
-        drainListener!();
+        secondDrain!();
+        process.kill(childPid!, 'SIGUSR2');
+        await until('chunk 2 never reached the pipe', () => existsSync(markerOf(2)));
+        process.kill(childPid!, 'SIGTERM');
+        const resolved = await outcome;
+        settled = true;
+        expect(resolved).toEqual({ ok: true, interrupted: false });
+        expect(forwarded()).toBe(`PID:${childPid}\nCHUNK1\nCHUNK2\nFINAL\n`);
+      } catch (error) {
+        // Retrown after cleanup — a throw inside the finally could
+        // swallow the assertion error that matters more (no-unsafe-finally).
+        testFailure = error;
       } finally {
+        // A failed assertion must not leak the alive child (it exits only
+        // on this test's signals). The pid file is the child's first
+        // action, so it names the child even when phase 1's wait expired
+        // without a forwarded announcement; after a settled outcome the
+        // child has exited (its pid could since have been recycled), so
+        // the kill is skipped. ESRCH is the already-exited answer;
+        // anything else is recorded and reported after cleanup, unless a
+        // test failure outranks it.
+        if (!settled) {
+          const pid = childPid ?? pidFromFile();
+          if (pid !== undefined) {
+            try {
+              process.kill(pid, 'SIGKILL');
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ESRCH') killFailure = error;
+            }
+          }
+        }
         onceSpy.mockRestore();
+        removeSpy.mockRestore();
+        writeSpy.mockRestore();
+        await dir.remove();
       }
-      const resolved = await outcome!;
-      expect(resolved).toEqual({ ok: true, interrupted: false });
-      // Ungated forwarding resumed and delivered the whole flood. The
-      // invariant is content, not a write count: under load the OS pipe
-      // coalesces the 1.6 KB flood into as few as two chunks (the second
-      // consumed by the re-pause read at the listener-replacement wait
-      // above), so "more than two writes happened" is a chunking
-      // assumption, not a resumption fact — joining the forwarded calls
-      // and requiring both ends of the flood holds under any chunking
-      // (a split mid-line still joins).
-      const delivered = writeSpy.mock.calls.map((call) => String(call[0])).join('');
-      expect(delivered).toContain('flood0');
-      expect(delivered).toContain('flood199');
-      writeSpy.mockRestore();
+      if (testFailure !== undefined) throw testFailure;
+      if (killFailure !== undefined) throw killFailure;
     },
   );
 
