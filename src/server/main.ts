@@ -1,9 +1,10 @@
 /**
  * Server entry point and process orchestration (task 060, spec §5.6).
  *
- * `runServer` is the callable behind the future `quotameter run` command
- * (spec §5.2): it verifies the runtime, starts the assembled application,
- * turns SIGTERM/SIGINT into a graceful shutdown, and returns the process exit
+ * `runServer` is the callable behind the `quotameter run` command
+ * (spec §5.2; wired as its handler by task U-050's `src/cli/run.ts`): it
+ * verifies the runtime, starts the assembled application, turns
+ * SIGTERM/SIGINT into a graceful shutdown, and returns the process exit
  * code. It never calls `process.exit` itself — the caller owns the process,
  * which keeps the orchestration testable in-process.
  *

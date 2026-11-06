@@ -86,11 +86,15 @@ describe('bin/quotameter.mjs (child process, jiti)', () => {
     expect(result.stdout).toBe('');
   }, 20_000);
 
-  it('a not-yet-implemented command exits 1 with the stub message', async () => {
-    // `run` is the last stub (task 146's); `doctor` is real since task 145.
-    const result = await runBin(['run']);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toBe('quotameter run: not implemented yet\n');
-    expect(result.stdout).toBe('');
+  it('renders real command help for run and exits 0 on stdout', async () => {
+    // `run` is real since U-050 (the last stub): help renders from the
+    // dispatch table without invoking the handler — no server starts, and
+    // the invocation stays cheap at the process boundary. The server-start
+    // behavior itself is pinned by test/integration/cli-run.spec.ts.
+    const result = await runBin(['run', '--help']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Usage: quotameter run [options]');
+    expect(result.stdout).toContain('Foreground execution for systemd and debugging');
+    expect(result.stderr).toBe('');
   }, 20_000);
 });
