@@ -3,6 +3,22 @@
 # npm packages and GitHub Actions are checked weekly on Monday. Update PRs
 # follow the project conventions (Conventional Commits, English) and must
 # pass the required CI check like any other pull request.
+#
+# The `dependencies` label assigned below is repository METADATA, not
+# repository content: a label listed under `labels:` that does not exist
+# in the repository is silently ignored by Dependabot (documented
+# behavior), so the assignment depends on the label existing — it was
+# created live once (decision D-157; corrected rationale D-168). An
+# in-workflow bootstrap cannot cover it: no workflow of ours runs before
+# Dependabot opens its PRs, and granting ci.yml `issues: write` for this
+# would be a least-privilege regression. The explicit declaration is
+# kept deliberately: it pins the exact label set (one shared
+# `dependencies`, not Dependabot's defaults — `dependencies` plus a
+# per-ecosystem label such as `npm`/`github-actions`, which Dependabot
+# would auto-create and manage itself). If the label ever goes missing
+# (fresh fork, deletion), update PRs silently lose it — restore it with:
+#   gh label create dependencies --repo yepbro/quotameter \
+#     --description "Dependency updates (Dependabot)" --color 0366d6
 version: 2
 updates:
   - package-ecosystem: npm

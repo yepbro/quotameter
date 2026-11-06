@@ -221,18 +221,42 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl xz-utils
 
+      # Supply-chain pin (spec §4.4, decision D-157): the runtime archive is
+      # verified against the SHA-256 digests pinned below, in repository
+      # history — the one trust domain a compromised nodejs.org mirror or CDN
+      # cannot rewrite (the same reasoning as the SHA-pinned actions above).
+      # Fetching SHASUMS256.txt from the same CDN at run time would verify
+      # the mirror against itself and stop nothing.
+      #
+      # Digest source, sourced deliberately and then re-verified by
+      # downloading and hashing both archives before pinning:
+      # https://nodejs.org/dist/v22.13.0/SHASUMS256.txt (retrieved 2026-11-04)
+      #
+      # BUMP PROCEDURE — a Node version bump edits ALL of these sites in
+      # one change (`make check` fails otherwise via
+      # test/unit/ci-workflow.spec.ts):
+      # 1. this step: the `version=` line, the step name, both digest arms;
+      # 2. the next step's `node -v` expectation;
+      # 3. the test matrix's declared-minimum entry and the timezone job's
+      #    `node-version:` ICU-oracle pin;
+      # 4. the unsupported-node job's `grep -F` version literal;
+      # 5. package.json's `engines.node`;
+      # 6. PINNED_VERSION and PINNED_DIGESTS in that guard spec.
       - name: Install Node.js 22.13.0 from official binaries
         run: |
+          version=22.13.0
           arch="$(uname -m)"
           case "$arch" in
-            x86_64) arch=x64 ;;
-            aarch64) arch=arm64 ;;
+            x86_64) arch=x64; digest=3ff0d57063c33313d73d0bdcebc4c778ad6be948234584694a042c6fe57164f6 ;;
+            aarch64) arch=arm64; digest=5de54a12983d0de6ba23597d4d0194e64933e26b0f04a469db3be9c3e18b6b2b ;;
+            *) echo "::error::unsupported runner architecture: $arch" >&2; exit 1 ;;
           esac
-          curl -fsSL "https://nodejs.org/dist/v22.13.0/node-v22.13.0-linux-${arch}.tar.xz" -o /tmp/node.tar.xz
+          curl -fsSL "https://nodejs.org/dist/v${version}/node-v${version}-linux-${arch}.tar.xz" -o /tmp/node.tar.xz
+          echo "${digest}  /tmp/node.tar.xz" | sha256sum -c -
           mkdir -p /usr/local/lib/nodejs
           tar -xJf /tmp/node.tar.xz -C /usr/local/lib/nodejs
           for bin in node npm npx; do
-            ln -sf "/usr/local/lib/nodejs/node-v22.13.0-linux-${arch}/bin/$bin" "/usr/local/bin/$bin"
+            ln -sf "/usr/local/lib/nodejs/node-v${version}-linux-${arch}/bin/$bin" "/usr/local/bin/$bin"
           done
 
       - name: Verify the declared minimum runtime
