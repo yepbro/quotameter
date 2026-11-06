@@ -14,10 +14,22 @@
  * reported 0%; status handling is therefore explicit here — every status is
  * normalized through STATUS_ALIASES and an unknown one aborts the render
  * loudly instead of being dropped on the floor.
+ *
+ * The second bug (U-046, decision D-172): a run that dies BEFORE scoring
+ * (Stryker's initial test run fails, `mutation.json` is never written) used
+ * to abort here with ENOENT — while the workflow's shell redirect had
+ * already created an empty body file, which the upsert step then blanked
+ * the rolling issue with, and the step outcome ("failure" for ANY Stryker
+ * failure) dressed the crash up as a below-threshold score. The missing
+ * report is now a first-class case: `renderCrashReport` builds an honest
+ * crash body (failing initial-run tests extracted from the Stryker log,
+ * an explicit "no score was measured", no phantom numbers), and the
+ * workflow gates every verdict claim on the report file's existence.
  */
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 
 // The canonical vocabulary is the mutation-testing-schema `MutantStatus`
 // enum Stryker serializes (PascalCase). The exact lowercase spellings are
@@ -190,9 +202,202 @@ export function renderMutationReport(report, { outcome, date }) {
   return lines.join('\n');
 }
 
+// Stryker's initial-test-run failure block header (DryRunExecutor). The
+// failing test ids follow on tab-indented lines, each with its assertion
+// summary on a doubly-tab-indented line — the shapes verified against the
+// installed Stryker's `logFailedTestsInInitialRun` (one `\t<name>` and one
+// `\t\t<failureMessage>` line per test) and the crashed daily runs
+// (41421143977/41611856943/41805574274).
+const FAILED_TESTS_HEADER = /One or more tests failed in the initial test run/;
+// A timestamped logger line — the shape every Stryker log entry carries.
+// Inside a failed-tests block it is the block's only reliable terminator:
+// the failure messages themselves are multi-line and their continuation
+// lines arrive untabbed.
+const LOG_ENTRY = /^\d{2}:\d{2}:\d{2} \(\d+\) \w+ /;
+// The last ERROR line is Stryker's own reason to die (e.g. "ERROR Stryker
+// There were failed tests in the initial test run."); the leading timestamp
+// and logger name are stripped, the message kept.
+const ERROR_LINE = /^\d{2}:\d{2}:\d{2} \(\d+\) ERROR \S+ (.+)$/;
+
+/** Caps a possibly long log line for the issue body; one ellipsis char, not three dots. */
+const clip = (text, max) => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
+
+/**
+ * Extracts the failing initial-run tests from the raw Stryker step output.
+ *
+ * @param {string | undefined} logText the captured stdout+stderr of the
+ *   Stryker step (ANSI escapes tolerated; `undefined`/empty → no tests)
+ * @returns {Array<{ id: string, message?: string }>} in log order, unbounded
+ *   (the cap is a rendering concern; see renderCrashReport)
+ */
+export function extractFailedInitialTests(logText) {
+  if (typeof logText !== 'string' || logText === '') {
+    return [];
+  }
+  const tests = [];
+  let inBlock = false;
+  let current;
+  for (const rawLine of stripVTControlCharacters(logText).split('\n')) {
+    if (FAILED_TESTS_HEADER.test(rawLine)) {
+      inBlock = true;
+      current = undefined;
+      continue;
+    }
+    if (!inBlock) {
+      continue;
+    }
+    if (LOG_ENTRY.test(rawLine)) {
+      // The next timestamped log entry ends the block (Stryker logs the
+      // whole failed-test list as ONE entry; multi-line failure messages
+      // in between are untabbed and must not end it).
+      inBlock = false;
+      current = undefined;
+      continue;
+    }
+    const test = /^\t(\S.*)$/.exec(rawLine);
+    if (test) {
+      current = { id: test[1].trimEnd() };
+      tests.push(current);
+      continue;
+    }
+    // Only the first message line per test: the assertion summary, not the
+    // multi-line diff that may follow.
+    const message = /^\t\t(.+)$/.exec(rawLine);
+    if (message && current?.message === undefined) {
+      current.message = message[1].trim();
+      continue;
+    }
+    // Anything else (a failure-message continuation line) is ignored.
+  }
+  return tests;
+}
+
+/**
+ * Stryker's own reason to die, or an honest "unknown" — never a guess.
+ *
+ * @param {string | undefined} logText the captured Stryker step output
+ * @returns {string} the clipped message of the last ERROR line, if any
+ */
+function extractFailureCause(logText) {
+  if (typeof logText !== 'string') {
+    return 'unknown (no Stryker output log was captured)';
+  }
+  let cause;
+  for (const rawLine of stripVTControlCharacters(logText).split('\n')) {
+    const match = ERROR_LINE.exec(rawLine);
+    if (match) {
+      cause = match[1].trim();
+    }
+  }
+  if (cause === undefined) {
+    return 'unknown (no Stryker ERROR line in the captured log)';
+  }
+  return clip(cause, 200);
+}
+
+/**
+ * Renders the issue-body markdown for a run that produced no report —
+ * Stryker exited before writing `mutation.json`, so nothing was scored
+ * (U-046, decision D-172). The body names the crash, surfaces the failing
+ * initial-run tests when they are extractable from the log (bounded), links
+ * the run, and states explicitly that no score was measured — no phantom
+ * numbers, and nothing a reader could mistake for survivor triage.
+ *
+ * @param {{ date: string, log?: string, reportPath?: string, runUrl?: string }} options
+ *   `date` is the run date (ISO `YYYY-MM-DD`); `log` the captured Stryker
+ *   step output; `reportPath` the report location the run failed to write;
+ *   `runUrl` the Actions run link (omitted in local renders)
+ * @returns {string} markdown (no trailing newline)
+ */
+export function renderCrashReport({
+  date,
+  log,
+  reportPath = 'reports/mutation/mutation.json',
+  runUrl,
+}) {
+  const failed = extractFailedInitialTests(log);
+  const lines = [];
+  lines.push(`Daily mutation report — ${date} — crashed before scoring`, '');
+  lines.push(
+    `- Verdict: **run crashed — no score was measured** ` +
+      `(Stryker exited without writing \`${reportPath}\`)`,
+  );
+  lines.push(
+    '- Mutation score: **not measured** — no per-file results or survivor list exists for this run',
+  );
+  lines.push(`- Cause: ${extractFailureCause(log)}`);
+  if (runUrl !== undefined) {
+    lines.push(`- Run: ${runUrl}`);
+  }
+  lines.push(
+    '- Artifact: no mutation report exists for this run; the run artifact carries the ' +
+      'Stryker output log (`stryker-output.log`) instead',
+    '',
+  );
+  if (failed.length > 0) {
+    lines.push('## Failing initial-run tests (from the Stryker output log)', '');
+    for (const test of failed.slice(0, 20)) {
+      lines.push(`- \`${clip(test.id, 300)}\``);
+      if (test.message !== undefined) {
+        lines.push(`  - ${clip(test.message, 200)}`);
+      }
+    }
+    if (failed.length > 20) {
+      lines.push(`- …and ${failed.length - 20} more (see the run log)`);
+    }
+    lines.push('');
+  }
+  lines.push(
+    'This is NOT a below-threshold score — no score exists. Triage per the crashed-run ' +
+      'case in `docs/mutation-testing.md` ("How to react"), not the survivor list.',
+    '',
+  );
+  lines.push(
+    '<sub>Generated by `scripts/render-mutation-report.mjs` via `.github/workflows/mutation.yml`; ' +
+      'the last scored report, if any, stays in the issue body until a scored run replaces it.</sub>',
+  );
+  return lines.join('\n');
+}
+
+/** The Actions run page, from the runner's default environment variables; `undefined` locally. */
+const actionsRunUrl = () => {
+  const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+  return GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID
+    ? `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+    : undefined;
+};
+
 async function main() {
   const reportPath = process.argv[2] ?? 'reports/mutation/mutation.json';
-  const report = JSON.parse(await readFile(reportPath, 'utf8'));
+  let reportText;
+  try {
+    reportText = await readFile(reportPath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      // No report file: the run died before scoring. Render the honest crash
+      // body (exit 0 — a body WAS produced). The pre-U-046 behavior aborted
+      // here while the calling shell's redirect had already created an empty
+      // body file, which the upsert step then blanked the rolling issue with.
+      // Any other read error (permissions, &c.) still aborts loudly.
+      let log;
+      if (process.env.STRYKER_LOG_FILE !== undefined) {
+        // Best-effort evidence: an unreadable log must not kill the crash
+        // body — the report's absence is the fact being reported.
+        log = await readFile(process.env.STRYKER_LOG_FILE, 'utf8').catch(() => undefined);
+      }
+      console.log(
+        renderCrashReport({
+          date: new Date().toISOString().slice(0, 10),
+          log,
+          reportPath,
+          runUrl: actionsRunUrl(),
+        }),
+      );
+      return;
+    }
+    throw error;
+  }
+  const report = JSON.parse(reportText);
   const markdown = renderMutationReport(report, {
     outcome: process.env.STRYKER_OUTCOME,
     date: new Date().toISOString().slice(0, 10),
