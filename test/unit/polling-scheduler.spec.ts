@@ -22,6 +22,7 @@ import {
   pollingDelayMs,
   type PollingAccount,
   type PollingScheduler,
+  type PollingSleep,
 } from '../../src/services/polling-scheduler';
 import { withFakeTimers } from '../helpers/isolation';
 
@@ -98,6 +99,8 @@ interface HarnessOptions {
   /** Overrides the clock (default: both readings from the faked Date.now()). */
   readonly clock?: Clock;
   readonly inFlight?: { begin(): { done(): void } };
+  /** Overrides the wait seam (default: the module's real abortable timer). */
+  readonly sleep?: PollingSleep;
 }
 
 /**
@@ -178,6 +181,7 @@ function harness(options: HarnessOptions = {}): Harness {
     random: options.random ?? (() => 0),
     cycleHangThresholdMs: options.cycleHangThresholdMs,
     inFlight: options.inFlight,
+    sleep: options.sleep,
   });
 
   return {
@@ -656,6 +660,176 @@ describe('auth-rejection suspension gating (spec §7.2)', () => {
         expect(engine.attempts('a')).toBe(1);
         await clock.advanceMsAsync(1);
         expect(engine.attempts('a')).toBe(2); // probe at exactly 60 min
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+});
+
+/* ── §7.2: the Retry-After gate on verification probes (U-028) ─────────── */
+
+describe('Retry-After gate on verification probes (spec §7.2, U-028)', () => {
+  it('holds the due verification probe behind an active Retry-After deferral', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const engine = harness({ ids: ['a'] });
+        engine.script('a', (_result, call) => {
+          if (call === 1) return rejected(); // the entering 401
+          if (call === 2) return rateLimited('3600'); // the probe answers 429
+          return classifySuccess();
+        });
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(engine.attempts('a')).toBe(1); // suspended at t = 0
+        engine.holdNext('a'); // the probe (attempt 2) parks mid-flight
+        await clock.advanceMsAsync(3_599_999);
+        expect(engine.attempts('a')).toBe(1);
+        await clock.advanceMsAsync(1); // t = 3 600 000: the probe is due
+        expect(engine.attempts('a')).toBe(2); // admitted and dispatched
+        // The probe takes 30 s: its 429 settles at t = 3 630 000, so the
+        // one-hour-capped gate opens at 7 230 000 — 30 s past the next
+        // cadence instant (admission re-armed to 7 200 000 at dispatch).
+        await clock.advanceMsAsync(30_000);
+        engine.release('a');
+        await clock.advanceMsAsync(0);
+        expect(engine.settles('a')).toBe(2);
+        // The cadence arrives inside the deferral window: no dispatch —
+        // "do not poll before that time" binds the probe too.
+        await clock.advanceMsAsync(3_569_999); // t = 7 199 999
+        expect(engine.attempts('a')).toBe(2);
+        await clock.advanceMsAsync(1); // t = 7 200 000: due, still gated
+        expect(engine.attempts('a')).toBe(2);
+        await clock.advanceMsAsync(29_999);
+        expect(engine.attempts('a')).toBe(2);
+        // The gate opens: the probe runs then — not an hour later (the
+        // held admission was never consumed), exactly at the gate instant.
+        await clock.advanceMsAsync(1); // t = 7 230 000
+        expect(engine.attempts('a')).toBe(3);
+        expect(engine.starts.get('a')![2]).toBe(7_230_000);
+        // The successful probe released the account; the plain interval
+        // resumes from it.
+        await clock.advanceMsAsync(59_999);
+        expect(engine.attempts('a')).toBe(3);
+        await clock.advanceMsAsync(1); // t = 7 290 000
+        expect(engine.attempts('a')).toBe(4);
+        expect(engine.starts.get('a')![3]).toBe(7_290_000);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
+  it('does not let a deferral that opens before the cadence delay the next probe', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const engine = harness({ ids: ['a'] });
+        engine.script('a', (_result, call) => {
+          if (call === 1) return rejected();
+          if (call === 2) return rateLimited('1800');
+          return classifySuccess();
+        });
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        await clock.advanceMsAsync(3_600_000);
+        expect(engine.attempts('a')).toBe(2); // the probe settles same-ms
+        // Its 30-minute deferral opens at t = 5 400 000 — the suspension
+        // still gates: no dispatch at the gate opening.
+        await clock.advanceMsAsync(1_800_000); // t = 5 400 000
+        expect(engine.attempts('a')).toBe(2);
+        // The next probe rides the cadence exactly (7 200 000), not later.
+        await clock.advanceMsAsync(1_799_999);
+        expect(engine.attempts('a')).toBe(2);
+        await clock.advanceMsAsync(1); // t = 7 200 000
+        expect(engine.attempts('a')).toBe(3);
+        expect(engine.starts.get('a')![2]).toBe(7_200_000);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
+  it('admits at the instant the deferral boundary coincides with the cadence', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const engine = harness({ ids: ['a'] });
+        engine.script('a', (_result, call) => {
+          if (call === 1) return rejected();
+          if (call === 2) return rateLimited('3600');
+          return classifySuccess();
+        });
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        await clock.advanceMsAsync(3_600_000);
+        expect(engine.attempts('a')).toBe(2); // the probe settles same-ms
+        // A zero-duration probe with the maximum Retry-After arms the gate
+        // exactly on the next cadence instant (7 200 000): the boundary
+        // admits — equality is "the gate is open", not "one more wait".
+        await clock.advanceMsAsync(3_599_999);
+        expect(engine.attempts('a')).toBe(2);
+        await clock.advanceMsAsync(1); // t = 7 200 000
+        expect(engine.attempts('a')).toBe(3);
+        expect(engine.starts.get('a')![2]).toBe(7_200_000);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
+  it('waits straight to the cadence when the deferral opens first (no spurious wake)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        // A counting sleep (the default seam's contract, wrapped): every
+        // wake that actually FIRES records its target instant (a scheduled
+        // wait aborted by a kick — the transient hang-threshold wait under
+        // a momentary flight — never wakes the loop, so it does not count),
+        // pinning WHICH instants the loop really wakes at: the comment on
+        // the gate's placement promises no extra wake at a deferral
+        // opening that precedes the cadence.
+        const wakeTargets: number[] = [];
+        const countingSleep: PollingSleep = (ms, signal) => {
+          return new Promise<void>((resolve, reject) => {
+            if (signal?.aborted === true) {
+              reject(new TransportAbortError());
+              return;
+            }
+            const onAbort = () => {
+              clearTimeout(timer);
+              reject(new TransportAbortError());
+            };
+            const timer = setTimeout(() => {
+              signal?.removeEventListener('abort', onAbort);
+              wakeTargets.push(Date.now());
+              resolve();
+            }, ms);
+            signal?.addEventListener('abort', onAbort, { once: true });
+          });
+        };
+        const engine = harness({ ids: ['a'], sleep: countingSleep });
+        engine.script('a', (_result, call) => {
+          if (call === 1) return rejected();
+          if (call === 2) return rateLimited('1800');
+          return classifySuccess();
+        });
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        await clock.advanceMsAsync(3_600_000);
+        expect(engine.attempts('a')).toBe(2); // the probe settles at 60 min
+        // The deferral opens at t = 5 400 000 — 30 minutes before the
+        // cadence: no dispatch (the suspension still gates)…
+        await clock.advanceMsAsync(1_800_000); // t = 5 400 000
+        expect(engine.attempts('a')).toBe(2);
+        await clock.advanceMsAsync(1_799_999);
+        expect(engine.attempts('a')).toBe(2);
+        await clock.advanceMsAsync(1); // t = 7 200 000
+        expect(engine.attempts('a')).toBe(3);
+        expect(engine.starts.get('a')![2]).toBe(7_200_000);
+        // …and no wake actually fired inside the window: the settle pass
+        // waited straight to the cadence instant (gate-first ordering
+        // would have woken at 5 400 000 to re-discover it).
+        expect(wakeTargets.filter((target) => target > 3_600_000 && target < 7_200_000)).toEqual(
+          [],
+        );
         await engine.scheduler.stop();
       },
       { shouldAdvanceTime: false, now: 0 },

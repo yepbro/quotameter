@@ -274,7 +274,8 @@ interface AccountEntry {
   /**
    * The D-062 `Retry-After` gate in epoch ms (`-Infinity` = open). Replaced
    * by every completed cycle's own decision; dispatch never starts before
-   * it, manual tests included.
+   * it — manual tests and due verification probes included (§7.2's "do
+   * not poll before that time" is unconditional).
    */
   notBeforeEpochMs: number;
   /** The D-064 suspension state; normal polling is gated on `!suspended`. */
@@ -663,7 +664,8 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
    * One scheduling pass: admit the next due account, or report how long to
    * wait. Accounts with a live flight are never dispatchable — the §7.1
    * overlap prohibition; suspended accounts are admitted only through the
-   * D-064 gate, which re-arms at admission.
+   * D-064 gate, which re-arms at admission — and never before the D-062
+   * `Retry-After` gate opens (U-028).
    */
   function nextAction():
     | { readonly action: 'dispatch'; readonly entry: AccountEntry }
@@ -680,10 +682,7 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       if (entry.pendingManualTest) {
         // The owed manual attempt: due now, suspension bypassed (the
         // request already released it, D-064), `Retry-After` respected.
-        const gate =
-          entry.notBeforeEpochMs === Number.NEGATIVE_INFINITY
-            ? Number.NEGATIVE_INFINITY
-            : entry.notBeforeEpochMs - wall;
+        const gate = retryAfterRemainingMs(entry.notBeforeEpochMs, wall);
         if (gate > 0) {
           waitMs = minDelay(waitMs, gate);
           continue;
@@ -699,6 +698,18 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
           // The machine's own boundary predicate (D-064), not a hand-rolled
           // twin of it — drift between the two would be a second scheduler.
           waitMs = minDelay(waitMs, armed - wall);
+          continue;
+        }
+        // §7.2's "do not poll before that time" binds the verification
+        // probe too (U-028): a `Retry-After` deferral the probe's own 429
+        // left behind holds the admission until the gate opens. Checked
+        // before `admitVerification` — admission re-arms the armed
+        // instant, so an admission consumed behind a shut gate would push
+        // the probe a full extra hour — and after the cadence predicate,
+        // so a deferral that opens first never adds a spurious wake.
+        const gate = retryAfterRemainingMs(entry.notBeforeEpochMs, wall);
+        if (gate > 0) {
+          waitMs = minDelay(waitMs, gate);
           continue;
         }
         const admission = admitVerification(entry.suspension, wall);
@@ -734,6 +745,19 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   function minDelay(current: number | undefined, candidate: number): number {
     if (current === undefined || candidate < current) return candidate;
     return current;
+  }
+
+  /**
+   * The remaining D-062 `Retry-After` gate in wall ms —
+   * `Number.NEGATIVE_INFINITY` when the gate is open. The one hold every
+   * immediately-due dispatch shape shares (the owed manual attempt and a
+   * due verification probe, U-028): §7.2's "do not poll before that time"
+   * is unconditional, so a positive remainder waits instead of dispatching.
+   */
+  function retryAfterRemainingMs(notBeforeEpochMs: number, wallEpochMs: number): number {
+    return notBeforeEpochMs === Number.NEGATIVE_INFINITY
+      ? Number.NEGATIVE_INFINITY
+      : notBeforeEpochMs - wallEpochMs;
   }
 
   async function loop(): Promise<void> {
