@@ -642,13 +642,17 @@ driven by `src/session.ts`.
 
 ### Mode-agnostic by construction
 
-The UI never learns the §15.1 auth mode: the only mode-fact surface
-(`/api/settings`) is itself protected under `required` (chicken-and-egg
-for the visitor the login page exists for), and `GET /api/auth/session`
-stays unwired (D-146 left it to this task's consumer, but the task's
-carve-out froze `src/**` — and the tri-state below needs no probe: the
-session cookie rides every request, so the first protected load
-discovers the truth with no extra round trip). The session state is a
+The UI never learns the §15.1 auth mode: the mode-fact surfaces it could
+read are either themselves protected under `required` (`/api/settings` —
+chicken-and-egg for the visitor the login page exists for) or deliberately
+left unconsumed: `GET /api/auth/session` now exists (U-055, D-182 — it
+serves non-UI clients of the published contract), and the tri-state below
+still takes no probe of it (D-182's recorded reconciliation: the session
+cookie rides every request, so the first protected load discovers the
+truth with no extra round trip — a boot probe would tax the common
+`auto`-loopback world for a fact its own loads reveal for free, and
+consuming the endpoint for exact sign-out visibility or deep-link
+pre-seeding stays a future UI task). The session state is a
 tri-state, in-memory only (the cookie is the session's only truth; a
 reload honestly restarts at `unknown`):
 

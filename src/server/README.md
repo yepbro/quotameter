@@ -700,11 +700,11 @@ manifest, so CI runs them under all nine `TZ` cells.
 
 ## The §13 login/logout endpoints (task U-041, spec §13, §15.1, §15.2, §14.6; decision D-146)
 
-`src/server/api/auth-routes.ts` registers the two auth routes inside the
+`src/server/api/auth-routes.ts` registers the three auth routes inside the
 `/api` scope behind the D-128 optional-options rule
 (`ApiRoutesOptions.authRoutes` — the storage facade, the live stored-hash
-thunk, the clock, and optionally the login-delay sleep; absent, both
-paths answer the scope catch-all's 404). The contracts live in
+thunk, the clock, and optionally the login-delay sleep; absent, all
+three paths answer the scope catch-all's 404). The contracts live in
 `src/schemas/api/auth.ts`; every §15.2 rule is composed from its landed
 primitive, never re-derived.
 
@@ -767,8 +767,7 @@ reloader-read live `passwordHash` thunk (§6.4/D-026: a `passwd` run or a
 settings PUT applies to the next login, no restart), so a `required`-mode
 deployment authenticates from the first start. A login while already
 holding a session mints a fresh one (the old row is inert and
-self-expires); `GET /api/auth/session` (§13's third auth row) stays
-task 180's to design.
+self-expires).
 
 **Error vocabulary** stays D-113-frozen: `UNAUTHENTICATED` (the
 invalid-credentials 401 — the registry's own message, so the D-144
@@ -797,6 +796,34 @@ The D-144 artifacts updated mechanically: both operations in
 `scripts/openapi-document.mjs` (login public; logout session-bound and
 bodiless), the `auth` tag, `docs/openapi.json` regenerated, and the
 drift guard's `Required<ApiRoutesOptions>` boot wiring the family.
+U-055 extended the same suite with the session reader's wire matrix (the
+exact bodies per §15.1 mode, the refreshed-expiry arm with the row's
+slide pinned in storage, the collapsed false arms, and the public-yet-
+guarded reachability) and added the third operation to the inventory
+beside the regenerated document.
+
+## The §13 session reader (task U-055, spec §13, §15.1; decision D-182)
+
+`GET /api/auth/session` — §13's third auth row, once deferred to task
+180's consumer — lands in the same plugin as the public answer to D-159's
+chicken-and-egg (the mode facts are only useful to a client that may hold
+no session yet, so the route carries `PUBLIC_AUTH_ROUTE_CONFIG` like
+health and login; the Host and §15.3 guards still bind it). The handler
+re-uses the guard's own pieces verbatim — `classifyAuthMode` over the
+same mode/bind/live-password/proxy facts (the scope injects them from its
+`auth` options at registration, one source of §15.1 truth for guard and
+reader alike) and `authenticateSession` over the presented cookie
+(missing/empty → `false` without a storage read; a valid sighting
+refreshes the row exactly as any authenticated request does — the
+returned `session.expiresAt` is the refreshed effective expiry, and no
+cookie is written). `authenticated` collapses every rejection into
+`false` (D-124: storage-indistinguishable absence stays
+indistinguishable), and `mode` reports D-121's per-request verdict
+vocabulary — the facts a probe of any protected route already reveals
+(200/401/403-instructions), so nothing new leaks before authentication.
+The UI session cache (D-159) stays probe-free over it by recorded
+decision (D-182): no boot round trip in the common `auto`-loopback world,
+the wire's own answers remain the flip authority.
 
 ## The composition stores and the config-sync (task U-040, spec §6.2–§6.4, §13, §15.2; decision D-140)
 

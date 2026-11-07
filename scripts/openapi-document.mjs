@@ -433,6 +433,30 @@ const OPERATIONS = [
     },
     errorCodes: ['VALIDATION', 'UNAUTHENTICATED', 'FORBIDDEN', 'INTERNAL'],
   },
+  {
+    method: 'get',
+    path: '/api/auth/session',
+    operationId: 'getAuthSession',
+    tag: 'auth',
+    summary: 'Current session and auth-mode information',
+    description:
+      '§13’s third auth row (decision D-182): reports the §15.1 verdict for this request ' +
+      '(`mode` — the same classification the guard applies to protected routes: 200/401/403 ' +
+      'elsewhere already reveal it) and whether the presented session cookie maps to a valid, ' +
+      'unexpired session row (`authenticated`; every other cookie outcome collapses to false). ' +
+      'On the authenticated arm `session.expiresAt` carries the row’s refreshed effective expiry ' +
+      '— the sighting refreshes it like any authenticated request (D-124) and no cookie is ' +
+      '(re-)issued. Public like login: the client asking whether it needs credentials may hold ' +
+      'none yet; the Host and §15.3 guards still bind the route.',
+    public: true,
+    schema: { response: { 200: authSchemas.SessionResponseSchema } },
+    responseDescriptions: {
+      200:
+        'The request’s §15.1 mode and the presented cookie’s validity, with the refreshed ' +
+        'expiry exactly on the valid arm.',
+    },
+    errorCodes: ['VALIDATION', 'FORBIDDEN', 'INTERNAL'],
+  },
 ];
 
 /** The tag table (one per route family), in inventory order. */
@@ -452,7 +476,8 @@ const TAGS = [
   },
   {
     name: 'auth',
-    description: 'Login and logout over the §15.2 session primitives (spec §15.2, §14.6).',
+    description:
+      'Login, logout, and the session reader over the §15.2 primitives (spec §15.2, §15.1, §14.6).',
   },
 ];
 
@@ -549,8 +574,8 @@ export function buildOpenApiDocument(operations = OPERATIONS) {
           name: SESSION_COOKIE_NAME,
           description:
             'Session cookie of the password modes (spec §15.1/§15.2). Passwordless loopback access in ' +
-            '`auto` mode needs no credential; every operation except the health probe and login is ' +
-            'otherwise authenticated.',
+            '`auto` mode needs no credential; every operation except the health probe, login, and the ' +
+            'session reader is otherwise authenticated.',
         },
       },
     },

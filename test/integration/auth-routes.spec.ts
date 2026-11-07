@@ -10,7 +10,7 @@ import {
   MAX_LOGIN_DELAY_SLEEP_MS,
 } from '../../src/server/api/auth-routes';
 import { apiErrorHandler } from '../../src/server/api/error';
-import { HTTP_BODY_LIMIT_BYTES } from '../../src/server/http';
+import { buildHttpServer, HTTP_BODY_LIMIT_BYTES } from '../../src/server/http';
 import { ProviderRegistry } from '../../src/providers/registry';
 import { hashPassword } from '../../src/services/password-hash';
 import {
@@ -53,7 +53,10 @@ import { withTempDir } from '../helpers/isolation';
  * answered without verifying), and the §15.4 marker discipline (the
  * password AND the attempted candidate never in a body or log line, the
  * raw token never in the database, the warn record credential-free with
- * its key set pinned).
+ * its key set pinned). U-055 adds the session reader's suite (D-182):
+ * the exact closed bodies per §15.1 mode, the refreshed-expiry arm with
+ * the row's slide pinned, the collapsed invalid-cookie arms, and the
+ * public-yet-Host-guarded construction proof.
  */
 
 /** Deterministic §11.1 epoch-millisecond base: 2026-11-04T09:00:00Z. */
@@ -130,6 +133,12 @@ interface Harness {
 interface HarnessOptions {
   /** §15.1 mode of the guard; defaults to `required` (the demanding cell). */
   readonly mode?: AuthModeGuardOptions['mode'];
+  /**
+   * §15.1 bind host of the guard (D-121's bind fact); defaults to the
+   * loopback `127.0.0.1`. The session reader's matrix needs the
+   * non-loopback arm, and the injected facts follow the guard's own.
+   */
+  readonly bindHost?: string;
   /** Whether a password hash is configured; defaults to the marker hash. */
   readonly withHash?: boolean;
   /** Whether the auth routes are wired (the no-half-wired pin opts out). */
@@ -173,7 +182,7 @@ async function withAuthApi(
       prefix: '/api',
       auth: {
         mode: options.mode ?? 'required',
-        bindHost: '127.0.0.1',
+        bindHost: options.bindHost ?? '127.0.0.1',
         passwordConfigured: () => storedHash.value !== undefined,
         isAuthenticated: createSessionAuthenticator({ repository, now: clock.now }),
       },
@@ -221,6 +230,21 @@ function logout(app: FastifyInstance, token?: string) {
     url: '/api/auth/logout',
     headers: {
       ...MUTATION_HEADER,
+      ...(token === undefined ? {} : { cookie: `${SESSION_COOKIE_NAME}=${token}` }),
+    },
+  });
+}
+
+/**
+ * One session-reader GET — a safe method, so no §15.3 mutation leg binds
+ * it; the cookie and any extra headers are the whole request surface.
+ */
+function sessionGet(app: FastifyInstance, headers: Record<string, string> = {}, token?: string) {
+  return app.inject({
+    method: 'GET',
+    url: '/api/auth/session',
+    headers: {
+      ...headers,
       ...(token === undefined ? {} : { cookie: `${SESSION_COOKIE_NAME}=${token}` }),
     },
   });
@@ -663,6 +687,220 @@ describe('the sessions-backed §15.1 seam — the protected-route matrix', () =>
       { mode: 'auto', wireAuthRoutes: false },
     );
   });
+});
+
+/* ── The §13 session reader (task U-055, decision D-182) ─────────────────── */
+
+describe('GET /api/auth/session — the §13 session reader (D-182)', () => {
+  it(
+    'answers the cookieless required-mode request with the honest mode and no session key',
+    { timeout: 20_000 },
+    async () => {
+      await withAuthApi(async ({ app }) => {
+        const response = await sessionGet(app);
+        expect(response.statusCode).toBe(200);
+        // `toEqual` pins the closed body exactly: no `session` key, no
+        // extras (the compiled serializer drops what the schema cannot
+        // express — the D-111 guard).
+        expect(response.json()).toEqual({ mode: 'required', authenticated: false });
+        expect(response.headers['cache-control']).toBe('no-store');
+        // The reader never writes a cookie (D-146's no-re-issue holds).
+        expect(setCookiesOf(response)).toEqual([]);
+      });
+    },
+  );
+
+  it(
+    'reports the refreshed expiry on the valid arm and slides the row (D-124)',
+    { timeout: 20_000 },
+    async () => {
+      await withAuthApi(async ({ app, repository, clock }) => {
+        const token = sessionTokenOf(await login(app, MARKER_PASSWORD));
+        clock.advance(60_000);
+        const response = await sessionGet(app, {}, token);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+          mode: 'required',
+          authenticated: true,
+          session: { expiresAt: T0 + 60_000 + SESSION_INACTIVITY_TIMEOUT_MS },
+        });
+        // The sighting refreshed the ROW while the COOKIE was not
+        // re-issued — the reader composes `authenticateSession` verbatim,
+        // so it refreshes like any authenticated request.
+        expect(repository.getSession(hashSessionToken(token))).toMatchObject({
+          lastSeenAt: T0 + 60_000,
+          expiresAt: T0 + 60_000 + SESSION_INACTIVITY_TIMEOUT_MS,
+        });
+        expect(response.headers['set-cookie']).toBeUndefined();
+      });
+    },
+  );
+
+  it(
+    'collapses every invalid cookie outcome into authenticated false (D-124)',
+    { timeout: 20_000 },
+    async () => {
+      await withAuthApi(async ({ app, clock }) => {
+        // A garbage value digests to a row no table carries.
+        const garbage = await sessionGet(app, {}, 'not-a-real-token');
+        expect(garbage.json()).toEqual({ mode: 'required', authenticated: false });
+        // The empty-string cookie never reaches storage.
+        const empty = await sessionGet(app, { cookie: `${SESSION_COOKIE_NAME}=` });
+        expect(empty.json()).toEqual({ mode: 'required', authenticated: false });
+        // The revoked token is dead (logout won the race).
+        const token = sessionTokenOf(await login(app, MARKER_PASSWORD));
+        await logout(app, token);
+        const revoked = await sessionGet(app, {}, token);
+        expect(revoked.json()).toEqual({ mode: 'required', authenticated: false });
+        // The expired session is dead at the half-open boundary.
+        const fresh = sessionTokenOf(await login(app, MARKER_PASSWORD));
+        clock.advance(SESSION_INACTIVITY_TIMEOUT_MS);
+        const expired = await sessionGet(app, {}, fresh);
+        expect(expired.json()).toEqual({ mode: 'required', authenticated: false });
+      });
+    },
+  );
+
+  it(
+    'reports the §15.1 matrix — the verdict a protected probe would reveal, stated',
+    { timeout: 20_000 },
+    async () => {
+      // auto + loopback + no proxy: the not-required default.
+      await withAuthApi(
+        async ({ app }) => {
+          const direct = await sessionGet(app);
+          expect(direct.json()).toEqual({ mode: 'not-required', authenticated: false });
+        },
+        { mode: 'auto' },
+      );
+
+      // auto + loopback + proxy indicator, password configured: required —
+      // and the protected probe answers 401 in the same world (the guard's
+      // own revelation of the same verdict).
+      await withAuthApi(async ({ app }) => {
+        const headers = { 'x-forwarded-for': '203.0.113.7' };
+        const proxied = await sessionGet(app, headers);
+        expect(proxied.json()).toEqual({ mode: 'required', authenticated: false });
+        const protectedProbe = await app.inject({
+          method: 'GET',
+          url: '/api/providers',
+          headers,
+        });
+        expect(protectedProbe.statusCode).toBe(401);
+      });
+
+      // auto + loopback + proxy indicator, passwordless: the cell a
+      // protected route answers with §15.1's 403-instructions envelope,
+      // stated as the mode instead of forced on the client.
+      await withAuthApi(
+        async ({ app }) => {
+          const headers = { 'x-forwarded-for': '203.0.113.7' };
+          const proxied = await sessionGet(app, headers);
+          expect(proxied.json()).toEqual({
+            mode: 'proxy-without-password',
+            authenticated: false,
+          });
+          const protectedProbe = await app.inject({
+            method: 'GET',
+            url: '/api/providers',
+            headers,
+          });
+          expect(protectedProbe.statusCode).toBe(403);
+          expect((protectedProbe.json() as { error: { code: string } }).error.code).toBe(
+            'FORBIDDEN',
+          );
+        },
+        { mode: 'auto', withHash: false },
+      );
+
+      // auto + non-loopback bind: required — the fail-closed passwordless
+      // shape included (the startup-refused cell still reports required,
+      // never open, exactly as the classifier answers it).
+      await withAuthApi(
+        async ({ app }) => {
+          expect((await sessionGet(app)).json()).toEqual({
+            mode: 'required',
+            authenticated: false,
+          });
+        },
+        { mode: 'auto', bindHost: '0.0.0.0' },
+      );
+      await withAuthApi(
+        async ({ app }) => {
+          expect((await sessionGet(app)).json()).toEqual({
+            mode: 'required',
+            authenticated: false,
+          });
+        },
+        { mode: 'auto', bindHost: '0.0.0.0', withHash: false },
+      );
+    },
+  );
+
+  it(
+    'answers a valid cookie in the not-required world with both facts',
+    { timeout: 20_000 },
+    async () => {
+      await withAuthApi(
+        async ({ app, clock }) => {
+          const token = sessionTokenOf(await login(app, MARKER_PASSWORD));
+          clock.advance(30_000);
+          const response = await sessionGet(app, {}, token);
+          expect(response.json()).toEqual({
+            mode: 'not-required',
+            authenticated: true,
+            session: { expiresAt: T0 + 30_000 + SESSION_INACTIVITY_TIMEOUT_MS },
+          });
+        },
+        { mode: 'auto' },
+      );
+    },
+  );
+
+  it(
+    'binds the root-scope Host guard ahead of the public reader — public is not unguarded',
+    { timeout: 20_000 },
+    async () => {
+      // Through the full construction (`buildHttpServer`): the D-121
+      // opt-out answers only the §15.1 auth QUESTION — the root-scope
+      // Host allowlist (D-120) still rejects a hostile authority before
+      // the handler, exactly as it does for the public health route.
+      await withAuthApi(async ({ repository, clock, storedHash, sink }) => {
+        const server = buildHttpServer({
+          host: '127.0.0.1',
+          port: 0,
+          logger: createLogger({ level: 'warn', destination: sink }),
+          auth: {
+            mode: 'required',
+            passwordConfigured: () => storedHash.value !== undefined,
+            isAuthenticated: createSessionAuthenticator({ repository, now: clock.now }),
+          },
+          routes: {
+            authRoutes: { repository, passwordHash: () => storedHash.value, now: clock.now },
+          },
+        });
+        try {
+          const honest = await server.inject({
+            method: 'GET',
+            url: '/api/auth/session',
+            headers: { host: '127.0.0.1:8787' },
+          });
+          expect(honest.statusCode).toBe(200);
+          expect(honest.json()).toEqual({ mode: 'required', authenticated: false });
+
+          const hostile = await server.inject({
+            method: 'GET',
+            url: '/api/auth/session',
+            headers: { host: 'evil.example' },
+          });
+          expect(hostile.statusCode).toBe(403);
+          expect((hostile.json() as { error: { code: string } }).error.code).toBe('FORBIDDEN');
+        } finally {
+          await server.close();
+        }
+      });
+    },
+  );
 });
 
 /* ── The §15.2 budget through the endpoint (fake clock, recorded sleep) ─── */

@@ -48,7 +48,7 @@
     },
     {
       "name": "auth",
-      "description": "Login and logout over the §15.2 session primitives (spec §15.2, §14.6)."
+      "description": "Login, logout, and the session reader over the §15.2 primitives (spec §15.2, §15.1, §14.6)."
     }
   ],
   "paths": {
@@ -8318,6 +8318,247 @@
           }
         }
       }
+    },
+    "/api/auth/session": {
+      "get": {
+        "summary": "Current session and auth-mode information",
+        "description": "§13’s third auth row (decision D-182): reports the §15.1 verdict for this request (`mode` — the same classification the guard applies to protected routes: 200/401/403 elsewhere already reveal it) and whether the presented session cookie maps to a valid, unexpired session row (`authenticated`; every other cookie outcome collapses to false). On the authenticated arm `session.expiresAt` carries the row’s refreshed effective expiry — the sighting refreshes it like any authenticated request (D-124) and no cookie is (re-)issued. Public like login: the client asking whether it needs credentials may hold none yet; the Host and §15.3 guards still bind the route.",
+        "operationId": "getAuthSession",
+        "tags": ["auth"],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The request’s §15.1 mode and the presented cookie’s validity, with the refreshed expiry exactly on the valid arm.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["mode", "authenticated"],
+                  "properties": {
+                    "mode": {
+                      "description": "The §15.1 verdict for this request (D-121's vocabulary): 'not-required' (direct loopback under `auto`), 'required' (a password must be presented for protected routes), or 'proxy-without-password' (the proxied shape a protected route answers with the 403-instructions envelope).",
+                      "anyOf": [
+                        {
+                          "const": "not-required",
+                          "type": "string"
+                        },
+                        {
+                          "const": "required",
+                          "type": "string"
+                        },
+                        {
+                          "const": "proxy-without-password",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "authenticated": {
+                      "description": "Whether the presented session cookie maps to a valid, unexpired session row — every other outcome (absent, garbage, expired, revoked) answers false without distinction.",
+                      "type": "boolean"
+                    },
+                    "session": {
+                      "additionalProperties": false,
+                      "description": "Present exactly when `authenticated` is true; absent otherwise.",
+                      "type": "object",
+                      "required": ["expiresAt"],
+                      "properties": {
+                        "expiresAt": {
+                          "description": "The session row's effective expiry as epoch milliseconds, refreshed by this sighting (D-124: every valid sighting slides the inactivity window within the 30-day cap) — the same integer the login response reports at mint time.",
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION — Request validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL — Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": ["code", "message", "details"],
+                      "properties": {
+                        "code": {
+                          "anyOf": [
+                            {
+                              "const": "VALIDATION",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNAUTHENTICATED",
+                              "type": "string"
+                            },
+                            {
+                              "const": "FORBIDDEN",
+                              "type": "string"
+                            },
+                            {
+                              "const": "NOT_FOUND",
+                              "type": "string"
+                            },
+                            {
+                              "const": "PAYLOAD_TOO_LARGE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "URI_TOO_LONG",
+                              "type": "string"
+                            },
+                            {
+                              "const": "UNSUPPORTED_MEDIA_TYPE",
+                              "type": "string"
+                            },
+                            {
+                              "const": "INTERNAL",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8326,7 +8567,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "quotameter_session",
-        "description": "Session cookie of the password modes (spec §15.1/§15.2). Passwordless loopback access in `auto` mode needs no credential; every operation except the health probe and login is otherwise authenticated."
+        "description": "Session cookie of the password modes (spec §15.1/§15.2). Passwordless loopback access in `auto` mode needs no credential; every operation except the health probe, login, and the session reader is otherwise authenticated."
       }
     }
   }

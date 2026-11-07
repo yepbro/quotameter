@@ -1,8 +1,9 @@
 /**
- * The §13 login/logout endpoints (task U-041, spec §13, §15.2, §14.6;
- * decision D-146) — the composition the four §15.2 primitives waited on
- * (the plan gap D-125/D-126 recorded: every primitive landed, no task
- * owned the endpoints composing them).
+ * The §13 auth endpoints (tasks U-041 and U-055, spec §13, §15.1, §15.2,
+ * §14.6; decisions D-146 and D-182) — the composition the four §15.2
+ * primitives waited on (the plan gap D-125/D-126 recorded: every primitive
+ * landed, no task owned the endpoints composing them), plus §13's third
+ * auth row, the session reader (U-055).
  *
  * Nothing here re-derives a §15.2 rule: the scrypt comparison is
  * `verifyPassword` (D-122), the token and its digest `createSession`
@@ -10,9 +11,13 @@
  * `revokeSession` (D-124), the five-failure/15-minute budget
  * `createLoginRateLimiter` (D-125), and the `Set-Cookie` attribute
  * objects `sessionCookieAttributes` / `clearSessionCookieAttributes`
- * (D-126). This module owns only the wire: the bodies, the responses,
- * the per-request composition order, and the two fastify-side seams
- * below.
+ * (D-126). The session reader reuses the same two §15.1/§15.2 pieces the
+ * guard composes — `classifyAuthMode` and `authenticateSession`, never
+ * re-implemented — and owns only the wire: the public `GET
+ * /api/auth/session` body of §13's "current session and auth-mode
+ * information" row (D-182). This module owns only the wire for the other
+ * two routes as well: the bodies, the responses, the per-request
+ * composition order, and the two fastify-side seams below.
  *
  * Pinned interpretations (D-146):
  *
@@ -118,22 +123,29 @@
  *   onSend re-issue hook) is a successor decision if the UX ever demands
  *   it — D-146 records the trade.
  *
- * Route security is inherited, never re-implemented: both routes are
+ * Route security is inherited, never re-implemented: login and logout are
  * POSTs, so the scope's §15.3 guards (Origin/Fetch-Metadata, the
  * dedicated mutation header, the JSON content-type on the body-carrying
- * login) run ahead of every handler exactly as for any other mutation.
- * Login opts out of the §15.1 auth question through
- * {@link PUBLIC_AUTH_ROUTE_CONFIG} — the client that presents credentials
- * has no session yet (D-121's contract); logout is session-bound like
- * every protected route (under `required` a cookieless logout answers
- * the guard's 401 — the clear-cookie it never got costs one dead
- * `Max-Age`-bounded client cookie, D-126's documented hygiene lag).
+ * login) run ahead of every handler exactly as for any other mutation;
+ * the session reader is a GET, so no mutation leg binds it at all.
+ * Login and the session reader opt out of the §15.1 auth question
+ * through {@link PUBLIC_AUTH_ROUTE_CONFIG} — the client that presents
+ * credentials (or asks whether it needs any) has no session yet
+ * (D-121's contract); logout is session-bound like every protected route
+ * (under `required` a cookieless logout answers the guard's 401 — the
+ * clear-cookie it never got costs one dead `Max-Age`-bounded client
+ * cookie, D-126's documented hygiene lag).
  */
 
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { ApiError } from './error';
 import { strictValidatorCompiler } from './validation';
-import { PUBLIC_AUTH_ROUTE_CONFIG, type RequestAuthenticator } from './auth';
+import {
+  classifyAuthMode,
+  PUBLIC_AUTH_ROUTE_CONFIG,
+  proxyIndicatorPresent,
+  type RequestAuthenticator,
+} from './auth';
 import { verifyPassword } from '../../services/password-hash';
 import { createLoginRateLimiter, type LoginRateLimiter } from '../../services/login-rate-limit';
 import { createSession, revokeSession, authenticateSession } from '../../services/sessions';
@@ -143,9 +155,20 @@ import {
   sessionCookieAttributes,
   type SessionCookieTransportFacts,
 } from '../../services/session-cookie';
+import { isLoopbackHost, type AuthMode } from '../../schemas/config';
 import type { QuotaRepository } from '../../storage/repository';
-import type { LoginBody, LoginResponse, LogoutResponse } from '../../schemas/api/auth';
-import { LoginBodySchema, LoginResponseSchema, LogoutResponseSchema } from '../../schemas/api/auth';
+import type {
+  LoginBody,
+  LoginResponse,
+  LogoutResponse,
+  SessionResponse,
+} from '../../schemas/api/auth';
+import {
+  LoginBodySchema,
+  LoginResponseSchema,
+  LogoutResponseSchema,
+  SessionResponseSchema,
+} from '../../schemas/api/auth';
 
 /**
  * The ceiling the endpoint clamps its login-delay sleep to — comfortably
@@ -158,6 +181,34 @@ import { LoginBodySchema, LoginResponseSchema, LogoutResponseSchema } from '../.
  * failure through 256 s) sleeps unchanged.
  */
 export const MAX_LOGIN_DELAY_SLEEP_MS = 240_000;
+
+/**
+ * The §15.1 facts source the session reader reports — D-121's guard
+ * inputs minus the credential seam: the session endpoint answers WHAT the
+ * guard would decide for this request, never re-deciding protection
+ * itself. Deliberately NOT named `AuthModeFacts` — that identifier is the
+ * classifier's four-fact input (`./auth`); this is the guard-options
+ * shape the scope provides. The scope (`./index.ts`) injects it from its
+ * own required `auth` options, so the guard and the reader can never
+ * drift apart on mode, bind, or password presence.
+ */
+export interface AuthModeSource {
+  /** The configured `auth.mode` (`auto` default, `required`; spec §15.1). */
+  readonly mode: AuthMode;
+  /**
+   * The listener's bind address — the §15.1 bind fact, reduced to
+   * loopback-ness with `isLoopbackHost` (the single owner of that
+   * semantics) once at registration, exactly as the guard factory does.
+   */
+  readonly bindHost: string;
+  /**
+   * Whether a password is configured, read per request — §6.4/D-026
+   * classify the hash live, so a `passwd` run against a running server
+   * flips the reported mode on the next request (the same thunk shape the
+   * guard takes). Defaults to "no password configured".
+   */
+  readonly passwordConfigured?: () => boolean;
+}
 
 /** Options of {@link authRoutes}; every member is an injection seam. */
 export interface AuthRouteOptions {
@@ -185,6 +236,14 @@ export interface AuthRouteOptions {
    * requested delay without waiting it.
    */
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * The §15.1 facts `GET /auth/session` reports ({@link AuthModeSource}).
+   * Required here — the plugin's own declaration of the dependency — but
+   * supplied by the `/api` scope from its guard options at registration
+   * (`./index.ts`), never by the outer constructions: one source of §15.1
+   * truth serves both the guard and the reader.
+   */
+  readonly authMode: AuthModeSource;
 }
 
 /* ── The transport-fact resolution (D-126's documented recipe) ──────────── */
@@ -295,21 +354,28 @@ export function defaultSleep(ms: number): Promise<void> {
 /* ── The plugin ────────────────────────────────────────────────────────── */
 
 /**
- * Registers `POST /auth/login` and `POST /auth/logout` inside the `/api`
- * scope (the paths are `/api/auth/*` under the scope prefix). The scope's
- * three guards apply by hook encapsulation; the §15.3 legs bind both
- * POSTs identically (login additionally carries the JSON content-type
- * leg because it carries a body — D-117's bodiless rule keeps logout
- * header-only). The limiter instance is created here, once per
- * registration: registration IS the composition moment, so one instance
- * serves the whole login surface (D-125) while each fastify instance
- * (each test harness included) gets its own budget state.
+ * Registers `POST /auth/login`, `POST /auth/logout`, and `GET
+ * /auth/session` inside the `/api` scope (the paths are `/api/auth/*` under
+ * the scope prefix). The scope's three guards apply by hook encapsulation;
+ * the §15.3 legs bind both POSTs identically (login additionally carries
+ * the JSON content-type leg because it carries a body — D-117's bodiless
+ * rule keeps logout header-only), while the GET needs no mutation legs at
+ * all. The limiter instance is created here, once per registration:
+ * registration IS the composition moment, so one instance serves the whole
+ * login surface (D-125) while each fastify instance (each test harness
+ * included) gets its own budget state.
  */
 export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (fastify, options) => {
   const { repository, passwordHash, now } = options;
   const sleep = options.sleep ?? defaultSleep;
   const limiter: LoginRateLimiter = createLoginRateLimiter();
   const busySources = new Set<string>();
+  // The §15.1 facts for the session reader — the construction-time halves
+  // (mode, bind) decided once, exactly as the guard factory does; the live
+  // password thunk stays per-request (§6.4/D-026).
+  const { mode: authModeName, bindHost } = options.authMode;
+  const bindIsLoopback = isLoopbackHost(bindHost);
+  const passwordConfigured = options.authMode.passwordConfigured ?? (() => false);
 
   // Strict schema validation, scoped to these routes (D-128's rule): a
   // body smuggling an extra field answers VALIDATION, never a strip.
@@ -423,6 +489,61 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (fastify, 
         )
         .header('cache-control', 'no-store');
       const response: LogoutResponse = { revoked };
+      return response;
+    },
+  );
+
+  fastify.get(
+    '/auth/session',
+    {
+      schema: {
+        response: { 200: SessionResponseSchema },
+      },
+      // The D-121 opt-out health and login already use: the session
+      // reader's client is precisely the client that may hold no session
+      // yet — the D-159 chicken-and-egg (every mode-fact surface being
+      // itself protected) is the reason this row exists. Only the §15.1
+      // auth question is opted out; the root-scope Host guard and the
+      // §15.3 guards still bind this route like every other.
+      config: PUBLIC_AUTH_ROUTE_CONFIG,
+    },
+    async (request, reply) => {
+      // The §15.1 verdict for THIS request, recomputed from the same four
+      // facts the guard reads — the answer a probe of any protected route
+      // would reveal (200 / 401 / the 403-instructions envelope), stated
+      // instead of forced on the client.
+      const verdict = classifyAuthMode({
+        mode: authModeName,
+        bindIsLoopback,
+        passwordConfigured: passwordConfigured(),
+        proxyIndicated: proxyIndicatorPresent(Object.keys(request.headers)),
+      });
+      // The §15.2 verdict over the presented cookie — `authenticateSession`
+      // verbatim (D-124): a missing or empty cookie skips storage (a digest
+      // of nothing names no row), any other value is digested and judged
+      // half-open, and a valid sighting REFRESHES the row (the sliding
+      // inactivity window) exactly as every authenticated request does.
+      // No minting, no cookie write (D-146's no-re-issue holds here too).
+      const token = request.cookies[SESSION_COOKIE_NAME];
+      const authentication =
+        typeof token === 'string' && token !== ''
+          ? authenticateSession({ repository, token, now: now() })
+          : undefined;
+      reply.header('cache-control', 'no-store');
+      if (authentication?.verdict === 'valid') {
+        // `expired` and `unknown` deliberately collapse into the bare
+        // false arm below — D-124's indistinguishable-absence rule.
+        const response: SessionResponse = {
+          mode: verdict.authentication,
+          authenticated: true,
+          session: { expiresAt: authentication.session.expiresAt },
+        };
+        return response;
+      }
+      const response: SessionResponse = {
+        mode: verdict.authentication,
+        authenticated: false,
+      };
       return response;
     },
   );

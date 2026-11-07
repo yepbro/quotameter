@@ -25,9 +25,11 @@
  * rejects through the envelope's 403-with-instructions and 401 classes,
  * with the health route opting out via its public route config; task
  * U-041 (D-146) the login/logout endpoints (`./auth-routes`, composing
- * the §15.2 primitives D-122–D-126), and tasks 159–162 the remaining API
- * endpoints; each registers inside this scope, so the server construction
- * itself never changes shape again. Task 159 (D-128) landed the accounts
+ * the §15.2 primitives D-122–D-126) and U-055 (D-182) the session reader
+ * (`GET /api/auth/session`, §13's third auth row, joining the same
+ * plugin); and tasks 159–162 the remaining API endpoints; each registers
+ * inside this scope, so the server construction itself never changes
+ * shape again. Task 159 (D-128) landed the accounts
  * endpoints (`./accounts`) as the first dependency-carrying plugin here —
  * registered only when `ApiRoutesOptions.accounts` supplies the store
  * seams, so the unwired construction keeps answering the catch-all 404;
@@ -121,15 +123,19 @@ export interface ApiRoutesOptions {
    */
   readonly peakHours?: PeakHoursRouteOptions;
   /**
-   * The auth endpoints' dependencies (task U-041, D-146) — the storage
-   * facade, the live stored-hash reader, the clock, and (optionally) the
-   * login-delay sleep; registers `POST /api/auth/login` (public per
-   * D-121's opt-out) and `POST /api/auth/logout` (session-bound).
-   * Optional for the same reason as `accounts`: absent, both paths answer
-   * the scope catch-all's 404 envelope — the §15.2 primitives stay
-   * unwired and the §15.1 seam's fail-closed default holds.
+   * The auth endpoints' dependencies (tasks U-041/U-055, D-146/D-182) —
+   * the storage facade, the live stored-hash reader, the clock, and
+   * (optionally) the login-delay sleep; registers `POST /api/auth/login`
+   * (public per D-121's opt-out), `POST /api/auth/logout` (session-bound),
+   * and `GET /api/auth/session` (public — §13's third auth row). Optional
+   * for the same reason as `accounts`: absent, all three paths answer the
+   * scope catch-all's 404 envelope — the §15.2 primitives stay unwired
+   * and the §15.1 seam's fail-closed default holds. The §15.1 facts the
+   * session reader reports are NOT a member here: the scope injects them
+   * from its own required `auth` options below, so the guard and the
+   * reader share one source of mode/bind/password truth.
    */
-  readonly authRoutes?: AuthRouteOptions;
+  readonly authRoutes?: Omit<AuthRouteOptions, 'authMode'>;
 }
 
 /**
@@ -214,14 +220,25 @@ export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, o
     await fastify.register(peakHoursRoutes, options.peakHours);
   }
 
-  // Task U-041 (spec §13, §15.2, §14.6; decision D-146): the login/logout
-  // endpoints — the composition of the four landed §15.2 primitives the
-  // D-125/D-126 plan gap recorded. Same encapsulated-child registration
-  // and no-half-wired rule as the families above; login carries the
-  // D-121 public opt-out, logout is session-bound like every protected
-  // route.
+  // Task U-041 (spec §13, §15.2, §14.6; decision D-146) and U-055 (spec
+  // §13, §15.1; decision D-182): the login/logout endpoints — the
+  // composition of the four landed §15.2 primitives the D-125/D-126 plan
+  // gap recorded — and the session reader, §13's third auth row. Same
+  // encapsulated-child registration and no-half-wired rule as the families
+  // above; login and the session reader carry the D-121 public opt-out,
+  // logout is session-bound like every protected route. The session
+  // reader's §15.1 facts are injected here from the scope's own guard
+  // options — the single source of §15.1 truth, so the guard and the
+  // reader cannot drift on mode, bind, or password presence.
   if (options.authRoutes !== undefined) {
-    await fastify.register(authRoutes, options.authRoutes);
+    await fastify.register(authRoutes, {
+      ...options.authRoutes,
+      authMode: {
+        mode: options.auth.mode,
+        bindHost: options.auth.bindHost,
+        passwordConfigured: options.auth.passwordConfigured,
+      },
+    });
   }
 
   // Task 148 (D-113, post-verification fix): the scope's catch-all route,

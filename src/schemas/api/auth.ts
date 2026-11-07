@@ -1,14 +1,14 @@
 /**
- * The §13 auth endpoint contracts (task U-041, spec §13, §15.2, §14.6;
- * decision D-146).
+ * The §13 auth endpoint contracts (tasks U-041 and U-055, spec §13, §15.1,
+ * §15.2, §14.6; decisions D-146 and D-182).
  *
- * TypeBox definitions for the login/logout half of §13's auth row — the
- * endpoints that compose the four landed §15.2 primitives (verify D-122,
- * mint D-123, verdict/revocation D-124, budget D-125, cookie attributes
- * D-126) behind the §15.1 seam (D-121). `GET /api/auth/session` (§13's
- * third auth row) is deliberately absent: it belongs to the UI-consumer
- * task (180), and joining it here would wire a surface its owner has not
- * designed.
+ * TypeBox definitions for §13's auth rows — the login/logout endpoints that
+ * compose the four landed §15.2 primitives (verify D-122, mint D-123,
+ * verdict/revocation D-124, budget D-125, cookie attributes D-126) behind
+ * the §15.1 seam (D-121), and the session reader (U-055) that answers the
+ * row task 180's carve-out once deferred: it exists now, public like login,
+ * and the UI session cache stays probe-free over it by D-182's recorded
+ * reconciliation.
  *
  * Two disciplines shape the file:
  *
@@ -101,3 +101,74 @@ export const LogoutResponseSchema = Type.Object(
 
 /** The shape `POST /api/auth/logout` serializes to. */
 export type LogoutResponse = Static<typeof LogoutResponseSchema>;
+
+/* ── GET /api/auth/session ──────────────────────────────────────────────── */
+
+/**
+ * The §15.1 verdict vocabulary the session response reports — D-121's own
+ * three values, verbatim: how the server treats THIS request. The configured
+ * `auth.mode` alone would mislead (`auto` on a non-loopback bind or behind a
+ * proxy indicator still demands a password for the request at hand), and
+ * every verdict cell is already wire-visible through the guard's own answers
+ * on protected routes (200 for `not-required`, 401 for `required`, the
+ * 403-with-instructions envelope for `proxy-without-password`), so reporting
+ * it here discloses nothing an unauthenticated client could not learn by
+ * probing any protected path.
+ */
+export const SESSION_AUTH_MODES = ['not-required', 'required', 'proxy-without-password'] as const;
+
+/** The `mode` values {@link SessionResponseSchema} carries (D-121's verdicts). */
+export type SessionAuthMode = (typeof SESSION_AUTH_MODES)[number];
+
+/**
+ * The session reader's success body (spec §13's "current session and
+ * auth-mode information"): the §15.1 verdict for the request, whether the
+ * presented cookie maps to a valid session, and — exactly on that valid arm —
+ * the row's refreshed effective expiry. `authenticated` deliberately
+ * collapses every rejection into `false` (D-124: storage cannot distinguish
+ * a never-minted, expired, revoked, or password-change-revoked token, and
+ * the wire must not try); the raw token never appears (D-123's
+ * disclose-exactly-once discipline — it lives only in the cookie).
+ */
+export const SessionResponseSchema = Type.Object(
+  {
+    mode: Type.Union(
+      SESSION_AUTH_MODES.map((mode) => Type.Literal(mode)),
+      {
+        description:
+          "The §15.1 verdict for this request (D-121's vocabulary): " +
+          "'not-required' (direct loopback under `auto`), 'required' (a " +
+          'password must be presented for protected routes), or ' +
+          "'proxy-without-password' (the proxied shape a protected route " +
+          'answers with the 403-instructions envelope).',
+      },
+    ),
+    authenticated: Type.Boolean({
+      description:
+        'Whether the presented session cookie maps to a valid, unexpired ' +
+        'session row — every other outcome (absent, garbage, expired, ' +
+        'revoked) answers false without distinction.',
+    }),
+    session: Type.Optional(
+      Type.Object(
+        {
+          expiresAt: Type.Integer({
+            description:
+              "The session row's effective expiry as epoch milliseconds, " +
+              'refreshed by this sighting (D-124: every valid sighting slides ' +
+              'the inactivity window within the 30-day cap) — the same ' +
+              'integer the login response reports at mint time.',
+          }),
+        },
+        {
+          additionalProperties: false,
+          description: 'Present exactly when `authenticated` is true; absent otherwise.',
+        },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/** The shape `GET /api/auth/session` serializes to. */
+export type SessionResponse = Static<typeof SessionResponseSchema>;

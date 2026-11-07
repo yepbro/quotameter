@@ -308,8 +308,9 @@ describe('the §13 endpoint inventory through the production composition', () =>
     // every login attempt with the registry-default UNAUTHENTICATED 401
     // (the D-134 notice signal), and a cookieless logout under the
     // not-required §15.1 mode reaches the idempotent handler (`revoked:
-    // false`, D-126's clear twin still set). A route U-041 did NOT build
-    // keeps answering the scope catch-all's 404 envelope.
+    // false`, D-126's clear twin still set). U-055 (D-182) completed the
+    // family with the public session reader: this auto/loopback/no-proxy
+    // composition answers its honest mode with no cookie to judge.
     const login = await api.call('POST', '/api/auth/login', { password: 'not-built-yet-123' });
     expect(login.statusCode).toBe(401);
     expect(login.json()).toMatchObject({ error: { code: 'UNAUTHENTICATED' } });
@@ -318,10 +319,11 @@ describe('the §13 endpoint inventory through the production composition', () =>
     expect(logout.statusCode).toBe(200);
     expect(logout.json()).toMatchObject({ revoked: false });
 
-    // A safe method needs no mutation legs at all — and no such route
-    // exists: the inventory stays the two §13 auth operations.
+    // A safe method needs no mutation legs at all — and the third §13 auth
+    // operation now exists: the reader answers the composition's §15.1
+    // verdict with nothing authenticated.
     const session = await api.probe('GET', '/api/auth/session');
-    expect(session.statusCode).toBe(404);
-    expect(session.json()).toMatchObject({ error: { code: 'NOT_FOUND' } });
+    expect(session.statusCode).toBe(200);
+    expect(session.json()).toEqual({ mode: 'not-required', authenticated: false });
   });
 });
