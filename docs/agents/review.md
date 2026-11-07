@@ -40,6 +40,7 @@
   ```
 
   Never combine `-p` with `-y`/`--auto`; `</dev/null` keeps it headless. The text output may prepend the reviewer's working transcript — locate the report body (severity-tagged findings) before treating the run as failed.
+
 - A fallback runs **only** when the previous reviewer in the chain produced no review (non-zero exit, auth/provider/quota error in the output file, or no findings text); the chain stops at the first reviewer that produced findings text.
 - The review prompt must state the read-only constraint and the P0–P3 report format explicitly — every reviewer receives the same prompt file.
 - The winning reviewer runs **synchronously inside the subagent's session**: the subagent waits for the CLI call to finish, processes the findings, and only then returns its final report. Do not run it in the background or "after the report" — the session would close before the result arrives and the findings would stay unprocessed.
