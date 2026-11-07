@@ -14,11 +14,13 @@
 - **First fallback: cursor-agent** with `grok-4.7-high` (the Cursor CLI, `~/.local/bin/cursor-agent`; logged-in account auth — `--list-models` verifies both). The review runs as a headless print-mode call:
 
   ```bash
-  timeout 1200 cursor-agent -p --mode plan \
+  timeout 1200 cursor-agent -p --mode plan --trust \
     --model grok-4.7-high --output-format text \
     "$(cat /tmp/opencode/review/prompt-<slug>.md)" \
     > /tmp/opencode/review/<slug>-grok.md 2>&1; echo "exit=$?"
   ```
+
+  `--trust` accepts the current workspace without prompting — without it a headless run in a fresh worktree dies on the trust prompt (observed live in U-055's round; the retry with the flag produced the full findings body).
 
   `-p` is the non-interactive print flag (the prompt is the positional argument, unlike kimi's `-p <prompt>`); `--mode plan` pins read-only at the CLI level — print mode otherwise grants write and shell tools; `</dev/null` keeps it headless; the workspace defaults to the current directory, so run it from the tree under review. The text output may prepend the reviewer's working transcript — locate the report body (severity-tagged findings) before treating the run as failed.
 
