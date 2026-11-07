@@ -22,9 +22,10 @@ drain's bounded wait, and by U-053/D-178: the retention schedule runs
 before storage closes in teardown, with every landed route family wired —
 the D-128
 `AccountConfigStore` and D-130 `SettingsStore` over `config-stores.ts`'s
-serialized config-file owner, the D-064 suspension holder
-(`src/services/account-suspensions.ts`) feeding `suspensionOf` and the
-manual-test lift, the registry with observation-wrapped adapters
+serialized config-file owner, the single D-064 suspension store
+(`src/services/account-suspensions.ts`, FSM-3/D-189 — shared by the status
+routes' `suspensionOf` seam, the manual-test lift, and the polling
+scheduler's dispatch gates), the registry with observation-wrapped adapters
 (`providers.ts`, task U-040), and a lazy repository facade bridging eager
 route registration to the storage component's start-time open (the data
 directory exists only after the lock's start, D-017). The composed result
@@ -191,21 +192,22 @@ configuration under test — init's fresh run has no file yet (the write is
 §5.3 step 5's configuration half, deferred past the step-6 test, D-102)
 and the re-run flow keeps the same answer-driven factory, while a
 diagnostic's probe budget stays independent of the artifact it examines
-(D-179). The observation wrapper itself is unchanged: manual
-connection tests feed
-the §7.2 suspension holder — release-on-request
+(D-179). The observation wrapper itself is unchanged in shape: manual
+connection tests feed the §7.2 suspension store — release-on-request
 before the attempt, re-entry with a fresh 60-minute window on a D-052
-`credentials-rejected` rejection, so a successful manual test lifts an
-`Auth rejected` pause (wire-observable through `/api/status`), while
-`fetchSnapshot` stays unobserved (the polling engine owns polled-cycle
-outcomes). Since U-051 (D-176) the wrapper's optional
-`onManualTestRequested`/`onManualTestRejected` callbacks are the
+`credentials-rejected` rejection (the wrapper is the ONE application site
+for both manual-test events since FSM-3/D-189), so a successful manual
+test lifts an `Auth rejected` pause (wire-observable through
+`/api/status`), while `fetchSnapshot` stays unobserved (the polling
+engine owns polled-cycle outcomes). Since U-051 (D-176) the wrapper's
+optional `onManualTestRequested`/`onManualTestRejected` callbacks are the
 composition's manual-test bridges into the polling engine: the request
-releases the holder AND the engine's own D-064 machine, owing the account
-one attempt through the dispatch loop, and a refused key re-enters both
-machines' suspensions with a fresh 60-minute window — so §7.2's "until …
-a manual test is requested" and its 401/403 row reach the machine that
-gates polling, not only the status view.
+releases the shared D-064 store (the engine's own application of the same
+release is the idempotent no-op) and owes the account one attempt through
+the dispatch loop, and a refused key's re-entry is the wrapper's own store
+application above while the engine drops any still-owed attempt — so
+§7.2's "until … a manual test is requested" and its 401/403 row reach the
+one machine that gates polling and feeds the status view alike.
 
 ## The polling engine composition (task U-051, spec §7.1, §7.2, §5.6, §6.4; decision D-176)
 
@@ -222,25 +224,35 @@ states `Disabled`/`Not configured`), never thrown, so one foreign or
 keyless entry stops neither the others nor the startup (§7.2 isolation).
 The resolved secret reaches only the registry's branded `AccountContext`.
 
-The D-064 seam, per D-140's plan: the scheduler's internal state machine
-gates dispatch; the composition's holder stays the seam `/api/status` and
-the manual-test flow read. The engine's settle wrapper feeds the holder
-every settled classification through a per-account continuity epoch
-(`polledCycleOutcome`) that mirrors the engine's mid-flight entry-identity
-rule exactly — kept rebuilds keep feeding, while removal, re-key, and
-same-key remove/re-add go stale — so the two pure machines — same events,
-same transitions — stay in lockstep: a polled 401 shows `Auth rejected`
-even after a later inconclusive probe run, and a polled success lifts the
-pause. An account leaving the polled set (removed, disabled, secret lost)
-drops its holder episode beside the engine's dropped entry (the restart
-equivalence — suspension is process memory). §6.4 reloads arrive through
-the composition's reload wrapper (`applyReloadChanges`): an `accounts`
-change rebuilds the wiring (added accounts poll immediately,
-removed/disabled ones drop out, re-keyed ones release and are immediately
-due), an interval change re-anchors the schedule. Manual tests bridge both
-ways: the request owes the engine one attempt (`onManualTestRequested` →
-`requestManualTest`), and a refused key re-enters the engine's own
-suspension with a fresh 60-minute window
+The D-064 seam, unified by FSM-3 (D-189): the composition creates ONE
+`AccountSuspensions` store and shares it with everything — the scheduler
+(read/write: its dispatch gates, outcome applications, key-identity
+observations, admission re-arms, and leave-the-polled-set drops all flow
+through `PollingSchedulerOptions.suspensions`), the status routes
+(`suspensionOf`), and the manual-test observation. There is no second
+machine to keep in step: the engine's settle path applies every settled
+classification to the store behind its own mid-flight entry-identity rule
+— kept rebuilds keep feeding, while removal, re-key, and same-key
+remove/re-add go stale — so a polled 401 shows `Auth rejected` even after
+a later inconclusive probe run, and a polled success lifts the pause. An
+account leaving the polled set (removed, disabled, secret lost) drops its
+episode through the engine's own `setAccounts` diff (the restart
+equivalence — suspension is process memory); an account joining the polled
+set inherits whatever episode the store holds — normally nothing, except
+one a manual test planted while the account was unpolled, which the pause
+then honors (the probe cadence verifies the refused key). §6.4 reloads
+arrive through the composition's reload wrapper (`applyReloadChanges`, fed
+BEFORE the key-identity report loop by the exported `createReloadFollowUps`
+factory — the D-189-pinned order, sequenced-pinned by
+`test/unit/composition-reload-follow-ups.spec.ts` — so the engine's own
+observation fires the release re-anchor): an `accounts` change rebuilds the wiring
+(added accounts poll immediately, removed/disabled ones drop out, re-keyed
+ones release and are immediately due), an interval change re-anchors the
+schedule. Manual tests bridge both ways: the request releases through the
+store and owes the engine one attempt (`onManualTestRequested` →
+`requestManualTest`), and a refused key re-enters the store with a fresh
+60-minute window under the tested key's identity — the wrapper's single
+application — while the engine drops any still-owed attempt
 (`onManualTestRejected` → the scheduler's additive `manualTestRejected`
 seam, D-176) — §7.2's pause holds on both sides. Contained settlement
 failures surface as one `warn` each — D-066's deferred diagnostics, landed
@@ -249,7 +261,8 @@ composition's test seam for time-compressed integration tests (the
 `port`/`staticRoot` precedent); the e2e acceptance harness keeps its
 seeded worlds still by doubling the real adapter's `fetchSnapshot` off
 (the live engine's proof is
-`test/integration/composition-polling.spec.ts`'s).
+`test/integration/composition-polling.spec.ts`'s, the wiring-level
+lockstep `test/unit/polling-suspension-lockstep.spec.ts`'s).
 
 **Rule:** as the composition root it may import every layer except
 `src/cli/`. Route handlers validate input through `src/schemas/api/` and

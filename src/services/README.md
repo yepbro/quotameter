@@ -290,26 +290,29 @@ run writer (110) persists each probe cycle and the status derivation (111)
 consumes the `Auth rejected` contribution 105 already attaches. Time is an
 argument (D-021); the caller holds the (frozen) state object.
 
-Landed: [`account-suspensions.ts`](./account-suspensions.ts) — the
-composition-level D-064 holder (task U-040, decision D-140): a per-account
-map over the landed transitions that the composition wires into the status
-routes' `suspensionOf` seam, the manual-test flow, and the key-observation
-flow — `manualTestRequested` applies the unconditional
+Landed: [`account-suspensions.ts`](./account-suspensions.ts) — the single
+D-064 suspension store (task U-040, decision D-140; the single-holder
+unification FSM-3, decision D-189): one per-account map over the landed
+transitions that the composition shares with every D-064 consumer — the
+status routes' `suspensionOf` seam, the manual-test flow, the
+key-observation flow, and (since FSM-3) the polling scheduler's own
+dispatch gates. `manualTestRequested` applies the unconditional
 release-on-request, `manualTestRejected` feeds the outcome seam (re-entry
-with a fresh 60-minute window), and `reportKeyIdentity` feeds the
-key-change release on every configuration observation (idempotent by
-D-064's design), so a successful manual test lifts an `Auth rejected`
-pause, a refused one keeps it, and a key rotation releases it without a
-test. `keyIdentityOfSecret` is the single identity vocabulary (sha256 of
-the resolved secret) both observations share. Since the polling engine
-joined the composition (U-051, D-176), `polledCycleOutcome` feeds the
-holder every settled, non-stale cycle classification — the same D-064
-events the engine's own internal machine consumes, so the two pure
-machines stay in lockstep (the engine gates dispatch; this holder is the
-`/api/status` seam) — and `dropAccount` drops an account's episode beside
-the engine's dropped entry when it leaves the polled set (the restart
-equivalence). Unit-pinned in
-`test/unit/account-suspensions.spec.ts`.
+with a fresh 60-minute window, under the tested key's identity), and
+`reportKeyIdentity` feeds the key-change release on every configuration
+observation (idempotent by D-064's design, returning whether it released —
+the scheduler's re-anchor condition), so a successful manual test lifts an
+`Auth rejected` pause, a refused one keeps it, and a key rotation releases
+it without a test. `polledCycleOutcome` is the ONE application a settled,
+non-stale cycle classification gets (the scheduler's settle path calls it
+behind its mid-flight staleness check), `admitVerification` is the
+scheduler's probe gate (a granted admission persists its re-armed window in
+the store), and `dropAccount` drops an account's episode when it leaves the
+polled set (the restart equivalence). `keyIdentityOfSecret` is the single
+identity vocabulary (sha256 of the resolved secret) every observation
+shares. Unit-pinned in `test/unit/account-suspensions.spec.ts`; the
+wiring-level lockstep (every event source against the real scheduler) in
+`test/unit/polling-suspension-lockstep.spec.ts`.
 
 Landed: [`polling-status.ts`](./polling-status.ts) — the account status
 derivation (task 111, decision D-070): `deriveAccountStatus(input,
@@ -368,7 +371,9 @@ reset-event detection (tasks 117/118) plugs into the success write's empty
 write-side composer is recorded in D-069. The recorder is composed into
 the running service per pollable account by
 [`../server/polling.ts`](../server/polling.ts) since U-051 (D-176), whose
-settle wrapper adds the D-064 holder feed around it.
+settle wrapper adds the contained-failure diagnostics around it (the D-064
+feed is the scheduler's own settle-path application to the shared store
+since FSM-3/D-189).
 
 Landed: [`polling-scheduler.ts`](./polling-scheduler.ts) — the §7.1 polling
 loop engine (task 109, decision D-066): `createPollingScheduler(options)`
@@ -400,10 +405,15 @@ an old key's 401 never suspends a new key; interval changes re-anchor);
 `requestManualTest` owes the account one attempt — a flag consumed at
 dispatch, so it survives an in-flight cycle and an interval change, and
 still respects the `Retry-After` gate; `manualTestRejected` (additive,
-D-176) feeds the engine's own D-064 machine an auth-error outcome when a
-manual connection test refuses the key — §7.2's pause holds on the engine
-side of a refused manual test, with any still-owed attempt dropped.
-`stop()` is §5.6's stop-scheduling —
+D-176) is the engine-side half of a refused manual test — the D-064
+re-entry is the observation wrapper's single application to the shared
+store (`src/server/providers.ts`), while the engine drops any still-owed
+attempt, so §7.2's pause holds on the engine side of a refused manual test.
+The engine carries no suspension state of its own (FSM-3, D-189): the
+required `suspensions` option is the one `AccountSuspensions` store, read
+by every gate and written by every transition above — including the
+leave-the-polled-set drop and the admission re-arm — so dispatch gating and
+`/api/status` cannot diverge. `stop()` is §5.6's stop-scheduling —
 abort every live flight, resolve promptly — with the optional structural
 in-flight tracker (D-020) for the server's graceful drain; a wiring-level
 loop failure is retained and observable (`running` turns false, `stop()`

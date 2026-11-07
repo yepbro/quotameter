@@ -58,7 +58,11 @@ import { enforceConfigPermissions } from '../config/permissions';
 import { resolvePaths } from '../config/paths';
 import { createConfigReloader, type ReloadResult, type ReloadSuccess } from '../config/reload';
 import { ProviderRegistry, type QuotaProvider } from '../providers/registry';
-import { createAccountSuspensions, keyIdentityOfSecret } from '../services/account-suspensions';
+import {
+  createAccountSuspensions,
+  keyIdentityOfSecret,
+  type AccountSuspensions,
+} from '../services/account-suspensions';
 import { MIGRATIONS } from '../storage/migrations';
 import { runStorageMaintenance } from '../storage/maintenance';
 import { createQuotaRepository, type QuotaRepository } from '../storage/repository';
@@ -80,7 +84,7 @@ import {
   type HttpServerOptions,
 } from './http';
 import { createConfiguredZaiProvider, observingManualTests } from './providers';
-import { createPollingEngine } from './polling';
+import { createPollingEngine, type PollingEngine } from './polling';
 import type { PollingSleep } from '../services/polling-scheduler';
 import { createRetentionSchedule } from './retention';
 import type { RetentionSleep } from './retention';
@@ -235,6 +239,65 @@ function syncAccountsFromConfig(
   }
 }
 
+/* ── §6.4's follow-up application (the D-189 order) ────────────────────── */
+
+/** Options of {@link createReloadFollowUps}; every member is a seam. */
+export interface ReloadFollowUpsOptions {
+  /** The lazy repository facade — the config-sync's mirror target. */
+  readonly repository: QuotaRepository;
+  /**
+   * The startup environment snapshot `resolvedKeyIdentity` reads unresolved
+   * `apiKeyEnv` names against (the D-023 snapshot, not the live process).
+   */
+  readonly env: NodeJS.ProcessEnv;
+  /** The polling engine's reload feed — ordered before the report loop. */
+  readonly pollingEngine: Pick<PollingEngine, 'applyReloadChanges'>;
+  /** The shared D-064 store the key-identity reports land on. */
+  readonly suspensions: Pick<AccountSuspensions, 'reportKeyIdentity'>;
+  /** The shared clock (D-021) — the config-sync's `createdAt` stamps. */
+  readonly clock: Pick<Clock, 'now'>;
+}
+
+/**
+ * §6.4's follow-up application — one definition of "applying a reload",
+ * extracted so its ORDER is pinned by test (FSM-3, D-189): config-sync →
+ * polling-engine feed → key-identity report loop.
+ *
+ * The order between the last two is load-bearing on the single store: the
+ * scheduler's `setAccounts` applies each kept account's identity through
+ * the shared store itself and re-anchors a released account's schedule on
+ * its own observation (`reportKeyIdentity`'s boolean), so the loop's
+ * earlier application would pre-empt it — a report-first regression leaves
+ * the release re-anchor lost while the store still releases, silently
+ * resuming suspended accounts at a stale future due instead of immediately.
+ * After the engine feed the loop is the idempotent no-op D-064 designed
+ * `reportKeyIdentity` to be; it stays because its durable effect is for
+ * accounts OUTSIDE the polled set (§7.2's "until the key changes" releases
+ * a disabled account's episode too). The config-sync stays first: the
+ * account row lands before any settle can write a run against it (D-069's
+ * foreign-key requirement). One reload, one channel — storage rows,
+ * suspension state, and the polling schedule can never disagree about one
+ * configuration (D-128's pre-sync seam).
+ */
+export function createReloadFollowUps(
+  options: ReloadFollowUpsOptions,
+): (result: ReloadSuccess) => void {
+  return (result) => {
+    if (result.applied.includes('accounts')) {
+      syncAccountsFromConfig(options.repository, result.effective.config, options.clock.now());
+    }
+    options.pollingEngine.applyReloadChanges(result);
+    if (result.applied.includes('accounts')) {
+      for (const account of result.effective.config.accounts ?? []) {
+        options.suspensions.reportKeyIdentity(
+          account.id,
+          resolvedKeyIdentity(account, options.env),
+        );
+      }
+    }
+  };
+}
+
 /* ── The lazy repository bridge ─────────────────────────────────────────── */
 
 /**
@@ -323,10 +386,13 @@ export async function composeApplication(
     logger,
   });
 
-  // D-064's holder, the registry, and the polling engine (U-051, D-176).
-  // The engine is constructed BEFORE the adapters register: it reads the
-  // registry only when its component starts (the wiring build), by which
-  // time registration has happened — so the observation wrapper can bridge
+  // D-064's holder — THE suspension store (FSM-3, D-189): one instance per
+  // process, shared by the polling engine's dispatch gates, the status
+  // routes' `suspensionOf` seam, and the manual-test observation below —
+  // plus the registry and the shared in-flight tracker. The engine is
+  // constructed BEFORE the adapters register: it reads the registry only
+  // when its component starts (the wiring build), by which time
+  // registration has happened — so the observation wrapper can bridge
   // manual-test requests into the engine from the start.
   const suspensions = createAccountSuspensions({ clock });
   const registry = new ProviderRegistry();
@@ -369,26 +435,15 @@ export async function composeApplication(
   }
 
   // §6.4's application for every API-driven mutation: the reload itself,
-  // then the config-sync whenever the account list changed. The stores
-  // never call the bare reloader — the mirror would lag a write otherwise.
-  // §7.2's second release condition rides the same observation: every
-  // configured account's current key identity is reported (idempotent by
-  // D-064's design), so a key rotation releases an episode that began under
-  // the old key even with no polling engine in the composition.
-  // U-051's feed: the polling engine takes the same reload's account and
-  // interval changes (rebuilt wiring, re-anchored schedule) — the D-128
-  // pre-sync seam, so storage rows, suspension state, and the polling
-  // schedule can never disagree about one configuration.
-  /** §6.4's follow-up application — one definition of "applying a reload". */
-  const applyReloadFollowUps = (result: ReloadSuccess): void => {
-    if (result.applied.includes('accounts')) {
-      syncAccountsFromConfig(repository, result.effective.config, clock.now());
-      for (const account of result.effective.config.accounts ?? []) {
-        suspensions.reportKeyIdentity(account.id, resolvedKeyIdentity(account, env));
-      }
-    }
-    pollingEngine.applyReloadChanges(result);
-  };
+  // then the shared follow-up applier below. The stores never call the bare
+  // reloader — the mirror would lag a write otherwise.
+  const applyReloadFollowUps = createReloadFollowUps({
+    repository,
+    env,
+    pollingEngine,
+    suspensions,
+    clock,
+  });
 
   const applyReload = async (): Promise<ReloadResult> => {
     const result = await reloader.reload();

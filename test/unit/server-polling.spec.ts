@@ -24,12 +24,16 @@ import { createLogger, type Logger } from '../../src/util/logger';
 import { createMemoryLogSink, type MemoryLogSink } from '../helpers/logSink';
 
 /**
- * The polling engine composition (task U-051, decision D-176): the wiring
- * builder's account selection (§7.2 isolation), the lifecycle component's
- * delegation, the §6.4 reload feeds, the manual-test bridge, and the settle
- * wrapper's holder feed with the engine's stale-outcome rule — pinned
- * against a spy scheduler and double recorders. The end-to-end behavior
- * (real scheduler, real recorder, real adapter on the loopback mock) is
+ * The polling engine composition (task U-051, decision D-176; the
+ * single-holder unification FSM-3/D-189): the wiring builder's account
+ * selection (§7.2 isolation), the lifecycle component's delegation, the
+ * §6.4 reload feeds, the manual-test bridge, the settle wrapper's
+ * diagnostics, and the structural pin that the ONE suspension store is
+ * forwarded to the scheduler — pinned against a spy scheduler and double
+ * recorders. The D-064 store's behavioral coverage (every event source,
+ * staleness included, against the real scheduler) is
+ * `polling-suspension-lockstep.spec.ts`; the end-to-end behavior (real
+ * scheduler, real recorder, real adapter on the loopback mock) is
  * `test/integration/composition-polling.spec.ts`'s.
  */
 
@@ -173,6 +177,7 @@ function engineHarness(config: Config, env: NodeJS.ProcessEnv = {}) {
   const suspensions = createAccountSuspensions({ clock });
   const scheduler = spyScheduler();
   const recorders = recorderSpy();
+  let schedulerOptions: PollingSchedulerOptions | undefined;
   let current: Config = config;
   const engine = createPollingEngine({
     clock,
@@ -183,10 +188,11 @@ function engineHarness(config: Config, env: NodeJS.ProcessEnv = {}) {
     repository: repositoryDouble,
     config: () => current,
     inFlight: { begin: () => ({ done: () => {} }), whenIdle: () => Promise.resolve(), count: 0 },
-    schedulerFactory: (schedulerOptions: PollingSchedulerOptions) => {
+    schedulerFactory: (options: PollingSchedulerOptions) => {
       // The §7.1 interval the engine derived from the configuration — the
       // seconds/milliseconds fail-fast seam, pinned at the factory.
-      expect(schedulerOptions.intervalMs).toBe(300_000);
+      expect(options.intervalMs).toBe(300_000);
+      schedulerOptions = options;
       return scheduler;
     },
     recorderFactory: recorders.factory,
@@ -197,14 +203,13 @@ function engineHarness(config: Config, env: NodeJS.ProcessEnv = {}) {
     recorders,
     suspensions,
     sink,
+    /** The options the engine handed the scheduler factory (last call). */
+    schedulerOptions: (): PollingSchedulerOptions | undefined => schedulerOptions,
     setConfig(next: Config): void {
       current = next;
     },
   };
 }
-
-/** A successful cycle result for the double recorders. */
-const okResult = { ok: true as const, value: undefined, attempts: 1 };
 
 /* ── The wiring builder ──────────────────────────────────────────────────── */
 
@@ -375,158 +380,19 @@ describe('createPollingEngine lifecycle and feeds', () => {
   });
 });
 
-/* ── The settle wrapper's holder feed ────────────────────────────────────── */
+/* ── The settle wrapper (diagnostics) and the single-holder pin ─────────── */
 
-describe('createPollingEngine settle wrapper (the D-064 holder feed)', () => {
-  it('feeds the holder every settled outcome of the current wiring', async () => {
-    const harness = engineHarness(
-      configOf([
-        { id: 'healthy', providerId: 'known-provider', label: 'H', apiKey: MARKER_KEY },
-        { id: 'rejected', providerId: 'known-provider', label: 'R', apiKey: 'sk-other' },
-      ]),
-    );
+describe('createPollingEngine settle wrapper and holder wiring', () => {
+  it('forwards THE suspension store to the scheduler — single by construction', async () => {
+    // FSM-3/D-189's structural pin: the engine holds no D-064 state of its
+    // own; the one `AccountSuspensions` instance the composition creates is
+    // the same object the scheduler receives (the dispatch gates), the
+    // status routes read (`suspensionOf`), and the manual-test observation
+    // feeds. There is no second machine to keep in step.
+    const harness = engineHarness(configOf([]));
     await harness.engine.component.start();
-    const [healthyWiring, rejectedWiring] = harness.scheduler.accountsCalls[0] as [
-      PollingAccount,
-      PollingAccount,
-    ];
-
-    // A success feeds the machine (a no-op transition) and classifies on.
-    const success = await healthyWiring.settleCycle(okResult);
-    expect(success.outcome).toBe('success');
-    expect(harness.suspensions.suspensionOf('healthy').suspended).toBe(false);
-
-    // An auth-rejected cycle suspends the holder — the status seam learns
-    // the polled verdict (the /api/status `Auth rejected` machine arm).
-    const rejected = await rejectedWiring.settleCycle(okResult);
-    expect(rejected.outcome).toBe('auth_error');
-    expect(harness.suspensions.suspensionOf('rejected').suspended).toBe(true);
-  });
-
-  it('skips the feed when the wiring was re-keyed or removed mid-flight', async () => {
-    const harness = engineHarness(
-      configOf([{ id: 'work', providerId: 'known-provider', label: 'W', apiKey: MARKER_KEY }]),
-    );
-    await harness.engine.component.start();
-    const [staleWiring] = harness.scheduler.accountsCalls[0] as [PollingAccount];
-
-    // Re-key to a key whose cycles classify auth-rejected (the double's
-    // vocabulary: only the marker key classifies success). The OLD wiring's
-    // settled outcome is stale — the engine's own mid-flight rule, mirrored
-    // for the holder — and a stale auth_error must not suspend the
-    // brand-new key that was never tried.
-    harness.engine.applyReloadChanges(
-      reloadOf(
-        configOf([{ id: 'work', providerId: 'known-provider', label: 'W', apiKey: 'sk-bad' }]),
-        ['accounts'],
-      ),
-    );
-    const [rekeyedWiring] = harness.scheduler.accountsCalls[1] as [PollingAccount];
-    await staleWiring.settleCycle(okResult); // the old key's success → stale, skipped
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(false);
-
-    // The CURRENT wiring's outcome still feeds: an auth-rejected cycle under
-    // the new key suspends the holder (the /api/status machine arm).
-    const rejected = await rekeyedWiring.settleCycle(okResult);
-    expect(rejected.outcome).toBe('auth_error');
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(true);
-
-    // Removal: the account disappears from the configuration; after the
-    // manual-test release, a settling flight of the removed wiring must not
-    // re-suspend — its outcome is stale.
-    harness.suspensions.manualTestRequested('work');
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(false);
-    harness.engine.applyReloadChanges(reloadOf(configOf([]), ['accounts']));
-    await rekeyedWiring.settleCycle(okResult);
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(false);
-  });
-
-  it('drops the holder episode with the engine entry when an account leaves the polled set', async () => {
-    // The review round's P1: a disable/re-enable under the SAME key used to
-    // leave the holder suspended while the engine started fresh — the two
-    // machines disagreed with an observable /api/status consequence. The
-    // holder now drops the episode beside the engine's dropped entry.
-    const harness = engineHarness(
-      configOf([{ id: 'work', providerId: 'known-provider', label: 'W', apiKey: 'sk-bad' }]),
-    );
-    await harness.engine.component.start();
-    const [wiring] = harness.scheduler.accountsCalls[0] as [PollingAccount];
-    await wiring.settleCycle(okResult); // auth_error → both machines suspend
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(true);
-
-    // Disabled: the account leaves the polled set (still configured — the
-    // key-identity report is a no-op) and the episode drops with the entry.
-    harness.engine.applyReloadChanges(
-      reloadOf(
-        configOf([
-          {
-            id: 'work',
-            providerId: 'known-provider',
-            label: 'W',
-            enabled: false,
-            apiKey: 'sk-bad',
-          },
-        ]),
-        ['accounts'],
-      ),
-    );
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(false);
-
-    // Re-enabled under the same key: both machines fresh (the restart
-    // equivalence — D-064's process-memory consequence), no divergence.
-    harness.engine.applyReloadChanges(
-      reloadOf(
-        configOf([{ id: 'work', providerId: 'known-provider', label: 'W', apiKey: 'sk-bad' }]),
-        ['accounts'],
-      ),
-    );
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(false);
-    const [returned] = harness.scheduler.accountsCalls[2] as [PollingAccount];
-    await returned.settleCycle(okResult); // a fresh epoch: the feed applies
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(true);
-  });
-
-  it('skips the feed when a removed account is re-added under the SAME key mid-flight', async () => {
-    // The engine's mid-flight rule is entry identity, not key identity: a
-    // removed-and-re-added account under the same key gets a fresh entry,
-    // so the old flight's outcome is stale for it — the wiring's epoch
-    // mirrors that exactly (the review round's P1 corner).
-    const harness = engineHarness(
-      configOf([{ id: 'work', providerId: 'known-provider', label: 'W', apiKey: 'sk-bad' }]),
-    );
-    await harness.engine.component.start();
-    const [firstWiring] = harness.scheduler.accountsCalls[0] as [PollingAccount];
-
-    harness.engine.applyReloadChanges(reloadOf(configOf([]), ['accounts'])); // removed
-    harness.engine.applyReloadChanges(
-      reloadOf(
-        configOf([{ id: 'work', providerId: 'known-provider', label: 'W', apiKey: 'sk-bad' }]),
-        ['accounts'],
-      ),
-    ); // re-added, same key
-    await firstWiring.settleCycle(okResult); // the old flight's auth_error
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(false); // stale, skipped
-  });
-
-  it('keeps feeding across a mere rebuild (a kept account, same key)', async () => {
-    const harness = engineHarness(
-      configOf([{ id: 'work', providerId: 'known-provider', label: 'W', apiKey: 'sk-bad' }]),
-    );
-    await harness.engine.component.start();
-    const [wiring] = harness.scheduler.accountsCalls[0] as [PollingAccount];
-    // A label change rebuilds the wiring but keeps the account — the engine
-    // applies the outcome (entry identity survives), so the holder feed
-    // must survive too.
-    harness.engine.applyReloadChanges(
-      reloadOf(
-        configOf([
-          { id: 'work', providerId: 'known-provider', label: 'Renamed', apiKey: 'sk-bad' },
-        ]),
-        ['accounts'],
-      ),
-    );
-    await wiring.settleCycle(okResult);
-    expect(harness.suspensions.suspensionOf('work').suspended).toBe(true);
+    expect(harness.schedulerOptions()?.suspensions).toBe(harness.suspensions);
+    await harness.engine.component.stop();
   });
 
   it('logs and rethrows a failing settlement (contained by the engine)', async () => {

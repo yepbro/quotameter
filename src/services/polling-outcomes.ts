@@ -356,3 +356,25 @@ export function classifySuccess(httpStatus?: number): CycleOutcome {
     errorMessage: undefined,
   };
 }
+
+/**
+ * The `auth_error` classification of a key refusal observed **outside** a
+ * transport cycle — a manual connection test whose provider refused the key
+ * (D-052's `credentials-rejected` kind, no HTTP status to retain). One
+ * factory for every such feed site (the D-064 holder's manual-test
+ * rejection seam, FSM-3/D-189): the §7.2 flags — not retryable within the
+ * cycle, no `Retry-After` eligibility (D-062's gate is 429-only), the §7.3
+ * rank-1 contribution — can never drift from the polling side's
+ * classification of the same HTTP verdict.
+ */
+export function classifyAuthRejection(): CycleOutcome {
+  return {
+    outcome: 'auth_error',
+    httpStatus: undefined,
+    retryAfterRaw: undefined,
+    retryAfterEligible: false,
+    retryable: false,
+    statusContribution: STATUS_CONTRIBUTION_BY_OUTCOME.auth_error,
+    errorMessage: undefined,
+  };
+}

@@ -149,17 +149,18 @@ export function createInitialAccountProvider(): QuotaProvider {
 
 /* ── Manual-test observation (§7.2's suspension lift, task U-040/D-140) ─── */
 
-/** What {@link observingManualTests} feeds the suspension holder with. */
+/** What {@link observingManualTests} feeds the suspension store with. */
 export interface ManualTestObservationOptions {
-  /** The composition's D-064 holder (D-130's `suspensionOf` seam owner). */
+  /** The shared D-064 store (D-130's `suspensionOf` seam owner). */
   readonly suspensions: AccountSuspensions;
   /**
    * The manual-test bridge into the polling engine (U-051, D-176): invoked
-   * with the account id right after the holder's release, before the attempt
+   * with the account id right after the store's release, before the attempt
    * — both §7.2 release events ("until … a manual test is requested") land
    * at one site. The composition wires the engine's `requestManualTest`, so
-   * the engine's own D-064 machine releases too and owes the account one
-   * attempt through the dispatch loop (sequential and overlap rules hold).
+   * the engine owes the account one attempt through the dispatch loop
+   * (sequential and overlap rules hold; its own release application over
+   * the shared store is the idempotent no-op after this wrapper's).
    * Optional and absent in the wrapper's own unit tests; errors propagate
    * (a broken bridge is a wiring bug, the D-059 loud-seam convention).
    */
@@ -167,10 +168,11 @@ export interface ManualTestObservationOptions {
   /**
    * The rejection half of the bridge: invoked right after the holder's
    * `manualTestRejected` feed (a D-052 `credentials-rejected` rejection),
-   * so the engine's own D-064 machine re-enters suspension with the same
-   * fresh 60-minute window instead of continuing normal polling under a
-   * key the provider just refused (§7.2's pause). Optional like the request
-   * half; errors propagate the same way.
+   * so the engine drops any still-owed manual attempt — the key the
+   * provider just refused has nothing left to try, and the shared store's
+   * probe cadence (already re-entered by the wrapper's application, the
+   * one D-064 feed for this event) owns the next attempt (§7.2's pause).
+   * Optional like the request half; errors propagate the same way.
    */
   readonly onManualTestRejected?: (accountId: string) => void;
 }
@@ -189,13 +191,18 @@ function isCredentialsRejected(error: unknown): boolean {
 
 /**
  * Wraps one provider adapter so its manual connection tests feed the §7.2
- * suspension holder (task U-040, D-140): the *request* applies D-064's
- * unconditional release ("until … a manual test is requested"), the attempt
- * then runs unchanged, and a key-refused rejection (D-052's
- * `credentials-rejected`) re-enters suspension with a fresh 60-minute
- * window. A successful attempt ends released — the §7.2 lift. Every other
- * member delegates verbatim, and every rejection rethrows unchanged, so the
- * accounts test endpoint's own classification is the wire's only authority.
+ * suspension store (task U-040, D-140; the single-application site since
+ * FSM-3/D-189): the *request* applies D-064's unconditional release ("until
+ * … a manual test is requested"), the attempt then runs unchanged, and a
+ * key-refused rejection (D-052's `credentials-rejected`) re-enters
+ * suspension with a fresh 60-minute window — under the TESTED key's
+ * identity, the key the provider actually refused. A successful attempt
+ * ends released — the §7.2 lift. Every other member delegates verbatim,
+ * and every rejection rethrows unchanged, so the accounts test endpoint's
+ * own classification is the wire's only authority. This wrapper is the ONE
+ * application site for both manual-test events: the engine bridges below
+ * only owe/drop the manual attempt, so the store can never be fed twice
+ * with different identities.
  *
  * The key identity reported on a rejection comes from the holder module's
  * own {@link keyIdentityOfSecret} — the same vocabulary the composition's
@@ -229,9 +236,9 @@ export function observingManualTests(
     },
     fetchSnapshot(account, signal) {
       // Deliberately NOT observed: `fetchSnapshot` is the polling cycle's
-      // seam, and polled cycles feed D-064 through the polling engine (with
-      // its own admission pacing) when it joins the composition — observing
-      // here would double-feed the machine from two holders.
+      // seam, and polled cycles feed D-064 through the engine's settle path
+      // into the shared store (with its own admission pacing) — observing
+      // here would double-feed the one store from two sites.
       return provider.fetchSnapshot(account, signal);
     },
   };

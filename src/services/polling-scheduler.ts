@@ -23,8 +23,10 @@
  * - {@link deferNextPoll} (D-062) is the only source of the 429
  *   `notBeforeEpochMs` gate — a non-deferred outcome leaves the gate open;
  * - the D-064 state machine gates normal polling (`!suspended`), grants
- *   hourly verification attempts through `admitVerification`, and receives
- *   every classified outcome back through `applyCycleOutcome`; key-change
+ *   hourly verification attempts, and receives every classified outcome —
+ *   all through the injected `AccountSuspensions` store (FSM-3, D-189):
+ *   the engine holds no suspension state of its own, so its dispatch gates
+ *   and the status surfaces read one value per account. Key-change
  *   releases ride on `setAccounts` (the configuration observation) and a
  *   manual test is {@link PollingScheduler.requestManualTest};
  * - a failure for one account never stops the others (§7.2): provider
@@ -55,20 +57,11 @@
 
 import type { Clock } from '../util/clock';
 import { TransportAbortError } from '../providers/transport';
+import { type AccountSuspensions } from './account-suspensions';
 import type { CycleOutcome } from './polling-outcomes';
-import { STATUS_CONTRIBUTION_BY_OUTCOME } from './polling-outcomes';
 import { runCycleWithRetries, type CycleRetryResult } from './polling-retry';
 import { deferNextPoll } from './polling-retry-after';
-import {
-  INITIAL_SUSPENSION_STATE,
-  admitVerification,
-  applyCycleOutcome,
-  applyKeyIdentity,
-  applyManualTestRequest,
-  isSuspended,
-  isVerificationDue,
-  type AuthSuspensionState,
-} from './polling-suspension';
+import { isSuspended, isVerificationDue } from './polling-suspension';
 
 /* ── The §7.1 interval contract ────────────────────────────────────────── */
 
@@ -112,23 +105,6 @@ export function pollingDelayMs(intervalMs: number, random: () => number): number
 }
 
 /* ── The hang threshold (D-066) ────────────────────────────────────────── */
-
-/**
- * The auth-rejection classification of a manual test whose provider refused
- * the key — the outcome `manualTestRejected` feeds the D-064 machine with,
- * built from the landed tables exactly as the composition's holder builds
- * its own (`account-suspensions.ts`), so the two machines re-enter on
- * identical data.
- */
-const MANUAL_TEST_AUTH_ERROR: CycleOutcome = Object.freeze({
-  outcome: 'auth_error',
-  httpStatus: undefined,
-  retryAfterRaw: undefined,
-  retryAfterEligible: false,
-  retryable: false,
-  statusContribution: STATUS_CONTRIBUTION_BY_OUTCOME.auth_error,
-  errorMessage: undefined,
-}) as CycleOutcome;
 
 /**
  * The default point past which an unsettled cycle stops holding other
@@ -241,6 +217,15 @@ export interface PollingSchedulerOptions {
   readonly cycleHangThresholdMs?: number;
   /** D-020's in-flight tracker, if the composition root wires the drain. */
   readonly inFlight?: PollingInFlightTracker;
+  /**
+   * The D-064 suspension store (FSM-3, D-189) — the ONE per-account state
+   * holder this engine reads its gates from and writes its transitions
+   * into. The composition injects the same instance the status routes and
+   * the manual-test observation use, constructed over the same shared
+   * clock (D-021); the engine deliberately holds no suspension state of
+   * its own, so dispatch gating and `/api/status` cannot diverge.
+   */
+  readonly suspensions: AccountSuspensions;
 }
 
 /** The running scheduler. */
@@ -270,24 +255,27 @@ export interface PollingScheduler {
   setIntervalMs(intervalMs: number): void;
   /**
    * Requests a manual test (§7.2's second release condition): applies the
-   * D-064 release and owes the account one attempt — a manual test of a
-   * healthy account is just a cycle. The owed attempt dispatches
-   * immediately, through the dispatch loop (sequential and overlap rules
-   * hold); while the account's cycle is in flight it runs when that cycle
-   * settles, and it survives a concurrent interval change. The
-   * `Retry-After` gate still applies ("do not poll before that time" is
-   * unconditional). Returns false for an unknown account.
+   * D-064 release through the shared store (idempotent beside the manual-test
+   * observation's own application — a release on a released state is a
+   * no-op) and owes the account one attempt — a manual test of a healthy
+   * account is just a cycle. The owed attempt dispatches immediately,
+   * through the dispatch loop (sequential and overlap rules hold); while
+   * the account's cycle is in flight it runs when that cycle settles, and
+   * it survives a concurrent interval change. The `Retry-After` gate still
+   * applies ("do not poll before that time" is unconditional). Returns
+   * false for an unknown account.
    */
   requestManualTest(accountId: string): boolean;
   /**
    * A manual connection test refused the account's key (§7.2's 401/403 row
    * reached from the manual-test path — the composition's bridge, D-176):
-   * feeds the engine's own D-064 machine an `auth_error` outcome under the
-   * CURRENT wiring's key identity (re-entering or re-arming suspension with
-   * a fresh 60-minute window) and drops any still-owed manual attempt — a
-   * key the provider just refused has nothing left to try; the probe cadence
-   * owns the next attempt. A cycle already in flight settles normally (its
-   * own outcome decides). Returns false for an unknown account.
+   * the D-064 re-entry is the observation wrapper's single application to
+   * the shared store (`src/server/providers.ts`, under the tested key's
+   * identity); the engine-side half drops any still-owed manual attempt —
+   * a key the provider just refused has nothing left to try, and the probe
+   * cadence owns the next attempt. A cycle already in flight settles
+   * normally (its own outcome decides). Returns false for an unknown
+   * account.
    */
   manualTestRejected(accountId: string): boolean;
   /**
@@ -321,8 +309,10 @@ interface AccountEntry {
    * not poll before that time" is unconditional).
    */
   notBeforeEpochMs: number;
-  /** The D-064 suspension state; normal polling is gated on `!suspended`. */
-  suspension: AuthSuspensionState;
+  // No suspension field of its own (FSM-3, D-189): the D-064 state lives in
+  // the injected `AccountSuspensions` store — every gate reads
+  // `suspensions.suspensionOf(...)`, so dispatch gating and the status
+  // surfaces share one value per account.
   /**
    * An operator-requested attempt is owed (§7.2's manual test): consumed
    * at dispatch — it makes the account due immediately, bypasses the
@@ -458,6 +448,25 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   if (inFlightTracker !== undefined && typeof inFlightTracker.begin !== 'function') {
     throw new TypeError('createPollingScheduler: inFlight must expose begin()');
   }
+  const suspensions = options.suspensions;
+  if (typeof suspensions !== 'object' || suspensions === null) {
+    throw new TypeError('createPollingScheduler: suspensions must be an AccountSuspensions');
+  }
+  for (const method of [
+    'suspensionOf',
+    'manualTestRequested',
+    'manualTestRejected',
+    'reportKeyIdentity',
+    'polledCycleOutcome',
+    'admitVerification',
+    'dropAccount',
+  ] as const) {
+    if (typeof suspensions[method] !== 'function') {
+      throw new TypeError(
+        `createPollingScheduler: suspensions must expose ${method}() (the D-064 store, D-189)`,
+      );
+    }
+  }
   if (options.accounts !== undefined) requireAccounts(options.accounts, 'createPollingScheduler');
 
   /** A guarded monotonic reading — the schedule's time base (§7.1). */
@@ -527,18 +536,21 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
 
   function freshEntry(account: PollingAccount, nowMonotonicMs: number): AccountEntry {
     // §7.1: the first collection runs immediately — also for an account
-    // added mid-run, which mirrors a startup for that account (D-066).
+    // added mid-run, which mirrors a startup for that account (D-066). The
+    // account's D-064 state is whatever the shared store holds: usually
+    // nothing (a leaving setAccounts dropped it), except an episode a
+    // manual test planted while the account was unpolled — which the pause
+    // then honors (D-189's corner: the probe cadence, not a normal poll,
+    // verifies a key the provider already refused).
     return {
       account,
       nextPollMonotonicMs: nowMonotonicMs,
       notBeforeEpochMs: Number.NEGATIVE_INFINITY,
-      suspension: INITIAL_SUSPENSION_STATE,
       pendingManualTest: false,
     };
   }
 
   function applyAccounts(next: readonly PollingAccount[]): void {
-    const wall = wallNow();
     const mono = monotonicNow();
     const nextEntries = new Map<string, AccountEntry>();
     for (const account of next) {
@@ -548,12 +560,10 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
         continue;
       }
       // A kept account: swap in the new closures (labels etc. may differ)
-      // and report the observed key identity to the D-064 machine — the
+      // and report the observed key identity to the D-064 store — the
       // idempotent observation D-064 recommends for every configuration
-      // reload. A release here resumes normal polling immediately.
-      const transition = applyKeyIdentity(existing.suspension, account.keyIdentity, wall);
-      existing.suspension = transition.state;
-      if (transition.changed) {
+      // reload. A release there resumes normal polling immediately.
+      if (suspensions.reportKeyIdentity(account.accountId, account.keyIdentity)) {
         // Released by the key change: normal polling resumes immediately
         // (the stale schedule was paused mid-air, D-066).
         existing.nextPollMonotonicMs = mono;
@@ -561,11 +571,18 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       existing.account = account;
       nextEntries.set(account.accountId, existing);
     }
+    for (const id of entries.keys()) {
+      // An account that left the polled set drops its D-064 episode beside
+      // its engine entry (D-066's removal semantics; suspension is process
+      // memory, D-064's restart consequence — the D-070 run-evidence arm
+      // covers the §7.3 display for the first post-return cycle).
+      if (!nextEntries.has(id)) suspensions.dropAccount(id);
+    }
     entries.clear();
     for (const [id, entry] of nextEntries) entries.set(id, entry);
-    // Removed accounts simply drop out; their in-flight cycles settle in
-    // the background and discard their outcomes (the identity check in
-    // the settle path), because the state they would update is gone.
+    // Removed accounts' in-flight cycles settle in the background and
+    // discard their outcomes (the identity check in the settle path),
+    // because the state they would update is gone.
     kick();
   }
 
@@ -573,7 +590,7 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
 
   /** Reschedules an account after a completed (or contained) cycle. */
   function scheduleNextPoll(entry: AccountEntry): void {
-    if (isSuspended(entry.suspension)) {
+    if (isSuspended(suspensions.suspensionOf(entry.account.accountId))) {
       // Normal polling stays paused; the wake math derives the probe time
       // from the armed instant. nextPollMonotonicMs stays where it was and
       // is re-anchored on release.
@@ -652,13 +669,10 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
           return; // removed or re-keyed mid-flight: the outcome is stale
         }
         const wall = wallNow();
-        // D-064: every classified outcome feeds the suspension machine.
-        entry.suspension = applyCycleOutcome(
-          entry.suspension,
-          classified,
-          account.keyIdentity,
-          wall,
-        ).state;
+        // D-064: every non-stale classified outcome feeds the suspension
+        // store — the one application the outcome gets (the status seam
+        // reads the same store, so the feed needs no mirror).
+        suspensions.polledCycleOutcome(account.accountId, classified, account.keyIdentity);
         // D-062: the 429 gate — replaced by this cycle's own decision; a
         // non-deferred reason falls back to the plain interval below.
         const defer = deferNextPoll(classified, wall);
@@ -696,7 +710,9 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   function rescheduleBestEffort(entry: AccountEntry): void {
     try {
       if (entries.get(entry.account.accountId) !== entry) return;
-      if (isSuspended(entry.suspension)) return; // the armed instant still governs
+      if (isSuspended(suspensions.suspensionOf(entry.account.accountId))) {
+        return; // the armed instant still governs
+      }
       if (entry.pendingManualTest) return; // the owed attempt dispatches anyway
       entry.nextPollMonotonicMs = monotonicNow() + intervalMs;
     } catch {
@@ -753,10 +769,11 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
         entry.pendingManualTest = false; // consumed at dispatch
         return { action: 'dispatch', entry };
       }
-      if (isSuspended(entry.suspension)) {
-        const armed = entry.suspension.nextVerificationAtEpochMs;
+      const suspension = suspensions.suspensionOf(entry.account.accountId);
+      if (isSuspended(suspension)) {
+        const armed = suspension.nextVerificationAtEpochMs;
         if (blocked) continue; // the queue is held; re-examine after the wake
-        if (!isVerificationDue(entry.suspension, wall)) {
+        if (!isVerificationDue(suspension, wall)) {
           // The machine's own boundary predicate (D-064), not a hand-rolled
           // twin of it — drift between the two would be a second scheduler.
           waitMs = minDelay(waitMs, armed - wall);
@@ -765,7 +782,7 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
         // §7.2's "do not poll before that time" binds the verification
         // probe too (U-028): a `Retry-After` deferral the probe's own 429
         // left behind holds the admission until the gate opens. Checked
-        // before `admitVerification` — admission re-arms the armed
+        // before the admission request — admission re-arms the armed
         // instant, so an admission consumed behind a shut gate would push
         // the probe a full extra hour — and after the cadence predicate,
         // so a deferral that opens first never adds a spurious wake.
@@ -774,9 +791,10 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
           waitMs = minDelay(waitMs, gate);
           continue;
         }
-        const admission = admitVerification(entry.suspension, wall);
+        const admission = suspensions.admitVerification(entry.account.accountId);
         if (admission.admitted) {
-          entry.suspension = admission.state; // admission re-arms (D-064)
+          // The store re-arms at admission (D-064) — the pacing survives a
+          // lost outcome by construction.
           return { action: 'dispatch', entry };
         }
         // Unreachable through this engine's own math (the due check above
@@ -874,7 +892,9 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       intervalMs = requireIntervalMs(nextIntervalMs, 'setIntervalMs');
       const mono = monotonicNow();
       for (const entry of entries.values()) {
-        if (isSuspended(entry.suspension)) continue; // §7.2's fixed cadence
+        if (isSuspended(suspensions.suspensionOf(entry.account.accountId))) {
+          continue; // §7.2's fixed cadence
+        }
         // Re-anchor from now: an interval change must never leave a stale
         // long wait pending, and never fire earlier than one new interval.
         entry.nextPollMonotonicMs = mono + pollingDelayMs(intervalMs, random);
@@ -886,7 +906,12 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       if (stopped) throw new Error('polling scheduler: the scheduler is stopped');
       const entry = entries.get(accountId);
       if (entry === undefined) return false;
-      entry.suspension = applyManualTestRequest(entry.suspension, wallNow()).state;
+      // D-064's unconditional release through the shared store. The
+      // manual-test observation (src/server/providers.ts) applies the same
+      // transition just before this bridge; the second application is a
+      // no-op on the released state, and the engine's standalone coherence
+      // (its own tests, a non-composed embedding) requires it.
+      suspensions.manualTestRequested(accountId);
       // The owed attempt is a flag, not a due timestamp: it survives an
       // in-flight cycle (whose settle rescheduling would overwrite a due,
       // review P2-3) and an interval change, and is consumed at dispatch —
@@ -900,18 +925,11 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       if (stopped) throw new Error('polling scheduler: the scheduler is stopped');
       const entry = entries.get(accountId);
       if (entry === undefined) return false;
-      // The D-064 outcome seam with the landed auth-error classification,
-      // under the wiring's own key identity — the same vocabulary a polled
-      // 401 carries, so admission, the armed instant, and the release
-      // conditions behave identically.
-      entry.suspension = applyCycleOutcome(
-        entry.suspension,
-        MANUAL_TEST_AUTH_ERROR,
-        entry.account.keyIdentity,
-        wallNow(),
-      ).state;
-      // The owed attempt (if never dispatched) is moot for a refused key;
-      // one already in flight settles normally.
+      // The D-064 re-entry is the observation wrapper's single application
+      // to the shared store (under the tested key's identity); the
+      // engine-side half drops the owed attempt (if never dispatched) — a
+      // key the provider just refused has nothing left to try, and the
+      // probe cadence owns the next attempt.
       entry.pendingManualTest = false;
       kick();
       return true;

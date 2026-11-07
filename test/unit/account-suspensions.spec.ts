@@ -10,12 +10,13 @@ import { classifySuccess, classifyTransportError } from '../../src/services/poll
 import { TransportStatusError } from '../../src/providers/transport';
 
 /**
- * The composition-level D-064 holder (task U-040, decision D-140; the
- * polled-cycle feed since U-051/D-176): the per-account default, the
- * manual-test release, the rejection re-entry with a fresh 60-minute
- * window, the polled-outcome feed that keeps the holder in lockstep with
- * the polling engine's own machine, and per-account isolation — every
- * expectation is D-064's own, observed through the holder the composition
+ * The single D-064 suspension store (task U-040, decision D-140; the
+ * polled-cycle feed since U-051/D-176; the single-holder unification
+ * FSM-3/D-189): the per-account default, the manual-test release, the
+ * rejection re-entry with a fresh 60-minute window, the polled-outcome
+ * feed (the scheduler's settle path is the one application site), the
+ * admission gate over the store, and per-account isolation — every
+ * expectation is D-064's own, observed through the store the composition
  * wires into `suspensionOf`. Time is data (D-021): a fixed clock, no
  * timers.
  */
@@ -93,11 +94,13 @@ describe('createAccountSuspensions', () => {
     suspensions.manualTestRejected('work', KEY_A);
     expect(isSuspended(suspensions.suspensionOf('work'))).toBe(true);
     // The same identity is a no-op (idempotent reporting, D-064)…
-    suspensions.reportKeyIdentity('work', KEY_A);
+    expect(suspensions.reportKeyIdentity('work', KEY_A)).toBe(false);
     expect(isSuspended(suspensions.suspensionOf('work'))).toBe(true);
-    // …a different identity releases the episode.
-    suspensions.reportKeyIdentity('work', KEY_B);
+    // …a different identity releases the episode — and reports whether it
+    // changed, the scheduler's release re-anchor condition (D-189).
+    expect(suspensions.reportKeyIdentity('work', KEY_B)).toBe(true);
     expect(suspensions.suspensionOf('work').suspended).toBe(false);
+    expect(suspensions.reportKeyIdentity('work', KEY_B)).toBe(false); // still idempotent
   });
 
   it('is idempotent per event and isolates accounts', () => {
@@ -170,6 +173,59 @@ describe('createAccountSuspensions', () => {
       // Dropping an unknown (or already-dropped) account is a no-op.
       suspensions.dropAccount('nobody');
       expect(suspensions.suspensionOf('nobody')).toEqual(INITIAL_SUSPENSION_STATE);
+    });
+  });
+
+  describe('admitVerification — the dispatch gate over the store (FSM-3, D-189)', () => {
+    it('admits at/after the armed instant and persists the re-armed window', () => {
+      // Exactly at the boundary: the admission boundary admits (D-064).
+      const atBoundary = holder();
+      atBoundary.suspensions.manualTestRejected('work', KEY_A); // armed at T0 + 60 min
+      atBoundary.clock.advance(AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS);
+      const admitted = atBoundary.suspensions.admitVerification('work');
+      expect(admitted.admitted).toBe(true);
+      if (!admitted.admitted) return;
+      expect(admitted.state.nextVerificationAtEpochMs).toBe(
+        T0 + 2 * AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS,
+      );
+      // The re-arm is IN the store — the pacing survives a lost outcome.
+      const state = atBoundary.suspensions.suspensionOf('work');
+      expect(isSuspended(state)).toBe(true);
+      if (!isSuspended(state)) return;
+      expect(state.nextVerificationAtEpochMs).toBe(
+        T0 + 2 * AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS,
+      );
+
+      // One ms before the arm: too early, and the store keeps the window.
+      const before = holder();
+      before.suspensions.manualTestRejected('work', KEY_A);
+      before.clock.advance(AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS - 1);
+      expect(before.suspensions.admitVerification('work')).toEqual({
+        admitted: false,
+        reason: 'too-early',
+        nextVerificationAtEpochMs: T0 + AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS,
+      });
+      const untouched = before.suspensions.suspensionOf('work');
+      expect(isSuspended(untouched)).toBe(true);
+      if (!isSuspended(untouched)) return;
+      expect(untouched.nextVerificationAtEpochMs).toBe(
+        T0 + AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS,
+      );
+    });
+
+    it('denies a not-suspended (or unknown) account without touching the store', () => {
+      const { suspensions } = holder();
+      expect(suspensions.admitVerification('unknown')).toEqual({
+        admitted: false,
+        reason: 'not-suspended',
+      });
+      suspensions.manualTestRejected('work', KEY_A);
+      suspensions.manualTestRequested('work'); // released
+      expect(suspensions.admitVerification('work')).toEqual({
+        admitted: false,
+        reason: 'not-suspended',
+      });
+      expect(suspensions.suspensionOf('work').suspended).toBe(false);
     });
   });
 });

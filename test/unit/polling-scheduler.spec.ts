@@ -6,6 +6,8 @@ import {
 } from '../../src/providers/transport';
 import type { Clock } from '../../src/util/clock';
 import { AppConfigSchema } from '../../src/schemas/config';
+import { createAccountSuspensions } from '../../src/services/account-suspensions';
+import type { AccountSuspensions } from '../../src/services/account-suspensions';
 import {
   classifySuccess,
   classifyTransportError,
@@ -68,6 +70,11 @@ function makeGate(): Gate {
 
 interface Harness {
   readonly scheduler: PollingScheduler;
+  /**
+   * The D-064 store the engine reads/writes (FSM-3, D-189) — the same
+   * instance the composition would share with the status seam.
+   */
+  readonly suspensions: AccountSuspensions;
   /** `id` → attempt-start timestamps (the faked clock's ms). */
   readonly starts: Map<string, number[]>;
   /** Max in-flight attempts observed across all accounts (live reader). */
@@ -116,6 +123,8 @@ function timersClock(): Clock {
 
 function harness(options: HarnessOptions = {}): Harness {
   const ids = options.ids ?? [];
+  const clock = options.clock ?? timersClock();
+  const suspensions = createAccountSuspensions({ clock });
   const starts = new Map<string, number[]>(ids.map((id) => [id, []]));
   const settleCalls = new Map<string, number>(ids.map((id) => [id, 0]));
   const attemptCalls = new Map<string, number>(ids.map((id) => [id, 0]));
@@ -185,7 +194,8 @@ function harness(options: HarnessOptions = {}): Harness {
   const scheduler = createPollingScheduler({
     accounts: ids.map((id) => account(id)),
     intervalMs: options.intervalMs ?? 60_000,
-    clock: options.clock ?? timersClock(),
+    clock,
+    suspensions,
     random: options.random ?? (() => 0),
     cycleHangThresholdMs: options.cycleHangThresholdMs,
     inFlight: options.inFlight,
@@ -194,6 +204,7 @@ function harness(options: HarnessOptions = {}): Harness {
 
   return {
     scheduler,
+    suspensions,
     starts,
     maxGlobalInFlight: () => maxGlobal,
     maxPerAccountInFlight,
@@ -665,13 +676,18 @@ describe('auth-rejection suspension gating (spec §7.2)', () => {
         engine.scheduler.start();
         await clock.advanceMsAsync(0);
         expect(engine.attempts('a')).toBe(1); // the polled 401 suspends
-        // The request releases and owes an attempt; the provider's refusal
-        // (validateCredentials 401/403) re-enters the machine with a fresh
-        // 60-minute window and the owed attempt is dropped — §7.2's pause
-        // holds on the engine side of a refused manual test.
+        // The composed manual-test shape (D-189): the observation wrapper
+        // applies the D-064 events to the shared store, the engine bridges
+        // owe/drop the attempt. The request releases and owes an attempt;
+        // the provider's refusal (validateCredentials 401/403) re-enters
+        // the store with a fresh 60-minute window and the owed attempt is
+        // dropped — §7.2's pause holds on the engine side of a refused
+        // manual test.
         engine.scheduler.requestManualTest('a');
-        expect(engine.scheduler.manualTestRejected('a')).toBe(true);
+        engine.suspensions.manualTestRejected('a', 'key:a'); // the wrapper's application
+        expect(engine.scheduler.manualTestRejected('a')).toBe(true); // the bridge
         expect(engine.scheduler.manualTestRejected('nobody')).toBe(false);
+        expect(engine.suspensions.suspensionOf('a').suspended).toBe(true);
         await clock.advanceMsAsync(0);
         expect(engine.attempts('a')).toBe(1); // nothing dispatched
         await clock.advanceMsAsync(3_599_999);
@@ -692,6 +708,9 @@ describe('auth-rejection suspension gating (spec §7.2)', () => {
         engine.scheduler.start();
         await clock.advanceMsAsync(0);
         expect(engine.attempts('a')).toBe(1); // healthy: normal cadence armed
+        // The wrapper's store application (the tested key's identity), then
+        // the engine-side bridge — the composed wiring's order (D-189).
+        engine.suspensions.manualTestRejected('a', 'key:a');
         engine.scheduler.manualTestRejected('a');
         await clock.advanceMsAsync(59_999);
         expect(engine.attempts('a')).toBe(1); // the interval poll is paused
@@ -1391,10 +1410,12 @@ describe('review-round regression pins', () => {
           attempt: async () => ({ providerId: 'b' }),
           settleCycle: async () => classifySuccess(),
         };
+        const brokenClock = timersClock();
         const broken = createPollingScheduler({
           accounts: [account],
           intervalMs: 60_000,
-          clock: timersClock(),
+          clock: brokenClock,
+          suspensions: createAccountSuspensions({ clock: brokenClock }),
           random: () => 0,
           sleep: () => Promise.reject(new Error('broken sleep seam')),
         });
@@ -1441,36 +1462,57 @@ describe('review-round regression pins', () => {
 
 describe('createPollingScheduler validation', () => {
   const clock: Clock = { now: () => 0, monotonicMs: () => 0 };
+  const suspensions: AccountSuspensions = createAccountSuspensions({ clock });
 
   it('rejects an interval outside §7.1', () => {
     for (const intervalMs of [59_999, 3_600_001, 300_000.5, 0, -1]) {
-      expect(() => createPollingScheduler({ intervalMs, clock })).toThrow(RangeError);
+      expect(() => createPollingScheduler({ intervalMs, clock, suspensions })).toThrow(RangeError);
     }
   });
 
   it('accepts the §7.1 boundaries', () => {
-    expect(() => createPollingScheduler({ intervalMs: 60_000, clock })).not.toThrow();
-    expect(() => createPollingScheduler({ intervalMs: 3_600_000, clock })).not.toThrow();
+    expect(() => createPollingScheduler({ intervalMs: 60_000, clock, suspensions })).not.toThrow();
+    expect(() =>
+      createPollingScheduler({ intervalMs: 3_600_000, clock, suspensions }),
+    ).not.toThrow();
   });
 
   it('rejects broken seams and options', () => {
-    expect(() => createPollingScheduler({ intervalMs: 60_000, clock: {} as Clock })).toThrow(
-      /clock/u,
-    );
-    expect(() => createPollingScheduler({ intervalMs: 60_000, clock, random: 5 as never })).toThrow(
-      /random/u,
-    );
     expect(() =>
-      createPollingScheduler({ intervalMs: 60_000, clock, sleep: 'x' as never }),
+      createPollingScheduler({ intervalMs: 60_000, clock: {} as Clock, suspensions }),
+    ).toThrow(/clock/u);
+    expect(() =>
+      createPollingScheduler({ intervalMs: 60_000, clock, suspensions, random: 5 as never }),
+    ).toThrow(/random/u);
+    expect(() =>
+      createPollingScheduler({ intervalMs: 60_000, clock, suspensions, sleep: 'x' as never }),
     ).toThrow(/sleep/u);
     expect(() =>
-      createPollingScheduler({ intervalMs: 60_000, clock, cycleHangThresholdMs: 0 }),
+      createPollingScheduler({ intervalMs: 60_000, clock, suspensions, cycleHangThresholdMs: 0 }),
     ).toThrow(/cycleHangThresholdMs/u);
     expect(() =>
-      createPollingScheduler({ intervalMs: 60_000, clock, inFlight: {} as never }),
+      createPollingScheduler({ intervalMs: 60_000, clock, suspensions, inFlight: {} as never }),
     ).toThrow(/inFlight/u);
     expect(() =>
-      createPollingScheduler({ intervalMs: 60_000, clock, accounts: 'x' as never }),
+      createPollingScheduler({
+        intervalMs: 60_000,
+        clock,
+        suspensions,
+        accounts: 'x' as never,
+      }),
     ).toThrow(/accounts/u);
+    // The D-064 store is required (FSM-3, D-189): the engine holds no
+    // suspension state of its own, so it cannot run without the shared
+    // holder — and a malformed one fails at assembly.
+    expect(() =>
+      createPollingScheduler({ intervalMs: 60_000, clock, suspensions: undefined as never }),
+    ).toThrow(/suspensions/u);
+    expect(() =>
+      createPollingScheduler({
+        intervalMs: 60_000,
+        clock,
+        suspensions: { suspensionOf: () => null as never } as never,
+      }),
+    ).toThrow(/suspensions/u);
   });
 });

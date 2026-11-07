@@ -24,29 +24,25 @@
  * registry's branded `AccountContext` (non-enumerable, D-013) and never
  * reach a log line.
  *
- * The D-064 seam, closed per D-140's plan: the engine's internal state
- * machine gates dispatch, while the composition's holder
- * (`AccountSuspensions`) stays the seam `/api/status` and the manual-test
- * flow read. Every settled, non-stale cycle outcome is therefore fed to the
- * holder beside the engine's own consumption — the same pure transitions on
- * the same events keep the two machines in lockstep, so a polled 401 shows
- * `Auth rejected` even after a later inconclusive probe run (the §7.3
- * no-downgrade rule D-064 pinned) and a polled success lifts the pause.
- * Staleness mirrors the engine's own mid-flight entry discard exactly: the
- * wiring tracks per-account continuity (an epoch that survives mere
- * rebuilds but bumps when the account left the polled set or changed key),
- * so an old flight's outcome suspends neither a re-keyed account nor a
- * removed-and-re-added one, while a kept account's rebuild keeps feeding.
- * An account that leaves the polled set drops its holder episode beside the
- * engine's dropped entry (suspension is process memory — D-064's restart
- * consequence — and the D-070 run-evidence arm covers the display for the
- * first post-return cycle). The manual-test half rides the observation
- * wrapper's bridges into {@link PollingScheduler.requestManualTest} and
- * {@link PollingScheduler.manualTestRejected}: the engine releases and owes
- * one attempt on the request, and re-enters suspension with a fresh
- * 60-minute window when the provider refuses the key — §7.2's pause holds
- * on both sides of a manual test, and the sequential and overlap rules of
- * D-066 hold for every owed attempt.
+ * The D-064 seam, closed per D-140's plan and unified by FSM-3 (D-189): the
+ * composition's {@link AccountSuspensions} holder is THE suspension store —
+ * the same instance is injected here (and forwarded to the scheduler), read
+ * by `/api/status` through `suspensionOf`, and fed by the manual-test
+ * observation. The engine's dispatch gates read and write that one store
+ * (its settle path applies every non-stale cycle outcome to it, behind its
+ * own mid-flight staleness rule: an outcome whose flight's wiring was
+ * removed or re-keyed is discarded), so a polled 401 shows `Auth rejected`
+ * even after a later inconclusive probe run (the §7.3 no-downgrade rule
+ * D-064 pinned) and a polled success lifts the pause — with no second
+ * machine to keep in step. An account that leaves the polled set drops its
+ * episode through the engine's own `setAccounts` diff. The manual-test half
+ * rides the observation wrapper's bridges into {@link
+ * PollingScheduler.requestManualTest} and {@link
+ * PollingScheduler.manualTestRejected}: the engine releases and owes one
+ * attempt on the request, and drops the owed attempt when the provider
+ * refuses the key (the re-entry itself is the wrapper's application to the
+ * store) — §7.2's pause holds on both sides of a manual test, and the
+ * sequential and overlap rules of D-066 hold for every owed attempt.
  *
  * §6.4 reloads arrive through {@link PollingEngine.applyReloadChanges} —
  * the composition's `applyReload` calls it beside the D-128 config-sync, so
@@ -98,7 +94,12 @@ export interface PollingEngineOptions {
   readonly env: NodeJS.ProcessEnv;
   /** The registry the wiring resolves each account's adapter through (§8.1). */
   readonly registry: ProviderRegistry;
-  /** The composition's D-064 holder — the status seam fed beside the engine. */
+  /**
+   * The D-064 suspension store (FSM-3, D-189) — the ONE holder the
+   * composition wires: forwarded to the scheduler (whose dispatch gates
+   * read/write it), read by the status routes (`suspensionOf`), and fed by
+   * the manual-test observation. One instance per process per account.
+   */
   readonly suspensions: AccountSuspensions;
   /**
    * The repository the recorders settle through — the composition's lazy
@@ -144,17 +145,19 @@ export interface PollingEngine {
    */
   applyReloadChanges(result: ReloadSuccess): void;
   /**
-   * The manual-test bridge (§7.2): owes the account one attempt through the
-   * dispatch loop and releases the engine's own D-064 machine. Wired from
-   * the observation wrapper's `onManualTestRequested`.
+   * The manual-test bridge (§7.2): applies the D-064 release through the
+   * shared store (the idempotent no-op after the observation wrapper's own
+   * application) and owes the account one attempt through the dispatch
+   * loop. Wired from the observation wrapper's `onManualTestRequested`.
    */
   requestManualTest(accountId: string): void;
   /**
-   * The rejection half of the bridge (§7.2): a manual test refused the key,
-   * so the engine's own D-064 machine re-enters suspension with a fresh
-   * 60-minute window (and drops any still-owed attempt) instead of
-   * continuing normal polling under the refused key. Wired from the
-   * observation wrapper's `onManualTestRejected`.
+   * The rejection half of the bridge (§7.2): a manual test refused the key;
+   * the D-064 re-entry is the observation wrapper's single application to
+   * the shared store (under the tested key's identity) — this engine-side
+   * half drops any still-owed manual attempt, leaving the next attempt to
+   * the probe cadence. Wired from the observation wrapper's
+   * `onManualTestRejected`.
    */
   manualTestRejected(accountId: string): void;
 }
@@ -200,73 +203,52 @@ export function createPollingEngine(options: PollingEngineOptions): PollingEngin
   const scheduler = (options.schedulerFactory ?? createPollingScheduler)({
     intervalMs: intervalMsOf(config()),
     clock,
+    suspensions,
     inFlight,
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
   });
 
-  /**
-   * The CURRENT wiring's per-account continuity — identity plus an epoch
-   * that survives mere rebuilds (a label change) but bumps whenever the
-   * account left the polled set or changed key. The settle wrapper's
-   * staleness rule reads it: an outcome feeds the holder only when the
-   * wiring that produced it is still the live one, mirroring the engine's
-   * own mid-flight entry-identity discard exactly (a removed-and-re-added
-   * account under the SAME key gets a fresh engine entry — and a fresh
-   * epoch here — so the old flight's outcome suspends neither; a kept,
-   * rebuilt account keeps both).
-   */
-  const wiringEpochs = new Map<string, { identity: string; epoch: number }>();
-  let nextEpoch = 1;
   let started = false;
 
   /**
-   * Wraps one recorder's settle seam with the holder feed: the engine
-   * consumes the classification for its own gates; the holder — the status
-   * seam — receives the same outcome, unless the wiring that produced it
-   * was replaced or removed mid-flight (stale, per the epochs above).
+   * Wraps one recorder's settle seam with the server's diagnostics channel
+   * (D-066 deferred the engine's contained-failure visibility to this
+   * wiring): a throwing settlement is logged before the engine's own §7.2
+   * containment reschedules the account on the plain interval. The D-064
+   * feed is NOT here — the engine's settle path applies every non-stale
+   * outcome to the shared store itself (one application, one holder).
    */
-  const settleWithHolderFeed = (
-    accountId: string,
-    keyIdentity: string,
-    epoch: number,
-    recorder: CycleRecorder,
-  ): ((result: CycleRetryResult<unknown>) => CycleOutcome) => {
-    return (result) => {
-      let classified: CycleOutcome;
+  const settleWithDiagnostics =
+    (
+      accountId: string,
+      recorder: CycleRecorder,
+    ): ((result: CycleRetryResult<unknown>) => CycleOutcome) =>
+    (result) => {
       try {
-        classified = recorder.settleCycle(result);
+        return recorder.settleCycle(result);
       } catch (error) {
-        // D-066 deferred contained-failure diagnostics to the server logger
-        // wiring — this module is that wiring. The engine contains the throw
-        // per §7.2 (the account reschedules on the plain interval); the
-        // record makes the broken seam visible instead of silent.
         logger.warn('polling: cycle settlement failed; the failure is contained', {
           accountId,
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
       }
-      if (wiringEpochs.get(accountId)?.epoch === epoch) {
-        suspensions.polledCycleOutcome(accountId, classified, keyIdentity);
-      }
-      return classified;
     };
-  };
 
   /**
    * Builds the pollable wiring from a configuration: the enabled,
    * secret-resolvable, registered accounts. Skips are logged with their
    * reason (never their secret); the pollable count rides the caller's
    * lifecycle record. Accounts that LEFT the polled set (removed,
-   * disabled, key lost) drop their holder episode beside the engine's own
-   * dropped state — suspension is process memory (D-064's restart
-   * consequence), so a disable/re-enable or remove/re-add cycle starts both
-   * machines fresh and the D-070 run-evidence arm covers the display for
-   * the first post-return cycle.
+   * disabled, key lost) drop their D-064 episode through the engine's own
+   * `setAccounts` diff (the shared store's drop beside the dropped entry)
+   * — suspension is process memory (D-064's restart consequence), so a
+   * disable/re-enable or remove/re-add cycle starts the machine fresh and
+   * the D-070 run-evidence arm covers the display for the first
+   * post-return cycle.
    */
   const buildWiring = (current: Config): PollingAccount[] => {
     const wiring: PollingAccount[] = [];
-    const epochs = new Map<string, { identity: string; epoch: number }>();
     for (const account of current.accounts ?? []) {
       const skip = (level: 'debug' | 'warn', reason: string): void => {
         logger[level](`polling: account '${account.id}' is not polled (${reason})`, {
@@ -296,9 +278,6 @@ export function createPollingEngine(options: PollingEngineOptions): PollingEngin
         continue;
       }
       const keyIdentity = keyIdentityOfSecret(secret);
-      const previous = wiringEpochs.get(account.id);
-      const epoch =
-        previous !== undefined && previous.identity === keyIdentity ? previous.epoch : nextEpoch++;
       const recorder = createRecorder({
         account: createAccountContext(account.id, account.label, secret),
         provider: registry.get(account.providerId),
@@ -306,20 +285,14 @@ export function createPollingEngine(options: PollingEngineOptions): PollingEngin
         clock,
         intervalSeconds: intervalSecondsOf(config),
       });
-      epochs.set(account.id, { identity: keyIdentity, epoch });
       wiring.push({
         accountId: account.id,
         keyIdentity,
         attempt: recorder.attempt,
-        settleCycle: settleWithHolderFeed(account.id, keyIdentity, epoch, recorder),
+        settleCycle: settleWithDiagnostics(account.id, recorder),
         abandonCycle: recorder.abandonCycle,
       });
     }
-    for (const id of wiringEpochs.keys()) {
-      if (!epochs.has(id)) suspensions.dropAccount(id);
-    }
-    wiringEpochs.clear();
-    for (const [id, entry] of epochs) wiringEpochs.set(id, entry);
     return wiring;
   };
 
@@ -329,10 +302,11 @@ export function createPollingEngine(options: PollingEngineOptions): PollingEngin
       // §7.1: the first collection runs immediately after startup — the
       // wiring lands before the loop starts, so the fresh entries' immediate
       // dues carry into the first dispatch pass (D-066).
-      scheduler.setAccounts(buildWiring(config()));
+      const wiring = buildWiring(config());
+      scheduler.setAccounts(wiring);
       scheduler.start();
       started = true;
-      logger.info('polling engine started', { accounts: wiringEpochs.size });
+      logger.info('polling engine started', { accounts: wiring.length });
     },
     async stop() {
       // Prompt by D-066's design: the loop exits, live flights are aborted
