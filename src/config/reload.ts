@@ -18,9 +18,10 @@
  * the service's memory, so the three-way classification stays here. The UI
  * labels `restartRequired` fields "restart required" with a `quotameter
  * restart` hint (spec §6.4). Signal installation is not here:
- * `src/server/main.ts` deliberately leaves SIGHUP unhandled, and the
- * later assembly task wires `process.on('SIGHUP', …)` to `reload()` (the
- * D-024 readiness discipline); until then production behavior is identical.
+ * `src/server/main.ts` wires `process.on('SIGHUP', …)` (U-052, D-177) to
+ * the composition-wrapped reload, of which the bare `reloader.reload()`
+ * here is one part (the D-128 config-sync and the D-176 polling feeds ride
+ * the same wrapper).
  *
  * Startup is not here either: §6.2's "invalid startup configuration, refuse
  * to start" stays with the composition root. The reloader is constructed

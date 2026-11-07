@@ -5,7 +5,8 @@
  * "for systemd and debugging" and the one the generated unit's `ExecStart`
  * pins (`<node> <cli> run`, §5.4): it starts the real server through
  * `runServer` (task 060's callable — the runtime gate, the composed
- * application, SIGTERM/SIGINT graceful shutdown) and forwards its exit code.
+ * application, SIGTERM/SIGINT graceful shutdown, and since U-052/D-177
+ * SIGHUP → configuration reload) and forwards its exit code.
  *
  * The server entry point is imported LAZILY, inside the handler, on purpose:
  * `buildCommandTable()` loads for every CLI invocation, and a static import

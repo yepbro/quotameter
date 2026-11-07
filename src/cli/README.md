@@ -748,12 +748,27 @@ read-only), and the task 068 pipeline the service itself re-runs on SIGHUP.
 - **Exit codes** — 0 exactly when the configuration validated and SIGHUP was
   delivered; every other outcome exits 1. The handler never throws.
 
+The receiving end is the server runtime since U-052 (D-177): `runServer`
+installs the SIGHUP handler whenever a reload operation exists — the
+production path always, once the application is running, via the
+composition's fault-containing wrapper — so the delivered signal performs
+§6.4's reload through the same wrapped operation the stores flow through
+(config-sync and polling feeds included) instead of terminating the
+process. Residual windows (D-177): during startup — after the §5.6 lock
+exists but before the handler installs, exactly the pid `quotameter
+reload` discovers — and in the post-dispose shutdown tail, a delivered
+SIGHUP still terminates (the OS default; systemd's `Restart=on-failure`
+recovers).
+
 Branch coverage: every outcome is seam-driven in
 `test/unit/cli-service-reload.spec.ts` (beside the payload-parse table and the
 production seams against real directories and real child processes); the three
 real-launcher routes — not-running, rejected with no signal delivered to a live
 signal-holding child, and accepted with the child's SIGHUP marker appearing
-after exit 0 — are pinned in `test/integration/cli-service-reload.spec.ts`.
+after exit 0 — are pinned in `test/integration/cli-service-reload.spec.ts`;
+the server side (a real SIGHUP to a real `quotameter run` child: alive, the
+effective configuration changed, §6.2 keep-last-valid on rejection) is pinned
+in `test/integration/cli-run.spec.ts`.
 
 ## The `status` command (task 142, spec §5.2/§7.3, decision D-114)
 
@@ -1118,7 +1133,8 @@ thinnest in the layer:
 - **Exit-code forwarding, no output** — `runServer` owns the process
   semantics unchanged: the runtime gate, the §6.2 refuse-to-start (reported
   through its own `quotameter:` stderr channel), the §5.6 graceful
-  SIGTERM/SIGINT shutdown, and U-022's best-effort stop on startup failure
+  SIGTERM/SIGINT shutdown, since U-052 the SIGHUP configuration reload
+  (D-177), and U-022's best-effort stop on startup failure
   (D-095). The handler adds nothing: a foreground service's stdout is the
   §16 structured-log JSON stream journald collects. §5.2 defines no options
   and no positionals for the command.

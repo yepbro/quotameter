@@ -38,9 +38,12 @@
  *    reload wrapper, and bridges manual-test requests into the engine —
  *    D-140's polling deferral is discharged.
  *
- * Not wired here, on purpose (D-140 records them): SIGHUP → reload (the
- * D-024 readiness seam owns process-signal wiring). The sessions-backed
- * `isAuthenticated` IS wired since task U-041 (D-146):
+ * Process signals stay out of here on purpose (D-140's record, discharged
+ * by D-177): the composition owns the reload OPERATION — the wrapper
+ * below, published on the composed result as `applyReload` and
+ * `reloadOnSighup` — while `src/server/main.ts` owns
+ * `process.on('SIGHUP', …)` through the D-024 readiness seam. The
+ * sessions-backed `isAuthenticated` IS wired since task U-041 (D-146):
  * `createSessionAuthenticator` over the lazy repository and the shared
  * clock, beside the login/logout routes it pairs with.
  */
@@ -49,7 +52,7 @@ import { loadConfigWithEnv } from '../config/env';
 import { configFilePath } from '../config/load';
 import { enforceConfigPermissions } from '../config/permissions';
 import { resolvePaths } from '../config/paths';
-import { createConfigReloader, type ReloadResult } from '../config/reload';
+import { createConfigReloader, type ReloadResult, type ReloadSuccess } from '../config/reload';
 import { ProviderRegistry, type QuotaProvider } from '../providers/registry';
 import { createAccountSuspensions, keyIdentityOfSecret } from '../services/account-suspensions';
 import { MIGRATIONS } from '../storage/migrations';
@@ -138,6 +141,29 @@ export interface ComposedApplication {
    * holder; resolves once the storage component has started).
    */
   readonly repository: QuotaRepository;
+  /**
+   * The composition-wrapped §6.4 reload — the operation behind every
+   * configuration mutation (the stores' owner) and behind SIGHUP: the bare
+   * reloader plus the D-128 config-sync, the D-064 key-identity reports,
+   * and the D-176 polling feeds. Published since U-052 (D-177) so the
+   * server runtime and tests reach the same wrapped reload the stores
+   * flow through — never a bare `reloader.reload()`.
+   */
+  readonly applyReload: () => Promise<ReloadResult>;
+  /**
+   * The runtime's SIGHUP face of {@link ComposedApplication.applyReload}
+   * (U-052, D-177): one fire-and-forget call that contains every fault at
+   * `error` through the shared logger — a signal handler must never throw
+   * synchronously and never leave an unhandled rejection. The containment
+   * distinguishes the two fault worlds: a fault before the reloader adopts
+   * keeps the last valid configuration effective (§6.2, D-026), while a
+   * fault in the follow-up application (after adoption) is recorded as
+   * what it is — the new configuration effective, storage/polling
+   * possibly lagging. The §16 outcome records are the reloader's own
+   * (`info` on success, `warn` on rejection); this face adds only the
+   * `debug` arrival note and the fault arms.
+   */
+  readonly reloadOnSighup: () => void;
 }
 
 /* ── The config-sync (D-128's pre-sync gap) ─────────────────────────────── */
@@ -329,16 +355,56 @@ export async function composeApplication(
   // interval changes (rebuilt wiring, re-anchored schedule) — the D-128
   // pre-sync seam, so storage rows, suspension state, and the polling
   // schedule can never disagree about one configuration.
-  const applyReload = async (): Promise<ReloadResult> => {
-    const result = await reloader.reload();
-    if (result.ok && result.applied.includes('accounts')) {
+  /** §6.4's follow-up application — one definition of "applying a reload". */
+  const applyReloadFollowUps = (result: ReloadSuccess): void => {
+    if (result.applied.includes('accounts')) {
       syncAccountsFromConfig(repository, result.effective.config, clock.now());
       for (const account of result.effective.config.accounts ?? []) {
         suspensions.reportKeyIdentity(account.id, resolvedKeyIdentity(account, env));
       }
     }
-    if (result.ok) pollingEngine.applyReloadChanges(result);
+    pollingEngine.applyReloadChanges(result);
+  };
+
+  const applyReload = async (): Promise<ReloadResult> => {
+    const result = await reloader.reload();
+    if (result.ok) applyReloadFollowUps(result);
     return result;
+  };
+
+  /**
+   * The runtime's SIGHUP face (U-052, D-177): the same reload the stores
+   * flow through, fired once and fire-and-forget, with every fault
+   * contained at `error`. The containment distinguishes the two fault
+   * worlds, whose consequences are OPPOSITE: a fault before the reloader
+   * adopts (an injected dependency inside the load pipeline) keeps the
+   * last valid configuration effective (D-026's contract), while a fault
+   * in the follow-up application happens AFTER the adoption — the new
+   * configuration is already effective and storage rows or the polling
+   * wiring may lag it, which the record must not misreport as "kept the
+   * old one". A rejected configuration is neither: the reloader answers
+   * it as the `rejected` result with its own §16 `warn` record, and the
+   * follow-ups never run.
+   */
+  const reloadOnSighup = (): void => {
+    void (async (): Promise<void> => {
+      logger.debug('reloading configuration (SIGHUP)');
+      const result = await reloader.reload();
+      if (!result.ok) return;
+      try {
+        applyReloadFollowUps(result);
+      } catch (error) {
+        logger.error(
+          'configuration reload applied but its follow-up application failed; ' +
+            'storage and polling may lag the effective configuration',
+          { error },
+        );
+      }
+    })().catch((error: unknown) => {
+      logger.error('configuration reload failed; keeping the last valid configuration', {
+        error,
+      });
+    });
   };
 
   // The two configuration stores over one serialized file owner.
@@ -490,5 +556,5 @@ export async function composeApplication(
     pollingEngine.component,
     httpServer,
   ];
-  return { components, httpServer, repository };
+  return { components, httpServer, repository, applyReload, reloadOnSighup };
 }

@@ -3,8 +3,12 @@
 The application assembly point (spec §3, §5.6, §13, §15): the process entry
 point `main.ts` — runtime gate (Node.js ≥ 22.13.0 by numeric prefix, so a
 nightly of a supported line runs while anything below the line refuses;
-non-root; task 129, decision D-098), signal wiring, exit codes — whose
-`buildComponents()` (task U-040, decision D-140) now delegates to
+non-root; task 129, decision D-098), signal wiring (SIGTERM/SIGINT graceful
+shutdown; SIGHUP → configuration reload since U-052, decision D-177 —
+installed only when a reload operation exists, so bare-component embedders
+keep the OS default, and a foreground run deliberately survives a terminal
+disconnect), exit codes — whose `buildApplication()` (task U-040, decision
+D-140; called `buildComponents` before U-052) now delegates to
 `composition.ts`: `composeApplication()` resolves the §6.1 directories,
 enforces the §6.3 permissions eagerly (before the file's content is read),
 loads and validates through `loadConfigWithEnv` (§6.2's refuse-to-start),
@@ -19,12 +23,15 @@ serialized config-file owner, the D-064 suspension holder
 manual-test lift, the registry with observation-wrapped adapters
 (`providers.ts`, task U-040), and a lazy repository facade bridging eager
 route registration to the storage component's start-time open (the data
-directory exists only after the lock's start, D-017). Deliberately unwired
-(D-140's remaining loose end): SIGHUP → reload (the D-024 readiness seam);
-the sessions-backed `isAuthenticated` is wired since task U-041 (D-146) —
-`createSessionAuthenticator` over the lazy repository and the shared
-clock, beside the login/logout routes it pairs with. The polling engine
-itself (`polling.ts`, U-051/D-176) is described below. The
+directory exists only after the lock's start, D-017). The composed result
+also publishes the reload surface since U-052 (D-177): `applyReload` — the
+wrapper every store mutation flows through (the bare reloader plus the
+D-128 config-sync, the D-064 key-identity reports, and the D-176 polling
+feeds) — and `reloadOnSighup`, the fault-containing signal face `main.ts`
+wires to SIGHUP. The sessions-backed `isAuthenticated` is wired since
+task U-041 (D-146): `createSessionAuthenticator` over the lazy repository
+and the shared clock, beside the login/logout routes it pairs with. The
+polling engine itself (`polling.ts`, U-051/D-176) is described below. The
 lifecycle skeleton `app.ts`
 (task 060) is where components
 start in registration order and stop in reverse, realizing the §5.6 shutdown
@@ -745,9 +752,10 @@ drift guard's `Required<ApiRoutesOptions>` boot wiring the family.
 
 ## The composition stores and the config-sync (task U-040, spec §6.2–§6.4, §13, §15.2; decision D-140)
 
-`src/server/composition.ts` is the production assembly `buildComponents()`
-delegates to (see the module docblock for the full startup sequence and the
-deliberately-unwired seams). `config-stores.ts` implements the two
+`src/server/composition.ts` is the production assembly `buildApplication()`
+delegates to (see the module docblock for the full startup sequence; the
+reload surface it publishes since U-052 is described above).
+`config-stores.ts` implements the two
 consumer-owned seams over the real configuration file: one
 `ConfigFileOwner` serializes every mutation of both stores (accounts and
 settings edit the same file), and each mutation is a read-modify-write over

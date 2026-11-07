@@ -21,12 +21,16 @@ import { createTempDir } from '../helpers/isolation';
  * service's own public surface: the test waits for an answered
  * `GET /api/health` before signalling. An answered request proves the whole
  * `app.start()` settled (the listener is the last component) AND that the
- * SIGTERM handler is installed — the request is served from the event loop's
+ * signal handlers are installed — the request is served from the event loop's
  * macrotask queue, while `runServer`'s synchronous post-`await app.start()`
- * continuation (keep-alive interval, `installShutdownSignals`) runs on the
- * microtask queue first, so no answered request can precede the handlers.
- * Production never passes `onSignalsReady` (D-024's seam stays a test and
- * embedder channel); the health endpoint is the observable equivalent.
+ * continuation (keep-alive interval, `installShutdownSignals`, and since
+ * U-052/D-177 the SIGHUP reload handler) runs on the microtask queue first,
+ * so no answered request can precede the handlers. The SIGHUP test rides the
+ * same handshake: reload-and-stay-alive through the real runtime is the
+ * server-side pin of §6.4's signal channel (`quotameter reload`'s CLI side
+ * lives in `cli-service-reload.spec.ts`). Production never passes
+ * `onSignalsReady` (D-024's seam stays a test and embedder channel); the
+ * health endpoint is the observable equivalent.
  *
  * Every child gets the D-173 hermetic environment (session-manager
  * variables stripped) plus its own `QUOTAMETER_CONFIG_DIR`/`QUOTAMETER_DATA_DIR`
@@ -48,43 +52,63 @@ interface RunResult {
 }
 
 /**
+ * The environment every launcher child runs with: the D-173 hermetic set
+ * (session-manager variables stripped) with ALL ambient `QUOTAMETER_*`
+ * overrides removed except the two directory pins this suite owns —
+ * `hermeticChildEnv()` deliberately passes the overrides through (other
+ * suites set them on purpose), but an ambient
+ * `QUOTAMETER_LOGGING_LEVEL`/`QUOTAMETER_APP_POLLING_INTERVAL_SECONDS`
+ * would beat the configuration FILE (D-023: environment over file) and
+ * silently break this suite's log-line and interval assertions.
+ */
+function childEnv(configDir: string, dataDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(hermeticChildEnv())) {
+    if (name.startsWith('QUOTAMETER_')) continue;
+    env[name] = value;
+  }
+  env.QUOTAMETER_CONFIG_DIR = configDir;
+  env.QUOTAMETER_DATA_DIR = dataDir;
+  return env;
+}
+
+/**
  * Spawns the launcher with `args` over the given directories; resolves on
- * `close` (both streams drained) with code, signal, and output.
+ * `close` (both streams drained) with code, signal, and output. The live
+ * `stdoutText` reads what has been written so far — the reload test waits
+ * on §16 log lines from a child that is still running.
  */
 function runLauncher(
   args: readonly string[],
   configDir: string,
   dataDir: string,
-): { child: ChildProcess; exited: Promise<RunResult> } {
+): { child: ChildProcess; exited: Promise<RunResult>; stdoutText(): string } {
   const child = spawn(
     process.execPath,
     ['--import', 'jiti/register', '--import', GUARD, BIN, ...args],
     {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: REPO_ROOT,
-      env: {
-        ...hermeticChildEnv(),
-        QUOTAMETER_CONFIG_DIR: configDir,
-        QUOTAMETER_DATA_DIR: dataDir,
-      },
+      env: childEnv(configDir, dataDir),
     },
   );
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
   child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const stdoutText = (): string => Buffer.concat(stdout).toString('utf8');
   const exited = new Promise<RunResult>((resolve, reject) => {
     child.once('close', (code, signal) => {
       resolve({
         code,
         signal,
-        stdout: Buffer.concat(stdout).toString('utf8'),
+        stdout: stdoutText(),
         stderr: Buffer.concat(stderr).toString('utf8'),
       });
     });
     child.once('error', reject);
   });
-  return { child, exited };
+  return { child, exited, stdoutText };
 }
 
 /** Kills the child unless it has already exited. */
@@ -164,6 +188,101 @@ describe('quotameter run (real launcher)', () => {
         // The pre-logger fatal channel stayed silent: no startup or stop
         // failure was reported (node:sqlite's ExperimentalWarning is
         // expected stderr noise for a real database open, not an error).
+        expect(result.stderr).not.toMatch(/quotameter: /);
+      } finally {
+        if (spawned) killIfAlive(spawned);
+        await dir.remove();
+      }
+    },
+    LAUNCHER_TIMEOUT,
+  );
+
+  it(
+    'reloads configuration on a real SIGHUP, stays alive, and keeps the last valid configuration on a rejected one (§6.4/§5.2)',
+    async () => {
+      const port = await reservePort();
+      const dir = await createTempDir('qm-run-sighup-u052-');
+      let spawned: ChildProcess | undefined;
+      try {
+        const configDir = join(dir.path, 'config');
+        await mkdir(configDir, { recursive: true, mode: 0o700 });
+        const configPath = configFilePath(configDir);
+        // 'info' lets the §16 reload records reach the child's stdout, the
+        // stream journald collects in production — the assertions read the
+        // documented vocabulary, not test-only output.
+        const writeConfig = async (intervalSeconds: number): Promise<void> => {
+          await writeConfigFile(configPath, {
+            app: { timezone: 'UTC', pollingIntervalSeconds: intervalSeconds },
+            server: { host: '127.0.0.1', port },
+            logging: { level: 'info' },
+          });
+        };
+        await writeConfig(60);
+        const dataDir = join(dir.path, 'data');
+        const started = runLauncher(['run'], configDir, dataDir);
+        spawned = started.child;
+
+        // The readiness handshake (suite header): an answered request proves
+        // the whole `app.start()` settled AND every signal handler — SIGHUP
+        // included (U-052/D-177) — is installed.
+        await vi.waitFor(
+          async () => {
+            const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+            expect(response.status).toBe(200);
+          },
+          { timeout: HEALTH_WAIT_TIMEOUT_MS, interval: 100 },
+        );
+
+        const statusInterval = async (): Promise<number> => {
+          const response = await fetch(`http://127.0.0.1:${port}/api/status`);
+          expect(response.status).toBe(200);
+          const body = (await response.json()) as { pollingIntervalSeconds?: number };
+          expect(body.pollingIntervalSeconds).toBeDefined();
+          return body.pollingIntervalSeconds ?? -1;
+        };
+        expect(await statusInterval()).toBe(60);
+
+        // A valid change: SIGHUP must reload it into the live service. The
+        // default SIGHUP disposition would terminate the child here — the
+        // very defect U-052 closes.
+        await writeConfig(120);
+        spawned.kill('SIGHUP');
+        await vi.waitFor(
+          async () => {
+            expect(await statusInterval()).toBe(120);
+          },
+          { timeout: HEALTH_WAIT_TIMEOUT_MS, interval: 100 },
+        );
+        expect(spawned.exitCode).toBeNull();
+        expect(spawned.signalCode).toBeNull();
+
+        // A rejected change (§6.2): the process stays alive on the last
+        // valid configuration; the §16 warn record is the observable
+        // rejection report (the status route keeps answering 120).
+        await writeFile(configPath, '{"app": "not an object"}\n');
+        spawned.kill('SIGHUP');
+        await vi.waitFor(
+          () => {
+            expect(started.stdoutText()).toContain(
+              '"msg":"configuration reload rejected; keeping the last valid configuration"',
+            );
+          },
+          { timeout: HEALTH_WAIT_TIMEOUT_MS, interval: 100 },
+        );
+        expect(await statusInterval()).toBe(120);
+        expect(spawned.exitCode).toBeNull();
+        // Both §16 outcome records reached the log stream: the reloader's
+        // info success line beside its warn rejection line.
+        expect(started.stdoutText()).toContain('"msg":"configuration reloaded"');
+
+        // After both reloads the shutdown path is untouched: SIGTERM still
+        // exits cleanly with the §5.6 lock released and the fatal channel
+        // silent.
+        spawned.kill('SIGTERM');
+        const result = await started.exited;
+        expect(result.code).toBe(0);
+        expect(result.signal).toBeNull();
+        expect(existsSync(lockFilePath(dataDir))).toBe(false);
         expect(result.stderr).not.toMatch(/quotameter: /);
       } finally {
         if (spawned) killIfAlive(spawned);

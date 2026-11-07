@@ -25,7 +25,7 @@ import { startMockProviderServer, type MockProviderServer } from '../../helpers/
  * The task-183 acceptance harness (spec §17.1, §14): the §17.1 acceptance
  * scenarios run against the production Vite build served by the REAL server
  * construction — `composeApplication` (the assembly `runServer` builds
- * through `buildComponents()`) started as a `QuotameterApp` on an ephemeral
+ * through `buildApplication()`) started as a `QuotameterApp` on an ephemeral
  * loopback port, with the REAL Z.ai adapter registered and pointed at the
  * task-026 loopback mock provider server through the adapter's own base-URL
  * seams. Every scenario the suite asserts is therefore the production path:

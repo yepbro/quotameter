@@ -23,7 +23,7 @@ import { createTempDir } from './isolation';
 /**
  * The task-164 cross-endpoint harness: the PRODUCTION composition
  * (`composeApplication`, decision D-140 — the same construction
- * `runServer` assembles through `buildComponents()`) over fresh temp
+ * `runServer` assembles through `buildApplication()`) over fresh temp
  * directories, so every sweep spec drives the real `/api` scope, the
  * real guards, the real config file, and a real migrated `node:sqlite`
  * database through `fastify.inject`. The only double is the provider
