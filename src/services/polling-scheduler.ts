@@ -56,6 +56,7 @@
 import type { Clock } from '../util/clock';
 import { TransportAbortError } from '../providers/transport';
 import type { CycleOutcome } from './polling-outcomes';
+import { STATUS_CONTRIBUTION_BY_OUTCOME } from './polling-outcomes';
 import { runCycleWithRetries, type CycleRetryResult } from './polling-retry';
 import { deferNextPoll } from './polling-retry-after';
 import {
@@ -111,6 +112,23 @@ export function pollingDelayMs(intervalMs: number, random: () => number): number
 }
 
 /* ── The hang threshold (D-066) ────────────────────────────────────────── */
+
+/**
+ * The auth-rejection classification of a manual test whose provider refused
+ * the key — the outcome `manualTestRejected` feeds the D-064 machine with,
+ * built from the landed tables exactly as the composition's holder builds
+ * its own (`account-suspensions.ts`), so the two machines re-enter on
+ * identical data.
+ */
+const MANUAL_TEST_AUTH_ERROR: CycleOutcome = Object.freeze({
+  outcome: 'auth_error',
+  httpStatus: undefined,
+  retryAfterRaw: undefined,
+  retryAfterEligible: false,
+  retryable: false,
+  statusContribution: STATUS_CONTRIBUTION_BY_OUTCOME.auth_error,
+  errorMessage: undefined,
+}) as CycleOutcome;
 
 /**
  * The default point past which an unsettled cycle stops holding other
@@ -261,6 +279,17 @@ export interface PollingScheduler {
    * unconditional). Returns false for an unknown account.
    */
   requestManualTest(accountId: string): boolean;
+  /**
+   * A manual connection test refused the account's key (§7.2's 401/403 row
+   * reached from the manual-test path — the composition's bridge, D-176):
+   * feeds the engine's own D-064 machine an `auth_error` outcome under the
+   * CURRENT wiring's key identity (re-entering or re-arming suspension with
+   * a fresh 60-minute window) and drops any still-owed manual attempt — a
+   * key the provider just refused has nothing left to try; the probe cadence
+   * owns the next attempt. A cycle already in flight settles normally (its
+   * own outcome decides). Returns false for an unknown account.
+   */
+  manualTestRejected(accountId: string): boolean;
   /**
    * Stops scheduling (§5.6): aborts every live cycle and resolves once the
    * loop has exited — promptly, because cycle tasks are detached. The
@@ -863,6 +892,27 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       // review P2-3) and an interval change, and is consumed at dispatch —
       // through the loop, so the sequential and overlap rules hold (D-066).
       entry.pendingManualTest = true;
+      kick();
+      return true;
+    },
+
+    manualTestRejected(accountId) {
+      if (stopped) throw new Error('polling scheduler: the scheduler is stopped');
+      const entry = entries.get(accountId);
+      if (entry === undefined) return false;
+      // The D-064 outcome seam with the landed auth-error classification,
+      // under the wiring's own key identity — the same vocabulary a polled
+      // 401 carries, so admission, the armed instant, and the release
+      // conditions behave identically.
+      entry.suspension = applyCycleOutcome(
+        entry.suspension,
+        MANUAL_TEST_AUTH_ERROR,
+        entry.account.keyIdentity,
+        wallNow(),
+      ).state;
+      // The owed attempt (if never dispatched) is moot for a refused key;
+      // one already in flight settles normally.
+      entry.pendingManualTest = false;
       kick();
       return true;
     },

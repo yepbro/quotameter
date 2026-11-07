@@ -657,6 +657,52 @@ describe('auth-rejection suspension gating (spec §7.2)', () => {
     );
   });
 
+  it('re-suspends and drops the owed attempt when a manual test is refused (§7.2, D-176)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const engine = harness({ ids: ['a'] });
+        engine.script('a', (_result, call) => (call === 1 ? rejected() : classifySuccess()));
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(engine.attempts('a')).toBe(1); // the polled 401 suspends
+        // The request releases and owes an attempt; the provider's refusal
+        // (validateCredentials 401/403) re-enters the machine with a fresh
+        // 60-minute window and the owed attempt is dropped — §7.2's pause
+        // holds on the engine side of a refused manual test.
+        engine.scheduler.requestManualTest('a');
+        expect(engine.scheduler.manualTestRejected('a')).toBe(true);
+        expect(engine.scheduler.manualTestRejected('nobody')).toBe(false);
+        await clock.advanceMsAsync(0);
+        expect(engine.attempts('a')).toBe(1); // nothing dispatched
+        await clock.advanceMsAsync(3_599_999);
+        expect(engine.attempts('a')).toBe(1); // no normal poll, no early probe
+        await clock.advanceMsAsync(1); // the probe at exactly 60 min
+        expect(engine.attempts('a')).toBe(2);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
+  it('enters suspension from a healthy account when a manual test is refused (§7.2)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const engine = harness({ ids: ['a'] });
+        engine.script('a', () => classifySuccess());
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(engine.attempts('a')).toBe(1); // healthy: normal cadence armed
+        engine.scheduler.manualTestRejected('a');
+        await clock.advanceMsAsync(59_999);
+        expect(engine.attempts('a')).toBe(1); // the interval poll is paused
+        await clock.advanceMsAsync(3_540_001); // t = 3 600 000: the probe
+        expect(engine.attempts('a')).toBe(2);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
   it('keeps the probe cadence across a runtime interval change', async () => {
     await withFakeTimers(
       async (clock) => {
@@ -1178,6 +1224,7 @@ describe('stop (spec §5.6, D-020)', () => {
       expect(() => running.scheduler.setIntervalMs(60_000)).toThrow(/stopped/u);
       expect(() => running.scheduler.setAccounts([])).toThrow(/stopped/u);
       expect(() => running.scheduler.requestManualTest('a')).toThrow(/stopped/u);
+      expect(() => running.scheduler.manualTestRejected('a')).toThrow(/stopped/u);
     });
   });
 

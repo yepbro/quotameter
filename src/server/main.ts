@@ -69,19 +69,18 @@ export function verifyRuntime(facts: RuntimeFacts): void {
  *
  * Bootstrap stage (task 060): the skeleton ran with no components at all,
  * which is exactly the milestone "starts and stops cleanly without collecting
- * provider data". The composition root (task U-040, decision D-140) now
- * assembles the real service — configuration, storage, the wired API —
- * through `composeApplication`, in the order spec §5.6 shutdown semantics
- * require:
+ * provider data". The composition root (task U-040, decision D-140; the
+ * polling engine since U-051/D-176) assembles the real service —
+ * configuration, storage, the §5.6 graceful drain, the polling engine, the
+ * wired API — through `composeApplication`, in the order spec §5.6 shutdown
+ * semantics require:
  *
  * 1. single-instance lock (074) — before anything touches the data directory;
  * 2. storage connection (078+) — database handle, WAL checkpoint on shutdown;
- * 3. polling service (093+) — first collection right after startup (§7.1);
- * 4. HTTP listener (146) — last, so it serves a fully assembled application.
- *
- * The polling component registers when its construction task lands; until
- * then the composed service serves the API over the landed stores with the
- * §7.2 suspension holder as the polling-side seam.
+ * 3. graceful drain (075) — bounded wait for in-flight polling work;
+ * 4. polling engine (093+, composed by U-051) — first collection right
+ *    after startup (§7.1);
+ * 5. HTTP listener (146) — last, so it serves a fully assembled application.
  *
  * The function is async because the composition loads and validates the
  * configuration before any component exists (§6.2: an invalid startup

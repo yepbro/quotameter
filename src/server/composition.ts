@@ -23,19 +23,24 @@
  *    suspension holder (D-064), and the provider registry (§8.1) with each
  *    adapter wrapped for manual-test observation;
  * 6. assemble the components in §5.6's startup dependency order —
- *    `[single-instance-lock, storage, http-listener]` (the graceful drain
- *    and the polling engine register between storage and http when their
- *    tasks land; the holder is the suspension seam the engine will take
- *    over). The data directory is created by the LOCK's start (D-017), so
- *    storage opens inside its own component — the repository the routes
+ *    `[single-instance-lock, storage, graceful-drain, polling,
+ *    http-listener]` (the documented order of `shutdown.ts`: scheduling
+ *    stops first, the drain's bounded wait covers aborted cycles' actual
+ *    settlement while the database is still open, storage checkpoints and
+ *    closes behind it, the lock releases last). The data directory is
+ *    created by the LOCK's start (D-017), so storage opens inside its own
+ *    component — the repository the routes and the polling recorders
  *    receive is a lazy facade that resolves from the holder on first use
- *    and answers a clear wiring error before the app has started.
+ *    and answers a clear wiring error before the app has started. The
+ *    polling engine (U-051, D-176) builds one scheduler over the shared
+ *    clock and the shared in-flight tracker, one cycle recorder per
+ *    pollable account, feeds account/interval changes through the
+ *    reload wrapper, and bridges manual-test requests into the engine —
+ *    D-140's polling deferral is discharged.
  *
  * Not wired here, on purpose (D-140 records them): SIGHUP → reload (the
- * D-024 readiness seam owns process-signal wiring) and the polling
- * engine itself (its task owns polled-cycle dispatch; manual tests and
- * status reads keep working through this holder meanwhile). The
- * sessions-backed `isAuthenticated` IS wired since task U-041 (D-146):
+ * D-024 readiness seam owns process-signal wiring). The sessions-backed
+ * `isAuthenticated` IS wired since task U-041 (D-146):
  * `createSessionAuthenticator` over the lazy repository and the shared
  * clock, beside the login/logout routes it pairs with.
  */
@@ -68,7 +73,10 @@ import {
   type HttpServerOptions,
 } from './http';
 import { createInitialAccountProvider, observingManualTests } from './providers';
+import { createPollingEngine } from './polling';
+import type { PollingSleep } from '../services/polling-scheduler';
 import { createSingleInstanceLock } from './single-instance';
+import { createGracefulDrain, createInFlightTracker } from './shutdown';
 
 /* ── Inputs and results ─────────────────────────────────────────────────── */
 
@@ -108,6 +116,15 @@ export interface ComposeApplicationOptions {
    * production default the listener resolves on its own).
    */
   readonly staticRoot?: string;
+  /**
+   * Overrides the polling engine's wait seam — the composition's test seam
+   * for time-compressed integration tests: §7.1's 60-second interval floor
+   * makes a real-time "scheduled subsequent poll" observation unfit for the
+   * test gate, so the polling suite injects a scaled clock plus a sleep
+   * that divides by the same factor (the `port`/`staticRoot` precedent —
+   * production runs the scheduler's real abortable timer).
+   */
+  readonly pollingSleep?: PollingSleep;
 }
 
 /** The assembled application {@link composeApplication} returns. */
@@ -262,17 +279,44 @@ export async function composeApplication(
     logger,
   });
 
-  // D-064's holder and the registry with observation-wrapped adapters.
+  // D-064's holder, the registry, and the polling engine (U-051, D-176).
+  // The engine is constructed BEFORE the adapters register: it reads the
+  // registry only when its component starts (the wiring build), by which
+  // time registration has happened — so the observation wrapper can bridge
+  // manual-test requests into the engine from the start.
   const suspensions = createAccountSuspensions({ clock });
   const registry = new ProviderRegistry();
-  for (const provider of options.providers ?? [createInitialAccountProvider()]) {
-    registry.register(observingManualTests(provider, { suspensions }));
-  }
+  const inFlight = createInFlightTracker();
 
   // The storage component's mutable holder plus the lazy bridge the route
   // options capture now and resolve after start.
   const storageState: { connection?: StorageConnection; repository?: QuotaRepository } = {};
   const repository = createLazyRepository(storageState);
+
+  const now = (): number => clock.now();
+  const currentConfig = (): Config => reloader.current().config;
+
+  const pollingEngine = createPollingEngine({
+    clock,
+    logger,
+    env,
+    registry,
+    suspensions,
+    repository,
+    config: currentConfig,
+    inFlight,
+    ...(options.pollingSleep === undefined ? {} : { sleep: options.pollingSleep }),
+  });
+
+  for (const provider of options.providers ?? [createInitialAccountProvider()]) {
+    registry.register(
+      observingManualTests(provider, {
+        suspensions,
+        onManualTestRequested: pollingEngine.requestManualTest,
+        onManualTestRejected: pollingEngine.manualTestRejected,
+      }),
+    );
+  }
 
   // §6.4's application for every API-driven mutation: the reload itself,
   // then the config-sync whenever the account list changed. The stores
@@ -281,6 +325,10 @@ export async function composeApplication(
   // configured account's current key identity is reported (idempotent by
   // D-064's design), so a key rotation releases an episode that began under
   // the old key even with no polling engine in the composition.
+  // U-051's feed: the polling engine takes the same reload's account and
+  // interval changes (rebuilt wiring, re-anchored schedule) — the D-128
+  // pre-sync seam, so storage rows, suspension state, and the polling
+  // schedule can never disagree about one configuration.
   const applyReload = async (): Promise<ReloadResult> => {
     const result = await reloader.reload();
     if (result.ok && result.applied.includes('accounts')) {
@@ -289,6 +337,7 @@ export async function composeApplication(
         suspensions.reportKeyIdentity(account.id, resolvedKeyIdentity(account, env));
       }
     }
+    if (result.ok) pollingEngine.applyReloadChanges(result);
     return result;
   };
 
@@ -305,9 +354,6 @@ export async function composeApplication(
     repository,
     dataDir: paths.dataDir,
   });
-
-  const now = (): number => clock.now();
-  const currentConfig = (): Config => reloader.current().config;
 
   // §5.6 component 1: the single-instance lock — creates the data directory
   // and refuses a second process on it (D-017).
@@ -356,6 +402,25 @@ export async function composeApplication(
       }
     },
   };
+
+  // §5.6 component 3: the graceful drain (task 075, D-020) — a passive
+  // component until shutdown, when (after the scheduler and the listener
+  // have stopped) it waits — bounded at §5.6's ten seconds — for the
+  // in-flight polling work the scheduler registered in the shared tracker,
+  // so an aborted cycle's settlement races no database close.
+  const gracefulDrain = createGracefulDrain({
+    inFlight,
+    onEvent: (event) => {
+      if (event.type === 'drain-timeout') {
+        logger.warn('graceful drain timed out with polling work still in flight', {
+          inFlight: event.inFlight,
+          timeoutMs: event.timeoutMs,
+        });
+        return;
+      }
+      logger.debug('graceful drain', { ...event });
+    },
+  });
 
   // §5.6's last component: the HTTP listener with every landed route family
   // wired (the `auth` projection is D-121's documented 1:1 mapping; the
@@ -413,6 +478,17 @@ export async function composeApplication(
     },
   } satisfies HttpServerOptions);
 
-  const components: readonly LifecycleComponent[] = [lock, storage, httpServer];
+  // §5.6's order (the `shutdown.ts` docblock's documented list): the lock,
+  // storage, the drain, the polling engine, the listener — so teardown is
+  // listener → engine (stop scheduling, abort flights) → drain (bounded
+  // settlement wait, database still open) → storage (checkpoint, close) →
+  // lock.
+  const components: readonly LifecycleComponent[] = [
+    lock,
+    storage,
+    gracefulDrain,
+    pollingEngine.component,
+    httpServer,
+  ];
   return { components, httpServer, repository };
 }

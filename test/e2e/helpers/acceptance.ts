@@ -7,6 +7,7 @@ import { resolveUiDistDir } from '../../../src/server/http';
 import { configFilePath } from '../../../src/config/load';
 import { writeConfigFile } from '../../../src/config/write';
 import { ZaiCodingPlanProvider } from '../../../src/providers/zai-coding-plan/provider';
+import type { AccountContext, QuotaProvider } from '../../../src/providers/registry';
 import { persistCollectionCycle } from '../../../src/storage/collection-cycles';
 import type {
   CollectionCycleWrite,
@@ -202,11 +203,31 @@ export async function startAcceptanceServer(
 
     const sink = createMemoryLogSink();
     mock = await startMockProviderServer();
-    const provider = new ZaiCodingPlanProvider({
+    // The real adapter's credential check (`/models`) is exercised by the
+    // account-management scenarios; `fetchSnapshot` is doubled OFF: since
+    // the polling engine joined the composition (U-051, D-176), a reachable
+    // fetch would run the immediate first poll against the mock's default
+    // `200 {}` and persist runs into worlds whose marker/status counts pin
+    // exact seeded histories. The plain-`Error` rejection is the recorder's
+    // fail-fast shape (neither a TransportError nor an adapter parse
+    // failure) — contained by the engine per §7.2, persisting nothing (the
+    // wrapper delegates member-by-member because the adapter holds its
+    // state in `#private` fields a spread cannot carry). The live engine's
+    // own proof lives in `test/integration/composition-polling.spec.ts`.
+    const adapter = new ZaiCodingPlanProvider({
       codingBaseUrl: mock.url,
       apiBaseUrl: mock.url,
       timeoutMs: 2_000,
     });
+    const provider: QuotaProvider = {
+      id: adapter.id,
+      name: adapter.name,
+      ...(adapter.metricCatalog !== undefined ? { metricCatalog: adapter.metricCatalog } : {}),
+      validateCredentials: (account: AccountContext) => adapter.validateCredentials(account),
+      async fetchSnapshot(): Promise<never> {
+        throw new Error('polled collection is not under test in the acceptance worlds');
+      },
+    };
     const composed = await composeApplication({
       env: { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: dataDir },
       logger: createLogger({ level: 'info', destination: sink }),

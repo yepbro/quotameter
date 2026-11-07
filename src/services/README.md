@@ -299,10 +299,15 @@ key-change release on every configuration observation (idempotent by
 D-064's design), so a successful manual test lifts an `Auth rejected`
 pause, a refused one keeps it, and a key rotation releases it without a
 test. `keyIdentityOfSecret` is the single identity vocabulary (sha256 of
-the resolved secret) both observations share. The polling engine becomes
-the holding side for polled cycles when its composition task lands; this
-holder stays the composition's seam so the two cannot disagree. Unit-pinned
-in `test/unit/account-suspensions.spec.ts`.
+the resolved secret) both observations share. Since the polling engine
+joined the composition (U-051, D-176), `polledCycleOutcome` feeds the
+holder every settled, non-stale cycle classification — the same D-064
+events the engine's own internal machine consumes, so the two pure
+machines stay in lockstep (the engine gates dispatch; this holder is the
+`/api/status` seam) — and `dropAccount` drops an account's episode beside
+the engine's dropped entry when it leaves the polled set (the restart
+equivalence). Unit-pinned in
+`test/unit/account-suspensions.spec.ts`.
 
 Landed: [`polling-status.ts`](./polling-status.ts) — the account status
 derivation (task 111, decision D-070): `deriveAccountStatus(input,
@@ -358,7 +363,10 @@ reading (D-062: seconds only for a deferred 429, `NULL` otherwise),
 `intervalSeconds` is read at settle (§11.2's "interval in effect"), and §12.1
 reset-event detection (tasks 117/118) plugs into the success write's empty
 `events` array. The one-file widening of D-067's raw-payload gate for this
-write-side composer is recorded in D-069.
+write-side composer is recorded in D-069. The recorder is composed into
+the running service per pollable account by
+[`../server/polling.ts`](../server/polling.ts) since U-051 (D-176), whose
+settle wrapper adds the D-064 holder feed around it.
 
 Landed: [`polling-scheduler.ts`](./polling-scheduler.ts) — the §7.1 polling
 loop engine (task 109, decision D-066): `createPollingScheduler(options)`
@@ -389,12 +397,21 @@ immediately; a key change mid-flight discards the stale cycle's outcome —
 an old key's 401 never suspends a new key; interval changes re-anchor);
 `requestManualTest` owes the account one attempt — a flag consumed at
 dispatch, so it survives an in-flight cycle and an interval change, and
-still respects the `Retry-After` gate. `stop()` is §5.6's stop-scheduling —
+still respects the `Retry-After` gate; `manualTestRejected` (additive,
+D-176) feeds the engine's own D-064 machine an auth-error outcome when a
+manual connection test refuses the key — §7.2's pause holds on the engine
+side of a refused manual test, with any still-owed attempt dropped.
+`stop()` is §5.6's stop-scheduling —
 abort every live flight, resolve promptly — with the optional structural
 in-flight tracker (D-020) for the server's graceful drain; a wiring-level
 loop failure is retained and observable (`running` turns false, `stop()`
 re-surfaces the error), and every wake is sliced to `MAX_WAKE_MS` (one
-hour) so a wall-regressed gate wait can never busy-spin.
+hour) so a wall-regressed gate wait can never busy-spin. The scheduler is
+composed into the running service — the shared clock, the shared tracker,
+and one recorder per pollable account — by
+[`../server/polling.ts`](../server/polling.ts) since U-051 (D-176):
+`src/server/composition.ts` registers it in the documented §5.6 order and
+feeds `setAccounts`/`setIntervalMs` from §6.4 reloads.
 
 Landed: [`peak-hours-intervals.ts`](./peak-hours-intervals.ts) — the §9.3
 peak-hours interval calculation (task 114, decision D-073): a validated

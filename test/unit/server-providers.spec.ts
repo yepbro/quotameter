@@ -54,7 +54,11 @@ function innerProvider(mode: InnerMode): QuotaProvider & { calls: number } {
   return provider;
 }
 
-function wrapped(mode: InnerMode): {
+function wrapped(
+  mode: InnerMode,
+  bridge?: (accountId: string) => void,
+  rejectionBridge?: (accountId: string) => void,
+): {
   provider: QuotaProvider;
   inner: QuotaProvider & { calls: number };
   suspensions: ReturnType<typeof createAccountSuspensions>;
@@ -62,7 +66,15 @@ function wrapped(mode: InnerMode): {
   const clock = createFixedClock(T0);
   const suspensions = createAccountSuspensions({ clock });
   const inner = innerProvider(mode);
-  return { provider: observingManualTests(inner, { suspensions }), inner, suspensions };
+  return {
+    provider: observingManualTests(inner, {
+      suspensions,
+      ...(bridge === undefined ? {} : { onManualTestRequested: bridge }),
+      ...(rejectionBridge === undefined ? {} : { onManualTestRejected: rejectionBridge }),
+    }),
+    inner,
+    suspensions,
+  };
 }
 
 const ACCOUNT = createAccountContext('work', 'Work account', MARKER_KEY);
@@ -144,5 +156,74 @@ describe('observingManualTests', () => {
     // The identity is stable per key and distinct across keys.
     expect(keyIdentityOfSecret(MARKER_KEY)).toBe(identity);
     expect(identity).not.toBe(keyIdentityOfSecret('sk-another-key-2f8b'));
+  });
+
+  describe('the manual-test bridge into the polling engine (U-051, D-176)', () => {
+    it('notifies the bridge with the account id once per test, before the attempt', async () => {
+      const order: string[] = [];
+      const { provider, inner, suspensions } = wrapped('ok', (accountId) => {
+        // The bridge fires before the attempt: the inner provider has not
+        // been called yet at this vantage point.
+        order.push(`${accountId}@inner-calls=${inner.calls}`);
+      });
+      await provider.validateCredentials(ACCOUNT);
+      expect(order).toEqual(['work@inner-calls=0']);
+      expect(inner.calls).toBe(1);
+      expect(isSuspended(suspensions.suspensionOf('work'))).toBe(false);
+    });
+
+    it('fires even when the attempt is refused — both release events at one site', async () => {
+      const seen: string[] = [];
+      const { provider } = wrapped('rejected', (accountId) => {
+        seen.push(accountId);
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        /rejected the account credentials/,
+      );
+      expect(seen).toEqual(['work']);
+    });
+
+    it('propagates a throwing bridge (a broken bridge is a wiring bug)', async () => {
+      const { provider } = wrapped('ok', () => {
+        throw new Error('bridge is broken (test double)');
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        'bridge is broken (test double)',
+      );
+    });
+
+    it('is absent-safe: no bridge changes nothing (the composition always wires one)', async () => {
+      const { provider, inner } = wrapped('ok');
+      await expect(provider.validateCredentials(ACCOUNT)).resolves.toBeUndefined();
+      expect(inner.calls).toBe(1);
+    });
+
+    it('notifies the rejection bridge beside the holder re-entry, on a refused test only', async () => {
+      const rejections: string[] = [];
+      const { provider, suspensions } = wrapped('rejected', undefined, (accountId) => {
+        rejections.push(accountId);
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        /rejected the account credentials/,
+      );
+      expect(rejections).toEqual(['work']);
+      expect(isSuspended(suspensions.suspensionOf('work'))).toBe(true);
+
+      // A successful test never notifies the rejection half.
+      const healthy = wrapped('ok', undefined, (accountId) => {
+        rejections.push(accountId);
+      });
+      await expect(healthy.provider.validateCredentials(ACCOUNT)).resolves.toBeUndefined();
+      expect(rejections).toEqual(['work']);
+    });
+
+    it('propagates a throwing rejection bridge', async () => {
+      const { provider } = wrapped('rejected', undefined, () => {
+        throw new Error('rejection bridge is broken (test double)');
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        'rejection bridge is broken (test double)',
+      );
+    });
   });
 });

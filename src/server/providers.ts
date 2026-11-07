@@ -34,6 +34,26 @@ export function createInitialAccountProvider(): QuotaProvider {
 export interface ManualTestObservationOptions {
   /** The composition's D-064 holder (D-130's `suspensionOf` seam owner). */
   readonly suspensions: AccountSuspensions;
+  /**
+   * The manual-test bridge into the polling engine (U-051, D-176): invoked
+   * with the account id right after the holder's release, before the attempt
+   * — both §7.2 release events ("until … a manual test is requested") land
+   * at one site. The composition wires the engine's `requestManualTest`, so
+   * the engine's own D-064 machine releases too and owes the account one
+   * attempt through the dispatch loop (sequential and overlap rules hold).
+   * Optional and absent in the wrapper's own unit tests; errors propagate
+   * (a broken bridge is a wiring bug, the D-059 loud-seam convention).
+   */
+  readonly onManualTestRequested?: (accountId: string) => void;
+  /**
+   * The rejection half of the bridge: invoked right after the holder's
+   * `manualTestRejected` feed (a D-052 `credentials-rejected` rejection),
+   * so the engine's own D-064 machine re-enters suspension with the same
+   * fresh 60-minute window instead of continuing normal polling under a
+   * key the provider just refused (§7.2's pause). Optional like the request
+   * half; errors propagate the same way.
+   */
+  readonly onManualTestRejected?: (accountId: string) => void;
 }
 
 /**
@@ -70,18 +90,20 @@ export function observingManualTests(
   provider: QuotaProvider,
   options: ManualTestObservationOptions,
 ): QuotaProvider {
-  const { suspensions } = options;
+  const { suspensions, onManualTestRequested, onManualTestRejected } = options;
   return {
     id: provider.id,
     name: provider.name,
     ...(provider.metricCatalog !== undefined ? { metricCatalog: provider.metricCatalog } : {}),
     async validateCredentials(account: AccountContext): Promise<void> {
       suspensions.manualTestRequested(account.accountId);
+      onManualTestRequested?.(account.accountId);
       try {
         await provider.validateCredentials(account);
       } catch (error) {
         if (isCredentialsRejected(error)) {
           suspensions.manualTestRejected(account.accountId, keyIdentityOfSecret(account.secret));
+          onManualTestRejected?.(account.accountId);
         }
         throw error;
       }

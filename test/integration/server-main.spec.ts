@@ -160,7 +160,16 @@ describe('buildComponents', () => {
           names = (await buildComponents()).map((component) => component.name);
         },
       );
-      expect(names).toEqual(['single-instance-lock', 'storage', 'http-listener']);
+      // `shutdown.ts`'s documented §5.6 order, completed by U-051/D-176:
+      // the drain sits between storage and the scheduler so an aborted
+      // cycle's settlement never races the database close.
+      expect(names).toEqual([
+        'single-instance-lock',
+        'storage',
+        'graceful-drain',
+        'polling',
+        'http-listener',
+      ]);
     } finally {
       await dir.remove();
     }

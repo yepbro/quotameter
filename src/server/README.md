@@ -9,18 +9,22 @@ non-root; task 129, decision D-098), signal wiring, exit codes — whose
 enforces the §6.3 permissions eagerly (before the file's content is read),
 loads and validates through `loadConfigWithEnv` (§6.2's refuse-to-start),
 then assembles the §5.6 component list
-`[single-instance-lock, storage, http-listener]` with every landed route
-family wired — the D-128 `AccountConfigStore` and D-130 `SettingsStore` over
-`config-stores.ts`'s serialized config-file owner, the D-064 suspension
-holder (`src/services/account-suspensions.ts`) feeding `suspensionOf` and
-the manual-test lift, the registry with observation-wrapped adapters
+`[single-instance-lock, storage, graceful-drain, polling, http-listener]`
+(`shutdown.ts`'s documented order, completed by U-051/D-176: one shared
+in-flight tracker serves the scheduler's flight registrations and the
+drain's bounded wait, with every landed route family wired — the D-128
+`AccountConfigStore` and D-130 `SettingsStore` over `config-stores.ts`'s
+serialized config-file owner, the D-064 suspension holder
+(`src/services/account-suspensions.ts`) feeding `suspensionOf` and the
+manual-test lift, the registry with observation-wrapped adapters
 (`providers.ts`, task U-040), and a lazy repository facade bridging eager
 route registration to the storage component's start-time open (the data
 directory exists only after the lock's start, D-017). Deliberately unwired
-(D-140's loose ends): SIGHUP → reload (the D-024 readiness seam) and the
-polling engine; the sessions-backed `isAuthenticated` is wired since task
-U-041 (D-146) — `createSessionAuthenticator` over the lazy repository and
-the shared clock, beside the login/logout routes it pairs with. The
+(D-140's remaining loose end): SIGHUP → reload (the D-024 readiness seam);
+the sessions-backed `isAuthenticated` is wired since task U-041 (D-146) —
+`createSessionAuthenticator` over the lazy repository and the shared
+clock, beside the login/logout routes it pairs with. The polling engine
+itself (`polling.ts`, U-051/D-176) is described below. The
 lifecycle skeleton `app.ts`
 (task 060) is where components
 start in registration order and stop in reverse, realizing the §5.6 shutdown
@@ -167,7 +171,58 @@ before the attempt, re-entry with a fresh 60-minute window on a D-052
 `credentials-rejected` rejection, so a successful manual test lifts an
 `Auth rejected` pause (wire-observable through `/api/status`), while
 `fetchSnapshot` stays unobserved (the polling engine owns polled-cycle
-outcomes).
+outcomes). Since U-051 (D-176) the wrapper's optional
+`onManualTestRequested`/`onManualTestRejected` callbacks are the
+composition's manual-test bridges into the polling engine: the request
+releases the holder AND the engine's own D-064 machine, owing the account
+one attempt through the dispatch loop, and a refused key re-enters both
+machines' suspensions with a fresh 60-minute window — so §7.2's "until …
+a manual test is requested" and its 401/403 row reach the machine that
+gates polling, not only the status view.
+
+## The polling engine composition (task U-051, spec §7.1, §7.2, §5.6, §6.4; decision D-176)
+
+`src/server/polling.ts` is the wiring between the landed §7 engines and
+the running service — the composition root D-066/D-069 anticipated.
+`createPollingEngine` builds one polling scheduler over the shared clock
+(D-021) and the shared in-flight tracker (D-020), plus one cycle recorder
+per pollable account, and exposes them as the `polling` component of the
+documented order. The account selection is a filter, not an error: only
+accounts that are `enabled`, whose secret resolves (`apiKey` or a set
+`apiKeyEnv`), and whose provider is registered are polled — skips are
+logged (a `warn` for an unknown provider, `debug` for the §7.3 display
+states `Disabled`/`Not configured`), never thrown, so one foreign or
+keyless entry stops neither the others nor the startup (§7.2 isolation).
+The resolved secret reaches only the registry's branded `AccountContext`.
+
+The D-064 seam, per D-140's plan: the scheduler's internal state machine
+gates dispatch; the composition's holder stays the seam `/api/status` and
+the manual-test flow read. The engine's settle wrapper feeds the holder
+every settled classification through a per-account continuity epoch
+(`polledCycleOutcome`) that mirrors the engine's mid-flight entry-identity
+rule exactly — kept rebuilds keep feeding, while removal, re-key, and
+same-key remove/re-add go stale — so the two pure machines — same events,
+same transitions — stay in lockstep: a polled 401 shows `Auth rejected`
+even after a later inconclusive probe run, and a polled success lifts the
+pause. An account leaving the polled set (removed, disabled, secret lost)
+drops its holder episode beside the engine's dropped entry (the restart
+equivalence — suspension is process memory). §6.4 reloads arrive through
+the composition's reload wrapper (`applyReloadChanges`): an `accounts`
+change rebuilds the wiring (added accounts poll immediately,
+removed/disabled ones drop out, re-keyed ones release and are immediately
+due), an interval change re-anchors the schedule. Manual tests bridge both
+ways: the request owes the engine one attempt (`onManualTestRequested` →
+`requestManualTest`), and a refused key re-enters the engine's own
+suspension with a fresh 60-minute window
+(`onManualTestRejected` → the scheduler's additive `manualTestRejected`
+seam, D-176) — §7.2's pause holds on both sides. Contained settlement
+failures surface as one `warn` each — D-066's deferred diagnostics, landed
+with this wiring. `ComposeApplicationOptions.pollingSleep` is the
+composition's test seam for time-compressed integration tests (the
+`port`/`staticRoot` precedent); the e2e acceptance harness keeps its
+seeded worlds still by doubling the real adapter's `fetchSnapshot` off
+(the live engine's proof is
+`test/integration/composition-polling.spec.ts`'s).
 
 **Rule:** as the composition root it may import every layer except
 `src/cli/`. Route handlers validate input through `src/schemas/api/` and
