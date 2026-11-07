@@ -24,8 +24,9 @@
  * - **The body renders verbatim** — D-041 pinned "doctor --raw renders it as
  *   text"; pretty-printing JSON is a display concern, and the sanitizer's
  *   output is stored as-is (D-051). Timestamps render through `toUtcIso`
- *   (§10's ISO 8601 UTC `Z` form — machine-comparable diagnostics, no
- *   implicit local zone).
+ *   (the ISO 8601 UTC `Z` form — a CLI display choice, not the API wire:
+ *   §13 responses are epoch-ms integers, D-183; machine-comparable
+ *   diagnostics, no implicit local zone).
  */
 
 import { RAW_RESPONSE_MAX_PER_ACCOUNT } from '../storage/raw-response-retention';

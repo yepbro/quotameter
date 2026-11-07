@@ -33,9 +33,10 @@ never calls `Date.now()`, `new Date()`, or machine-local zone APIs itself.
 - **Conversions and formatting:** `zonedDateTime` (the Luxon bridge),
   `zonedParts` (wall-clock fields incl. ISO weekday), `formatZonedTime`
   (`HH:mm`) and `formatZonedDate` (`yyyy-MM-dd`) in a zone, `toUtcIso`
-  (ISO 8601 UTC with `Z`, the API timestamp format of spec §10), and
-  `epochMsFromIso` (rejects offset-less strings — exactly where an implicit
-  zone would creep in).
+  (ISO 8601 UTC with `Z` — CLI/stdout rendering such as `doctor --raw`,
+  not the wire: §13 responses are epoch-ms integers, D-183), and
+  `epochMsFromIso` (the §13 range-parameter parse gate; rejects
+  offset-less strings — exactly where an implicit zone would creep in).
 - **No machine-local paths:** nothing here reads the system zone or `TZ`,
   and Luxon's `DateTime.now()`/default-zone behavior is outside the contract,
   so results are identical under any `TZ` setting.
@@ -60,7 +61,8 @@ The closed vocabulary of spec §14.4 — `24h`, `3d`, `7d` (default), `14d`,
 interval ending **now**, so callers pass explicit `from`/`to` bounds (UTC
 epoch ms) to the server, which filters history server-side (§13's
 `/api/history`, `/api/events`, `/api/peak-hours` take those bounds as ISO
-8601 UTC; the HTTP layer itself is Stage 12).
+8601 UTC request parameters and answer with epoch-ms response timestamps —
+D-139/D-183).
 
 - **Pure duration arithmetic:** `rollingRangeBounds(range, now)` returns
   `{ from: now − duration, to: now }` — exact milliseconds, no calendar or
@@ -81,10 +83,16 @@ epoch ms) to the server, which filters history server-side (§13's
   finite `now` the subtraction cannot overflow — at `±Number.MAX_VALUE` the
   ≤ 30-day duration is absorbed (`from === now`), documented float-exact
   behavior.
-- **Consumers:** the Stage 12 history/events endpoints (as the source of
-  the `from`/`to` they filter by, via `toUtcIso`), the §14.4 history view's
-  range selector, and retention-aware range disabling (compare
-  `rollingRangeDurationMs` with the configured retention; §14.4).
+- **Consumers:** the §14.4 range selection is CLIENT-side — the UI twin
+  (`ui/src/history-range.ts`) computes the rolling bounds from its own
+  `now`, serializes them with `toISOString()` (D-147), and performs
+  retention-aware range disabling through its own `historyRangeDurationMs`
+  (drift-pinned equal to `rollingRangeDurationMs`, which today has no
+  production caller), while the §13 endpoints only PARSE the ISO
+  boundaries (`epochMsFromIso`) and never serialize through `toUtcIso`
+  (D-183 records why the earlier note here was wrong); server-side
+  production imports are the duration constants (`DAY_MS`: the retention
+  schedule, the peak-hours span math).
 
 ## `logger.ts` — the structured redacting logger (spec §16, §15.4, decision D-025)
 

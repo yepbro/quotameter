@@ -86,6 +86,8 @@ direction:
   disabled.
 - **Ranges** (spec §13): `from`/`to` on `/api/history`, `/api/events`, and
   `/api/peak-hours` are ISO 8601 UTC with an explicit offset or `Z`;
-  response timestamps are epoch milliseconds.
+  response timestamps are epoch milliseconds everywhere — D-139's
+  one-format-per-direction rule, recorded as the deliberate API
+  representation by the §10 amendment of spec 1.2 (D-183).
 - **API keys** (spec §15.4): never on the wire — accounts carry `hasKey` and
   a constant, content-free mask.

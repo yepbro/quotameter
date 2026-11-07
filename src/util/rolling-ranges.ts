@@ -83,8 +83,11 @@ const DURATIONS_MS: Readonly<Record<RollingRangeId, number>> = Object.freeze({
 
 /**
  * The explicit boundaries of a rolling interval (spec §10): UTC epoch
- * milliseconds, ready to serialize with `toUtcIso` for the §13 endpoints.
- * A **closed** interval — `from` and `to` are both inclusive (D-068).
+ * milliseconds. The bounds the UI serializes into §13 range requests —
+ * client-side, through its own `toISOString()` twin (D-147); the server
+ * endpoints only PARSE ISO boundaries (`epochMsFromIso`) and never
+ * serialize through `toUtcIso` (D-183). A **closed** interval — `from`
+ * and `to` are both inclusive (D-068).
  */
 export interface RollingRangeBounds {
   /** Interval start, `now − duration`; inclusive. */

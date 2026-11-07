@@ -217,7 +217,12 @@ export function zonedDateTime(epochMs: EpochMs, timeZone: TimeZone): DateTime {
 
 /**
  * Formats `epochMs` as ISO 8601 UTC with millisecond precision and a `Z`
- * suffix (spec §10: API timestamps use ISO 8601 UTC ending in `Z`).
+ * suffix — human-facing rendering for CLI output (`doctor --raw`'s
+ * captured-at stamps). Not the API wire format: §13 responses carry
+ * epoch-millisecond integers, and the wire's one ISO surface — the range
+ * request parameters — is produced by the UI's `toISOString()` twin and
+ * parsed by `epochMsFromIso`, never by this function (D-183, spec §10 as
+ * amended in 1.2).
  */
 export function toUtcIso(epochMs: EpochMs): string {
   const dateTime = DateTime.fromMillis(epochMs, { zone: 'utc' });

@@ -646,7 +646,10 @@ not forked).
 - **The timestamp rule (D-139, inherited):** ISO 8601 UTC requests with a
   mandatory explicit offset or `Z`, epoch-ms responses — one format per
   direction. D-073's interim "serialize through `toUtcIso`" note is
-  superseded by D-139's epoch-ms rule (D-142 records the reconciliation).
+  superseded by D-139's epoch-ms rule (D-142 records the reconciliation),
+  and D-183 reconciles §10's original ISO-response sentence with the
+  landed family the same way: spec 1.2's amendment records epoch-ms
+  responses as the deliberate API representation.
 - **Retention inherited (D-142):** §13 names peak-hours in its
   range/retention sentence, so the same 200-with-report applies — the
   intervals are computed over the effective range only; `rejected` answers

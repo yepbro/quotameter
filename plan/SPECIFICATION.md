@@ -1,6 +1,6 @@
 # Quotameter — Technical Specification
 
-**Document version:** 1.1 (supersedes 1.0)  
+**Document version:** 1.2 (supersedes 1.1)  
 **Project/package/CLI name:** `quotameter`  
 **Application type:** Self-hosted personal web service for a Linux VPS  
 **Primary runtime:** Node.js `>=22.13.0` + TypeScript (`strict`)  
@@ -8,7 +8,7 @@
 **Package distribution:** Public npm package with CLI and bundled web UI  
 **Author attribution for the original prototype:** Den Brooks, `denis@yepbro.pro`  
 **Specification date:** 28 October 2026  
-**Amendments (1.1, 6 November 2026):** §7.3 archived-status dominance; §13 authenticated health diagnostics naming the polling engine and the live restart-pending settings view; §14.5 restart-marking class/state split — decision [D-180](../DECISIONS.md).
+**Amendments (1.2, 7 November 2026):** §10 API timestamp representation — responses are epoch-millisecond integers; the ISO 8601 UTC requirement applies to the §13 range request parameters — decision [D-183](../DECISIONS.md). Earlier amendments (1.1, 6 November 2026): §7.3 archived-status dominance; §13 authenticated health diagnostics naming the polling engine and the live restart-pending settings view; §14.5 restart-marking class/state split — decision [D-180](../DECISIONS.md).
 
 ## 1. Purpose and scope
 
@@ -343,7 +343,7 @@ Peak-hour highlighting is for visual comparison only. It must not modify measure
 
 - Maintain two independent settings: the user display time zone (`app.timezone`) and the peak-hours schedule time zone.
 - The user time zone is mandatory and explicitly selected during `init`; it must never silently inherit the server/OS time zone. The app must work consistently under any `TZ` environment setting.
-- Store all timestamps as UTC Unix epoch milliseconds (`INTEGER`) in SQLite. API timestamps use ISO 8601 UTC ending in `Z`. Format timestamps in the client with `Intl.DateTimeFormat` and the configured display time zone.
+- Store all timestamps as UTC Unix epoch milliseconds (`INTEGER`) in SQLite. API responses carry timestamps as epoch-millisecond integers; the ISO 8601 UTC form with an explicit offset or `Z` applies to the §13 range request parameters (`from`/`to` for history, events, and peak-hours). Format timestamps in the client with `Intl.DateTimeFormat` and the configured display time zone.
 - “Last N hours/days” means a rolling interval ending now. Compute and pass explicit `from`/`to` bounds to the server; filter history server-side.
 - Changing `app.timezone` changes presentation only and must not rewrite records.
 - Assume that VPS time is synchronized by NTP; `doctor` warns if the system clock is not synchronized.
