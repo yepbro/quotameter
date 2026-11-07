@@ -954,7 +954,13 @@ signal-less credential check (endpoint 4), `aborted` cannot occur — it fires o
 caller's §8.1 signal, which `validateCredentials` does not receive. Applicability specifics:
 
 - **Timeout:** §7.2's configured value (default 15 s) is one total deadline per request; a
-  cycle makes up to three sequential requests, each with its own deadline.
+  cycle makes up to three sequential requests, each with its own deadline. The value reaches
+  the transport through the composition root's live-reader factory
+  (`createConfiguredZaiProvider`, `src/server/providers.ts`; U-054/D-179): each request derives
+  the deadline from the effective `providers.zai-coding-plan.requestTimeoutSeconds` — a
+  §6.4-live field (D-026), so a reload applies on the next request with no restart — while the
+  CLI's pre-configuration paths (`init` step 6, `doctor`) use the D-052 default 15 s factory
+  (`createInitialAccountProvider`), recorded in D-179.
 - **Response size:** the transport's 64 KiB cap applies per response. Observed bodies sit far
   below it (the committed sanitized fixtures are 0.3–3.8 KiB); a
   subscription list with many records is the only plausible growth direction, and the cap

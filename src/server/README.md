@@ -171,14 +171,29 @@ limiting is not middleware here: it lives in
 `src/services/login-rate-limit.ts` (156, D-125), composed by the
 login endpoint. It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133, extended by
-task U-040) is that privilege's first
-exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
-production defaults for `init`'s initial-account connection test (spec §5.3
-step 6) — the factory constructs and never registers, so the bootstrap
-composition that fills the `ProviderRegistry` is unchanged by it
-(decision D-102). That same composition (U-040, D-140) now registers the
-adapter into the registry wrapped by `observingManualTests()`: manual
-connection tests feed the §7.2 suspension holder — release-on-request
+tasks U-040/U-054) is that privilege's
+exercise, in two factories with two worlds (U-054, D-179):
+`createConfiguredZaiProvider()` — the registry default the bootstrap
+composition (U-040, D-140) registers wrapped by
+`observingManualTests()` — constructs the v1.0 adapter with
+`{ timeoutMs, clock, logger }` derived from the LIVE effective
+configuration: every request re-reads
+`providers.zai-coding-plan.requestTimeoutSeconds` (§6.4-live per D-026 —
+a reload changes the §7.2 deadline on the next request, no restart, the
+inner adapter memoized by the effective value), `collectedAt` comes from
+the composition's shared clock (D-021), and the skip/soft-failure reports
+ride the shared redacting logger. `createInitialAccountProvider()` — the
+pre-configuration factory for `init`'s initial-account connection test
+(spec §5.3 step 6, before the step-7 write) and `doctor`'s per-account
+probes — keeps the D-052 defaults (the dossier base URLs, the §7.2 default
+15 s deadline): neither CLI path derives its budget from the
+configuration under test — init's fresh run has no file yet (the write is
+§5.3 step 5's configuration half, deferred past the step-6 test, D-102)
+and the re-run flow keeps the same answer-driven factory, while a
+diagnostic's probe budget stays independent of the artifact it examines
+(D-179). The observation wrapper itself is unchanged: manual
+connection tests feed
+the §7.2 suspension holder — release-on-request
 before the attempt, re-entry with a fresh 60-minute window on a D-052
 `credentials-rejected` rejection, so a successful manual test lifts an
 `Auth rejected` pause (wire-observable through `/api/status`), while

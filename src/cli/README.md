@@ -154,7 +154,13 @@ rejected, D-101):
   `createInitialAccountProvider()` factory (`src/server/providers.ts` —
   `src/server/` is the one layer the package layout allows to import
   concrete adapters, and `cli` may import `server`, so the CLI layer stays
-  provider-neutral).
+  provider-neutral). Its D-052 default 15 s deadline is deliberate here
+  (U-054, D-179): D-102 orders the step-6 test before the configuration
+  write (step 5's configuration half, deferred to the run's end) — a
+  fresh run has no file yet, and a re-run keeps the same answer-driven
+  factory — so the running service's
+  registry default (`createConfiguredZaiProvider`) is the one that honors
+  the configured deadline.
 - **The failure contract** — a failed test **never aborts the run**: the
   failure is explained on stderr (the provider-neutral detail plus one
   class-specific guidance line — `credentials-rejected` means the provider
@@ -1045,7 +1051,11 @@ job. Each check composes the layer that owns its fact, never re-derived:
   yet", a refused open fails with D-114's hot-journal hint, problems
   quote the first rows). The same handle feeds `--raw`.
 - **Accounts** — per-account `validateCredentials` through the §8.1
-  contract (`createInitialAccountProvider` default), classified by
+  contract (`createInitialAccountProvider` default, whose D-052 15 s
+  deadline is deliberate for a diagnostic — U-054/D-179: the probe must
+  behave identically whatever configuration it examines, while the running
+  service's registry adapter re-reads the configured deadline per request),
+  classified by
   init-account's secret-scrubbing `classifyTestFailure`: rejected → fail
   with the replacement remedy, inconclusive → unavailable (D-052's own
   distinction), disabled → skip, an `apiKeyEnv` missing from this shell →

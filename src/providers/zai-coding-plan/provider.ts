@@ -72,9 +72,13 @@ export interface ZaiCodingPlanProviderOptions {
   /**
    * The §7.2 total request deadline, per request: a cycle makes up to three
    * sequential requests, each with its own deadline (D-047). The spec's
-   * 5–60 s configuration range is enforced where configuration enters
-   * (later tasks wire it); tests need short deadlines, so any positive
-   * finite value is accepted here — the transport's own rule.
+   * 5–60 s configuration range is enforced where configuration enters (the
+   * schema and the load pipeline): the composition root's
+   * `createConfiguredZaiProvider` (`src/server/providers.ts`, U-054/D-179)
+   * derives this option from the live effective
+   * `providers.zai-coding-plan.requestTimeoutSeconds`, while tests need
+   * short deadlines — any positive finite value is accepted here, the
+   * transport's own rule.
    */
   readonly timeoutMs?: number;
   /**
@@ -152,8 +156,12 @@ export function composeSnapshotUrls(apiBaseUrl: string): ZaiSnapshotUrls {
  * `fetchSnapshot` runs the three-GET collection cycle
  * ([`snapshot.ts`](snapshot.ts)) — endpoint 1 strictly, endpoints 2/3
  * softly — and stamps the result with the adapter identity. Every failure
- * carries only non-secret facts. Created by the composition root with
- * default options; nothing provider-specific is parsed outside this island.
+ * carries only non-secret facts. Constructed through the composition
+ * root's factories (`src/server/providers.ts`): the live-configured
+ * `createConfiguredZaiProvider` — the registry default, U-054/D-179 —
+ * or the D-052 defaults behind `createInitialAccountProvider` (the CLI's
+ * pre-configuration paths); nothing provider-specific is parsed outside
+ * this island.
  */
 export class ZaiCodingPlanProvider implements QuotaProvider {
   readonly id = ZAI_CODING_PLAN_PROVIDER_ID;

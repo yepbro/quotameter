@@ -79,7 +79,7 @@ import {
   createHttpServerComponent,
   type HttpServerOptions,
 } from './http';
-import { createInitialAccountProvider, observingManualTests } from './providers';
+import { createConfiguredZaiProvider, observingManualTests } from './providers';
 import { createPollingEngine } from './polling';
 import type { PollingSleep } from '../services/polling-scheduler';
 import { createRetentionSchedule } from './retention';
@@ -107,9 +107,12 @@ export interface ComposeApplicationOptions {
   readonly logger?: Logger;
   /**
    * The provider adapters to register, each wrapped for manual-test
-   * observation; defaults to v1.0's one supported provider (§8.3) with its
-   * production defaults. Integration tests substitute a controllable double
-   * — the external boundary the no-network guard requires them to own.
+   * observation; defaults to v1.0's one supported provider (§8.3)
+   * constructed from the live effective configuration — the §7.2 request
+   * deadline re-read per request (§6.4-live, D-026/D-179), the shared clock
+   * (D-021), and the shared logger. Integration tests substitute a
+   * controllable double — the external boundary the no-network guard
+   * requires them to own.
    */
   readonly providers?: readonly QuotaProvider[];
   /**
@@ -349,7 +352,13 @@ export async function composeApplication(
     ...(options.pollingSleep === undefined ? {} : { sleep: options.pollingSleep }),
   });
 
-  for (const provider of options.providers ?? [createInitialAccountProvider()]) {
+  for (const provider of options.providers ?? [
+    // U-054/D-179: the production default derives its §7.2 deadline from
+    // the LIVE effective configuration (§6.4-live per D-026) and rides the
+    // shared clock (D-021) and shared logger — not the D-052 defaults
+    // factory the CLI's pre-configuration paths use.
+    createConfiguredZaiProvider({ config: currentConfig, clock, logger }),
+  ]) {
     registry.register(
       observingManualTests(provider, {
         suspensions,
