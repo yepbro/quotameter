@@ -22,7 +22,10 @@
  * the observed {@link PollPhase} per account (`pollPhaseOf`) and switches
  * over it exhaustively — a future phase variant without a dispatcher arm
  * is a compile error, not a missed gate (the U-028/P2-3 bug class). Kind
- * transitions log at `debug` through the optional injected logger.
+ * transitions log at `debug` through the optional injected logger, and
+ * the loop's own death — a wiring failure no consumer would otherwise
+ * see — logs exactly one `error` record at the retention site (FSM-4,
+ * D-192).
  *
  * Composition of the landed seams:
  *
@@ -240,12 +243,18 @@ export interface PollingSchedulerOptions {
    */
   readonly inFlight?: PollingInFlightTracker;
   /**
-   * Optional diagnostics channel (R6, D-190): held-plan kind transitions
-   * log at `debug` — accountId, the event, and the from/to kinds, never a
-   * secret. Absent means silent (a standalone embedding needs no logger);
-   * the composition passes the shared redacting logger.
+   * Optional diagnostics channel (R6, D-190; widened by FSM-4/D-192):
+   * held-plan kind transitions log at `debug` — accountId, the event, and
+   * the from/to kinds, never a secret — and the engine's own death logs
+   * exactly one `error` record at the moment the dispatch loop dies of a
+   * wiring failure (a non-finite clock reading, a throwing tracker seam),
+   * so a silently-dead engine leaves a journal trail (§16). The loop
+   * promise rejects at most once, so the record cannot spam. Absent means
+   * silent (a standalone embedding needs no logger); the composition
+   * passes the shared redacting logger — the destination and redaction
+   * are the composition's, the message and level the engine's.
    */
-  readonly logger?: Pick<Logger, 'debug'>;
+  readonly logger?: Pick<Logger, 'debug' | 'error'>;
   /**
    * The D-064 suspension store (FSM-3, D-189) — the ONE per-account state
    * holder this engine reads its gates from and writes its transitions
@@ -319,7 +328,10 @@ export interface PollingScheduler {
    * True between `start` and `stop` while the dispatch loop is alive —
    * false after `stop` and also after the loop died of a wiring failure
    * (a non-finite clock reading, a throwing tracker seam), so a
-   * silently-dead engine cannot report itself healthy.
+   * silently-dead engine cannot report itself healthy. The death itself
+   * logs one `error` record through the injected logger, and the
+   * authenticated `/api/health` diagnostics surface this value (FSM-4,
+   * D-192).
    */
   readonly running: boolean;
 }
@@ -463,9 +475,12 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   if (inFlightTracker !== undefined && typeof inFlightTracker.begin !== 'function') {
     throw new TypeError('createPollingScheduler: inFlight must expose begin()');
   }
-  const logger = options.logger ?? { debug: () => undefined };
+  const logger = options.logger ?? { debug: () => undefined, error: () => undefined };
   if (typeof logger.debug !== 'function') {
     throw new TypeError('createPollingScheduler: logger must expose debug()');
+  }
+  if (typeof logger.error !== 'function') {
+    throw new TypeError('createPollingScheduler: logger must expose error()');
   }
   const suspensions = options.suspensions;
   if (typeof suspensions !== 'object' || suspensions === null) {
@@ -954,9 +969,18 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       // Retain a wiring-level rejection (a non-finite clock reading, a
       // throwing tracker) instead of only silencing it: `running` turns
       // false so the composition root can see the engine died, and stop()
-      // re-surfaces the error to its caller (review P2-2).
+      // re-surfaces the error to its caller (review P2-2). The death also
+      // logs — exactly one `error` record per death event (FSM-4, D-192):
+      // this handler runs at most once (a promise rejects at most once),
+      // so repeated deaths of a restarted loop each log once and a single
+      // death never spams. The logger never throws (D-025's contract), so
+      // the retention and the record are one contained step.
       loopPromise.catch((error: unknown) => {
         loopError = error;
+        logger.error(
+          'polling engine died: the dispatch loop exited unexpectedly; scheduling has stopped',
+          { error },
+        );
       });
     },
 

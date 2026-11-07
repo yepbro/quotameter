@@ -99,3 +99,15 @@ direction:
   with the retained history honestly labeled.
 - **API keys** (spec §15.4): never on the wire — accounts carry `hasKey` and
   a constant, content-free mask.
+- **Health diagnostics** (spec §13, D-192): `GET /api/health` is public in
+  every auth mode and its unauthenticated body is the byte-exact literal
+  `{"status":"ok"}` — the schema-compiled serializer omits the optional
+  `polling` block entirely when it is not granted, so no diagnostic can
+  leak. A request the §15.1 layer would grant — a direct loopback request
+  in `auth.mode: auto`, or any request with a valid session — additionally
+  receives `polling.running`: whether the polling engine's dispatch loop
+  is alive. A dead engine (a wiring failure killed the scheduler with
+  `running=false`) is thereby visible on the wire while the process stays
+  up; the death itself logs exactly one `error` record (§16), and
+  `quotameter status` warns from the run evidence (three intervals of
+  silence under a live pid) with a `quotameter logs` pointer.

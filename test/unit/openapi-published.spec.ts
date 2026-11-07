@@ -148,6 +148,9 @@ beforeAll(async () => {
       now: never,
     },
     authRoutes: { repository, passwordHash: refuse('passwordHash'), now: never },
+    // FSM-4/D-192: the health diagnostics source — refusing, because the
+    // registration-only boot never serves a request.
+    health: { polling: { running: refuse('health.running') } },
   } satisfies Required<Omit<ApiRoutesOptions, 'auth'>>;
 
   app = Fastify({ logger: false });

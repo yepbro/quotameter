@@ -656,7 +656,10 @@ export function healthProbeTarget(
 /**
  * Runs §5.3 step 7's health verification as a bounded poll — the retry is
  * an explicit two-state machine: one attempt resolves `healthy` (HTTP 200
- * with §13's `{"status":"ok"}` body) and ends the loop; anything else
+ * with §13's healthy body — the `{"status":"ok"}` literal, which on the
+ * §15.1-granted cells additionally carries the `polling` diagnostics of
+ * FSM-4/D-192; the probe's verdict is the healthy `status` either way)
+ * and ends the loop; anything else
  * (another status, a network error, a per-attempt timeout — a still
  * booting service refuses connections) is one bounded detail and a retry,
  * until an attempt plus a full poll interval no longer fits inside the
@@ -698,7 +701,8 @@ const defaultHealthSleep = (ms: number): Promise<void> =>
 type ProbeAttempt = { readonly ok: true } | { readonly ok: false; readonly detail: string };
 
 /**
- * One attempt: healthy is HTTP 200 with §13's `{"status":"ok"}` body. A
+ * One attempt: healthy is HTTP 200 with §13's healthy body (the literal
+ * `status: "ok"` object — the granted diagnostics ride it identically). A
  * non-200 cancels the body (releasing the connection) and reports the
  * status; a body that fails to read is classified by the attempt's abort
  * state — a timeout firing mid-body is a failed attempt with the timeout's
@@ -748,7 +752,12 @@ function describeHealthError(error: unknown): string {
 
 /** The passed-verification line both callers print on success. */
 export function renderHealthVerificationPassed(url: string): string {
-  return `Health check passed: GET ${url} answered {"status":"ok"}.`;
+  // The observed body is not pinned to the literal in the success line:
+  // in the default `auto` + loopback deployment the probe's own request
+  // is §15.1-granted, so the service legitimately answers the literal
+  // plus the `polling` diagnostics (FSM-4, D-192) — the healthy `status`
+  // is the verdict either way.
+  return `Health check passed: GET ${url} answered a healthy status.`;
 }
 
 /** The honest guidance block both callers print when the probe did not pass. */

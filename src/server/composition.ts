@@ -601,6 +601,12 @@ export async function composeApplication(
     },
     logger,
     routes: {
+      // FSM-4/D-192: the health route's diagnostics source — the polling
+      // engine's live loop state, read per request on the authenticated
+      // branch (the §15.1 facts and the session seam the grant rule reads
+      // come from the `auth` block above, injected by the `/api` scope —
+      // one source of guard truth).
+      health: { polling: { running: () => pollingEngine.running } },
       accounts: { store: accountStore, repository, registry, now },
       status: {
         store: accountStore,

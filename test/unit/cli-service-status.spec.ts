@@ -6,6 +6,7 @@ import type { CliContext } from '../../src/cli/commands';
 import type { PasswdEntry, ServiceOwnerContext } from '../../src/cli/service-owner';
 import type { ServiceLockRead } from '../../src/cli/service-reload';
 import {
+  assessEngineLiveness,
   describeManagerState,
   findLatestErrorRun,
   formatStatusTimestamp,
@@ -795,6 +796,262 @@ describe('quotameter status — per-account facts', () => {
     );
     expect(result.out).toContain('Accounts: unavailable — the storage read failed (see stderr)');
     expect(closed).toBe(1);
+  });
+});
+
+/* ── The dead-engine suspicion (FSM-4, D-192) ────────────────────────────── */
+
+describe('quotameter status — the dead-engine suspicion (FSM-4, D-192)', () => {
+  /** The §12.2 silence threshold at the fixture's default 300 s interval. */
+  const THRESHOLD_MS = 990_000; // 3 × 300 s × the 1.1 jitter allowance
+
+  /** One account's newest-run evidence at the given stamp. */
+  const evidence = (
+    startedAt: number,
+    outcome: RunOutcome = 'network_error',
+    retryAfterSeconds: number | null = null,
+  ) => ({ startedAt, outcome, retryAfterSeconds });
+
+  it('assessEngineLiveness: the evidence table, strict at the boundary', () => {
+    // A stopped service never warns: an old cycle is expected then.
+    expect(
+      assessEngineLiveness({
+        serviceRunning: false,
+        accounts: [evidence(NOW - THRESHOLD_MS * 10)],
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'no-evidence' });
+    // No runs at all (fresh install, empty store): honest ambiguity.
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [],
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'no-evidence' });
+    // Exactly at the threshold is NOT stale — the gap rule's strict
+    // boundary (D-178: "elapsed strictly greater").
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(NOW - THRESHOLD_MS)],
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'current' });
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(NOW - THRESHOLD_MS + 1)],
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'current' });
+    // One millisecond past: the silence suggests a dead engine.
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(NOW - THRESHOLD_MS - 1)],
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'stale-silence', newestCycleAt: NOW - THRESHOLD_MS - 1 });
+  });
+
+  it('assessEngineLiveness: the threshold follows the configured interval (one source)', () => {
+    // One elapsed reading judged under two intervals: 198 001 ms of
+    // silence is well inside 3 × 300 s × 1.1 but just past 3 × 60 s × 1.1
+    // — the same gapThresholdMs the §12.2 timeline reads, never a
+    // re-derived twin.
+    const at300 = assessEngineLiveness({
+      serviceRunning: true,
+      accounts: [evidence(NOW - 198_001)],
+      intervalSeconds: 300,
+      nowEpochMs: NOW,
+    });
+    expect(at300).toEqual({ kind: 'current' });
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(NOW - 198_001)],
+        intervalSeconds: 60,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'stale-silence', newestCycleAt: NOW - 198_001 });
+  });
+
+  it('assessEngineLiveness: legitimate pauses widen the expectation — per account (review P2)', () => {
+    // A 429 run's stored Retry-After is the provider's requested pause:
+    // the same silence that would warn for a plain account is expected
+    // inside the deferral window, and suspicious only past it.
+    const deferred = NOW - 1_200_000; // 20 min silent at the 300 s interval
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(deferred, 'rate_limited', 1800)], // a 30-min ask
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'current' });
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(deferred, 'rate_limited', 60)], // a 60-s ask: long past
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'stale-silence', newestCycleAt: deferred });
+    // An auth_error newest run is the D-064 suspended shape: §7.2's
+    // hourly verification cadence legitimately stretches the silence by
+    // an hour — the exact false positive the review found (an account
+    // suspended at 12:26 probes at most hourly, well past the 16.5-min
+    // base threshold).
+    const suspended = NOW - 3_600_000; // one hour silent
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(suspended, 'auth_error')],
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'current' }); // inside base + the 60-min cadence
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(suspended - 990_001, 'auth_error')], // past even that
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'stale-silence', newestCycleAt: suspended - 990_001 });
+    // One provably-live account clears the whole suspicion: the loop
+    // dispatched a cycle for it within its own expectation.
+    expect(
+      assessEngineLiveness({
+        serviceRunning: true,
+        accounts: [evidence(NOW - 4_000_000), evidence(NOW - 60_000)],
+        intervalSeconds: 300,
+        nowEpochMs: NOW,
+      }),
+    ).toEqual({ kind: 'current' });
+  });
+
+  it('assessEngineLiveness: fail-fast on malformed inputs (the house convention)', () => {
+    const base = {
+      serviceRunning: true,
+      accounts: [evidence(NOW)],
+      intervalSeconds: 300,
+      nowEpochMs: NOW,
+    } as const;
+    expect(() => assessEngineLiveness({ ...base, nowEpochMs: Number.NaN })).toThrow(/nowEpochMs/u);
+    expect(() => assessEngineLiveness({ ...base, intervalSeconds: 59 })).toThrow(RangeError);
+    expect(() => assessEngineLiveness({ ...base, intervalSeconds: 3_601 })).toThrow(RangeError);
+    expect(() =>
+      assessEngineLiveness({ ...base, accounts: [evidence(Number.POSITIVE_INFINITY)] }),
+    ).toThrow(/startedAt/u);
+    expect(() =>
+      assessEngineLiveness({ ...base, accounts: [evidence(NOW, 'rate_limited', -1)] }),
+    ).toThrow(/retryAfterSeconds/u);
+  });
+
+  /**
+   * Runs the handler with the service running (a live pid holding the
+   * lock) over one seeded run at `startedAt`; the warning scenario's
+   * shared shape.
+   */
+  async function reportWithEngine(
+    startedAt: number,
+    alive = true,
+    lock: ServiceLockRead = { state: 'held', pid: 4321 },
+    outcome: RunOutcome = 'network_error',
+  ): Promise<{ code: number; out: string; err: string }> {
+    return run({
+      lock,
+      alive,
+      config: pipelineConfig([accountConfig()]),
+      store: {
+        state: 'open',
+        repository: fakeRepository([{ outcome, startedAt, endedAt: startedAt + 1_000 }]),
+        close: () => {},
+      },
+    });
+  }
+
+  it('warns when the running service has not recorded a cycle for three intervals — exit stays 0', async () => {
+    const lastCycleAt = NOW - 1_200_000; // 20 min silent at the 300 s interval
+    const result = await reportWithEngine(lastCycleAt);
+    expect(result.code, 'the suspicion is advisory, never a probe failure (D-114)').toBe(0);
+    // NOW − 20 min renders 13:06 Berlin (13:26 minus 20 minutes, CET).
+    expect(result.out).toContain(
+      'Warning: the service is running, but the newest collection cycle is older than three ' +
+        'polling intervals (last cycle 2025-11-01 13:06 (Europe/Berlin)) — the polling engine ' +
+        'may have stopped. Run quotameter logs to inspect the service records.',
+    );
+  });
+
+  it('does not warn while cycles are current, and never for a stopped service', async () => {
+    // A current cycle under a running service: silence below the threshold.
+    const current = await reportWithEngine(NOW - 60_000);
+    expect(current.out).not.toContain('Warning');
+    // The same ancient cycle with the service stopped (a stale lock): the
+    // Running line already explains the silence.
+    const stopped = await reportWithEngine(NOW - 1_200_000, false, { state: 'absent' });
+    expect(stopped.out).not.toContain('Warning');
+    expect(stopped.out).toContain('Running: stopped');
+    // …and with a dead holder pid (the stale-lock shape), same verdict.
+    const staleLock = await reportWithEngine(NOW - 1_200_000, false);
+    expect(staleLock.out).not.toContain('Warning');
+    expect(staleLock.out).toContain('stopped (stale lock naming pid 4321');
+  });
+
+  it('does not warn for the suspended shape the evidence itself explains (review P2)', async () => {
+    // One hour of silence under an auth_error newest run is the D-064
+    // suspended shape — §7.2's hourly verification cadence legitimately
+    // stretches the account's expectation — so the report shows
+    // `Auth rejected` WITHOUT claiming the engine may have stopped: the
+    // exact false positive the review round found.
+    const suspended = await reportWithEngine(NOW - 3_600_000, true, undefined, 'auth_error');
+    expect(suspended.out).not.toContain('Warning');
+    expect(suspended.out).toContain('Status: Auth rejected');
+    // Past even the widened expectation the suspicion returns — an
+    // account suspended for over an hour and 16.5 minutes with no probe
+    // run is no longer explained by the cadence alone.
+    const abandoned = await reportWithEngine(
+      NOW - 3_600_000 - 995_000,
+      true,
+      undefined,
+      'auth_error',
+    );
+    expect(abandoned.out).toContain('Warning');
+  });
+
+  it('ignores the silence of accounts the engine would never poll', async () => {
+    // A disabled account never runs, so its ancient cycle is not evidence
+    // of a dead engine; neither is an unconfigured one (the CLI-side
+    // approximation of the pollable set, D-192).
+    for (const account of [
+      accountConfig({ enabled: false }),
+      accountConfig({ apiKey: undefined, apiKeyEnv: 'QMON_TEST_KEY' }),
+    ]) {
+      let closed = 0;
+      const result = await run({
+        lock: { state: 'held', pid: 4321 },
+        config: pipelineConfig([account]),
+        env: PATH_ENV, // QMON_TEST_KEY is unset here
+        store: {
+          state: 'open',
+          repository: fakeRepository([
+            { outcome: 'network_error', startedAt: NOW - 1_200_000, endedAt: NOW - 1_199_000 },
+          ]),
+          close: () => {
+            closed += 1;
+          },
+        },
+      });
+      expect(result.out, JSON.stringify(account)).not.toContain('Warning');
+      expect(closed).toBe(1);
+    }
   });
 });
 

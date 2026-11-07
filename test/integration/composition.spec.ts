@@ -300,6 +300,31 @@ describe('composeApplication — the previously-404 families answer', () => {
   );
 });
 
+describe('composeApplication — the health diagnostics wiring (FSM-4, D-192)', () => {
+  it(
+    'feeds the polling engine state to the authenticated health branch',
+    { timeout: 20_000 },
+    async () => {
+      await withComposedApp({ config: seededConfig() }, async (h) => {
+        // The §15.1 not-required cell (auto mode, loopback bind, direct
+        // request): the live engine's loop state rides the granted body —
+        // the audit's dead-state finding observable through the wire.
+        const response = await h.inject('GET', '/api/health');
+        expect(response.statusCode).toBe(200);
+        expect(response.body).toBe('{"status":"ok","polling":{"running":true}}');
+        // The fail-closed cell through the same production construction:
+        // a proxied passwordless request (§15.1's 403 class for protected
+        // routes) keeps the byte-exact public literal.
+        const proxied = await h.inject('GET', '/api/health', undefined, {
+          'x-forwarded-for': '203.0.113.7',
+        });
+        expect(proxied.statusCode).toBe(200);
+        expect(proxied.body).toBe('{"status":"ok"}');
+      });
+    },
+  );
+});
+
 describe('composeApplication — the peak-hours wiring (162, D-142)', () => {
   it(
     'serves the configured schedule’s intervals through the production construction',

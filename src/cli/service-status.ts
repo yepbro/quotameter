@@ -50,6 +50,18 @@
  *   The stored `error_message` is sanitized by construction (D-048) and
  *   renders verbatim after a belt-and-suspenders exact-occurrence redaction
  *   of the configured secrets (§7.4's rule mirrored for this surface).
+ * - **Dead-engine suspicion** — the FSM-4/D-192 advisory: a separate
+ *   process cannot probe the polling engine, so when the lock is held by
+ *   a live pid yet every pollable account's silence exceeds what its own
+ *   evidence makes legitimate, the report appends a warning with a
+ *   `quotameter logs` pointer. The base expectation is `gapThresholdMs`
+ *   — §12.2's three jitter-expanded intervals, one threshold source —
+ *   widened per account by the facts the newest run row itself carries:
+ *   an `auth_error` newest run is the D-064 suspended shape (§7.2's
+ *   hourly verification cadence), a stored `retry_after_seconds` is the
+ *   provider's requested pause (§7.2's deferral — evidence, never the
+ *   engine's gate re-derived, D-069). Advisory only: the exit code stays
+ *   D-114's (states never fail a status question).
  *
  * **Exit codes (D-114)**: 0 exactly when every probe *answered* — the states
  * themselves (stopped, not installed, no accounts, no data) never fail a
@@ -69,7 +81,12 @@ import { join } from 'node:path';
 import { type ConfigEnvLoadResult, loadConfigWithEnv } from '../config/env';
 import { configFilePath } from '../config/load';
 import type { PathEnv } from '../config/paths';
-import { INITIAL_SUSPENSION_STATE } from '../services/polling-suspension';
+import { gapThresholdMs } from '../services/history-gaps';
+import {
+  INITIAL_SUSPENSION_STATE,
+  AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS,
+} from '../services/polling-suspension';
+import { MAX_POLLING_INTERVAL_MS, MIN_POLLING_INTERVAL_MS } from '../services/polling-scheduler';
 import {
   deriveAccountStatus,
   readPollingRunEvidence,
@@ -84,6 +101,7 @@ import {
   type QuotaRepository,
   type RunOutcome,
 } from '../storage/repository';
+import { CONFIG_DEFAULTS } from '../schemas/config';
 import {
   createSystemClock,
   formatZonedDate,
@@ -340,6 +358,138 @@ export function resolveAccountConfigured(
   return typeof value === 'string' && value !== '';
 }
 
+/* ── The dead-engine suspicion (FSM-4, D-192) ───────────────────────────── */
+
+/**
+ * One pollable account's newest-run evidence — the silence judgment's
+ * input. Any outcome counts (a failing cycle still proves the loop
+ * alive); the two facts that LEGITIMATELY widen an account's expected
+ * silence ride beside the stamp, both read from the same stored run row.
+ */
+export interface EngineAccountSilence {
+  /** The run's `started_at` (epoch ms) — the silence's anchor. */
+  readonly startedAt: number;
+  /**
+   * The run's outcome token: an `auth_error` newest run is the suspended
+   * shape (the D-064 episode holds until a release — a newer run would
+   * exist otherwise), whose verification cadence §7.2 fixes at one probe
+   * per hour.
+   */
+  readonly outcome: RunOutcome;
+  /**
+   * The run's stored `retry_after_seconds` evidence (D-069: the §7.2
+   * header's decision at settle time, capped at 3600 — evidence of the
+   * provider's requested pause, never the engine's gate re-derived).
+   */
+  readonly retryAfterSeconds: number | null;
+}
+
+/** What {@link assessEngineLiveness} concludes from the available evidence. */
+export type EngineLiveness =
+  /**
+   * No suspicion is derivable: the service is not running (an old latest
+   * cycle is then EXPECTED — the report's Running line already explains
+   * it), or no pollable account has a run at all (a fresh install, a
+   * database without history — honest ambiguity, §12.1's spirit).
+   */
+  | { readonly kind: 'no-evidence' }
+  /** At least one account's silence sits within its own expectation. */
+  | { readonly kind: 'current' }
+  /**
+   * The evidence suggests a dead engine: the service holds the data
+   * directory (a live pid), yet EVERY pollable account's silence exceeds
+   * its own expectation. `newestCycleAt` carries the anchor for the
+   * rendered warning.
+   */
+  | { readonly kind: 'stale-silence'; readonly newestCycleAt: EpochMs };
+
+/** Everything the dead-engine suspicion decides over; pure over its inputs. */
+export interface EngineLivenessInput {
+  /** Whether the single-instance lock is held by a live pid (D-112). */
+  readonly serviceRunning: boolean;
+  /**
+   * The pollable accounts' newest-run evidence (empty — or absent runs —
+   * means no suspicion is derivable).
+   */
+  readonly accounts: ReadonlyArray<EngineAccountSilence>;
+  /** The configured §7.1 interval in seconds (the live threshold base). */
+  readonly intervalSeconds: number;
+  /** The wall reading the silence is measured against (D-021). */
+  readonly nowEpochMs: number;
+}
+
+/**
+ * Derives the dead-engine suspicion from the evidence a separate process
+ * can see (FSM-4, D-192 — the audit's finding that a scheduler killed by
+ * a broken seam was learnable only from eventual `Stale` statuses). A
+ * separate process cannot probe the engine directly, so the suspicion is
+ * the same silence §12.2's timeline reads — judged PER ACCOUNT against
+ * the silence that account's own evidence makes legitimate:
+ *
+ * - the base is {@link gapThresholdMs} from the history-gaps module, the
+ *   ONE threshold source (three jitter-expanded §7.1 intervals, strict
+ *   on the boundary exactly as the gap rule is);
+ * - a newest run of `auth_error` is the D-064 suspended shape: the §7.2
+ *   verification cadence (one probe per
+ *   {@link AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS}) legitimately
+ *   stretches that account's silence by an hour;
+ * - a stored `retry_after_seconds` is the provider's own requested pause
+ *   (§7.2, capped at an hour at store time): the deferral window is
+ *   added to that account's expectation — the stored evidence widens
+ *   the tolerance, the engine's gate is never re-derived from it
+ *   (D-069's evidence-not-gate rule).
+ *
+ * The verdict is advisory: it warns on the report and never changes the
+ * exit code (D-114: states never fail a status question).
+ */
+export function assessEngineLiveness(input: EngineLivenessInput): EngineLiveness {
+  const caller = 'assessEngineLiveness';
+  if (!Number.isFinite(input.nowEpochMs)) {
+    throw new TypeError(`${caller}: nowEpochMs must be a finite epoch-milliseconds reading`);
+  }
+  if (
+    !Number.isInteger(input.intervalSeconds) ||
+    input.intervalSeconds * 1000 < MIN_POLLING_INTERVAL_MS ||
+    input.intervalSeconds * 1000 > MAX_POLLING_INTERVAL_MS
+  ) {
+    throw new RangeError(
+      `${caller}: intervalSeconds must be an integer in ` +
+        `[${MIN_POLLING_INTERVAL_MS / 1000}, ${MAX_POLLING_INTERVAL_MS / 1000}] (spec §7.1)`,
+    );
+  }
+  for (const account of input.accounts) {
+    if (!Number.isFinite(account.startedAt)) {
+      throw new TypeError(`${caller}: each account's startedAt must be finite`);
+    }
+    if (
+      account.retryAfterSeconds !== null &&
+      (!Number.isFinite(account.retryAfterSeconds) || account.retryAfterSeconds < 0)
+    ) {
+      throw new TypeError(
+        `${caller}: retryAfterSeconds must be null or a non-negative finite number of seconds`,
+      );
+    }
+  }
+  if (!input.serviceRunning || input.accounts.length === 0) {
+    return { kind: 'no-evidence' };
+  }
+  let newestCycleAt = Number.NEGATIVE_INFINITY;
+  for (const account of input.accounts) {
+    const baseMs = gapThresholdMs(input.intervalSeconds);
+    const suspensionMs =
+      account.outcome === 'auth_error' ? AUTH_SUSPENSION_VERIFICATION_INTERVAL_MS : 0;
+    const deferralMs = (account.retryAfterSeconds ?? 0) * 1000;
+    const expectedSilenceMs = baseMs + suspensionMs + deferralMs;
+    // Within its own expectation — the loop is provably alive on this
+    // account's evidence alone.
+    if (input.nowEpochMs - account.startedAt <= expectedSilenceMs) {
+      return { kind: 'current' };
+    }
+    if (account.startedAt > newestCycleAt) newestCycleAt = account.startedAt;
+  }
+  return { kind: 'stale-silence', newestCycleAt };
+}
+
 /* ── Rendering ─────────────────────────────────────────────────────────── */
 
 /**
@@ -404,6 +554,14 @@ export interface StatusReport {
   /** The §10 display zone; printed only for a valid configuration. */
   readonly timeZone: string | null;
   readonly accounts: AccountsSection;
+  /**
+   * The dead-engine warning line (FSM-4, D-192), or `null` when the
+   * evidence does not suggest one ({@link assessEngineLiveness}): the
+   * service running while no account has recorded a cycle for more than
+   * three polling intervals. Advisory only — never a probe failure, so
+   * the exit code is untouched (D-114).
+   */
+  readonly engineWarning: string | null;
 }
 
 /**
@@ -421,46 +579,56 @@ export function renderStatusReport(report: StatusReport): string {
         : report.configState === 'absent'
           ? 'not configured yet'
           : 'invalid — the problems are on stderr';
-  const lines = [
-    'Quotameter status',
-    '',
-    'Service:',
-    `  Owner: ${report.ownerName}`,
-    `  Installed: ${report.installed}`,
-  ];
-  if (report.manager !== null) {
-    lines.push(`  Manager: ${report.manager}`);
-  }
-  lines.push(
-    `  Running: ${report.running}`,
-    `  Data directory: ${report.dataDir}`,
-    `  Configuration: ${report.configPath} (${configState})`,
-  );
-  if (report.timeZone !== null) {
-    lines.push(`  Display time zone: ${report.timeZone}`);
-  }
-  lines.push('');
-  if (report.accounts.state === 'unavailable') {
-    lines.push(`Accounts: unavailable — ${report.accounts.reason}`);
-    return lines.join('\n');
-  }
-  const accounts = report.accounts.accounts;
-  if (accounts.length === 0) {
-    lines.push('Accounts: none configured yet — add one with quotameter init or in the web UI.');
-    return lines.join('\n');
-  }
-  lines.push(`Accounts (${accounts.length}):`);
-  for (const account of accounts) {
+  /** The report body up to the accounts section's own ending. */
+  const body = (() => {
+    const lines = [
+      'Quotameter status',
+      '',
+      'Service:',
+      `  Owner: ${report.ownerName}`,
+      `  Installed: ${report.installed}`,
+    ];
+    if (report.manager !== null) {
+      lines.push(`  Manager: ${report.manager}`);
+    }
     lines.push(
-      `  ${account.label} (${account.providerId})`,
-      `    Status: ${account.status}`,
-      `    Last collection: ${
-        account.lastCollection ?? 'none yet (no successful collection recorded)'
-      }`,
-      `    Last error: ${account.lastError ?? 'none'}`,
+      `  Running: ${report.running}`,
+      `  Data directory: ${report.dataDir}`,
+      `  Configuration: ${report.configPath} (${configState})`,
     );
+    if (report.timeZone !== null) {
+      lines.push(`  Display time zone: ${report.timeZone}`);
+    }
+    lines.push('');
+    if (report.accounts.state === 'unavailable') {
+      lines.push(`Accounts: unavailable — ${report.accounts.reason}`);
+      return lines;
+    }
+    const accounts = report.accounts.accounts;
+    if (accounts.length === 0) {
+      lines.push('Accounts: none configured yet — add one with quotameter init or in the web UI.');
+      return lines;
+    }
+    lines.push(`Accounts (${accounts.length}):`);
+    for (const account of accounts) {
+      lines.push(
+        `  ${account.label} (${account.providerId})`,
+        `    Status: ${account.status}`,
+        `    Last collection: ${
+          account.lastCollection ?? 'none yet (no successful collection recorded)'
+        }`,
+        `    Last error: ${account.lastError ?? 'none'}`,
+      );
+    }
+    return lines;
+  })();
+  // The dead-engine warning rides every path (in practice it can only be
+  // non-null on the listed-accounts one — the suspicion needs runs — but
+  // the renderer owes the field its place unconditionally).
+  if (report.engineWarning !== null) {
+    body.push('', report.engineWarning);
   }
-  return lines.join('\n');
+  return body.join('\n');
 }
 
 /* ── The handler ───────────────────────────────────────────────────────── */
@@ -554,13 +722,20 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
     const lockPath = lockFilePath(directories.dataDir);
     const lock = await (deps.readLock ?? readServiceLock)(lockPath);
     let running: string;
+    // The dead-engine suspicion's service half (FSM-4, D-192): only a
+    // service that actually holds the data directory can have a DEAD
+    // engine — a stopped service's old cycles are expected, not evidence.
+    let serviceRunning = false;
     if (lock.state === 'absent') {
       running = `stopped (no instance holds the data directory ${directories.dataDir})`;
     } else if (lock.state === 'held') {
       const isAlive = deps.isAlive ?? isProcessAlive;
-      running = isAlive(lock.pid)
-        ? `running (pid ${lock.pid})`
-        : `stopped (stale lock naming pid ${lock.pid} — the service stopped without releasing it; the next start clears it automatically)`;
+      if (isAlive(lock.pid)) {
+        serviceRunning = true;
+        running = `running (pid ${lock.pid})`;
+      } else {
+        running = `stopped (stale lock naming pid ${lock.pid} — the service stopped without releasing it; the next start clears it automatically)`;
+      }
     } else if (lock.state === 'unreadable') {
       ctx.output.err(
         failureLine(errorPrefix, `reading the service lock ${lockPath} failed`, lock.detail),
@@ -619,6 +794,10 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
 
     /* Per-account facts (§7.3 through task 111; §7.2's two most-recents). */
     let accounts: AccountsSection;
+    // The dead-engine suspicion's evidence half (FSM-4, D-192): each
+    // pollable account's newest-run facts, or nothing when no run exists
+    // for any of them (fresh install, empty store).
+    const livenessAccounts: EngineAccountSilence[] = [];
     if (!config.ok) {
       accounts = configAbsent
         ? // Nothing is configured — the helpful §5.2 next step, not an error.
@@ -652,6 +831,13 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
         readonly errorRun: CollectionRunRecord | null;
         /** Whether the account's storage row is archived (§8.2, rank 0). */
         readonly archived: boolean;
+        /**
+         * The account's newest run row (any outcome — the dead-engine
+         * suspicion's liveness anchor, FSM-4/D-192: the stamp plus the
+         * two facts that legitimately widen an account's expected
+         * silence); `null` when no run exists.
+         */
+        readonly latestRun: CollectionRunRecord | null;
       }
 
       /** The storage reads of one account — the only I/O in the block. */
@@ -659,6 +845,7 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
         evidence: readPollingRunEvidence(repository, accountId),
         errorRun: findLatestErrorRun(repository, accountId),
         archived: repository.getAccount(accountId)?.status === 'archived',
+        latestRun: repository.getLatestCollectionRun(accountId),
       });
 
       /** The pure render of one account's block (no I/O). */
@@ -712,6 +899,7 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
         // No database file: no rows exist by construction, so nothing is
         // archived — the derivation's `archived: false` is the honest read.
         archived: false,
+        latestRun: null,
       };
 
       const openStore = deps.openStore ?? openStatusStore;
@@ -744,6 +932,24 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
               renderAccountLine(account, facts[index]!),
             ),
           };
+          // The suspicion reads only the accounts the engine would poll
+          // (enabled, secret resolvable in THIS environment — the
+          // CLI-side approximation of the pollable set; a disabled or
+          // unconfigured account never runs, so its silence is not
+          // evidence of a dead engine). Any outcome counts: a failing
+          // cycle still proves the loop alive, and the row's own
+          // deferral/suspension facts widen that account's expectation
+          // inside the pure judgment below.
+          for (const [index, account] of accountConfigs.entries()) {
+            if (account.enabled === false || !resolveAccountConfigured(account, env)) continue;
+            const run = facts[index]!.latestRun;
+            if (run === null) continue;
+            livenessAccounts.push({
+              startedAt: run.startedAt,
+              outcome: run.outcome,
+              retryAfterSeconds: run.retryAfterSeconds,
+            });
+          }
         } catch (error) {
           ctx.output.err(
             failureLine(errorPrefix, 'reading the service database failed', thrownMessage(error)),
@@ -756,6 +962,23 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
       }
     }
 
+    /* The dead-engine suspicion (FSM-4, D-192) — advisory, exit-neutral. */
+    const liveness = assessEngineLiveness({
+      serviceRunning,
+      accounts: livenessAccounts,
+      // A non-ok configuration leaves the evidence empty (no-evidence),
+      // so the interval never decides anything there; the default keeps
+      // the pure function's input contract honest regardless.
+      intervalSeconds: config.ok
+        ? config.config.app.pollingIntervalSeconds!
+        : CONFIG_DEFAULTS.app.pollingIntervalSeconds!,
+      nowEpochMs,
+    });
+    const engineWarning =
+      liveness.kind !== 'stale-silence' || !config.ok
+        ? null
+        : `Warning: the service is running, but the newest collection cycle is older than three polling intervals (last cycle ${formatStatusTimestamp(liveness.newestCycleAt, config.config.app.timezone)}) — the polling engine may have stopped. Run quotameter logs to inspect the service records.`;
+
     ctx.output.out(
       renderStatusReport({
         ownerName: owner.user.name,
@@ -767,6 +990,7 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
         configState,
         timeZone: config.ok ? config.config.app.timezone : null,
         accounts,
+        engineWarning,
       }),
     );
     return incomplete ? 1 : 0;

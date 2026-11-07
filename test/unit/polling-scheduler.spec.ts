@@ -5,6 +5,7 @@ import {
   TransportStatusError,
 } from '../../src/providers/transport';
 import type { Clock } from '../../src/util/clock';
+import type { Logger } from '../../src/util/logger';
 import { AppConfigSchema } from '../../src/schemas/config';
 import { createAccountSuspensions } from '../../src/services/account-suspensions';
 import type { AccountSuspensions } from '../../src/services/account-suspensions';
@@ -110,6 +111,11 @@ interface HarnessOptions {
   readonly inFlight?: { begin(): { done(): void } };
   /** Overrides the wait seam (default: the module's real abortable timer). */
   readonly sleep?: PollingSleep;
+  /**
+   * The diagnostics logger seam (FSM-4/D-192 widened it to `error`): the
+   * death tests inject a recorder; the default stays the silent embedding.
+   */
+  readonly logger?: Pick<Logger, 'debug' | 'error'>;
 }
 
 /**
@@ -200,6 +206,7 @@ function harness(options: HarnessOptions = {}): Harness {
     cycleHangThresholdMs: options.cycleHangThresholdMs,
     inFlight: options.inFlight,
     sleep: options.sleep,
+    logger: options.logger,
   });
 
   return {
@@ -1364,6 +1371,83 @@ describe('review-round regression pins', () => {
     );
   });
 
+  it('logs exactly one error record at loop death — no spam, stop() still rethrows (FSM-4 R1/R4)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        let monotonicHealthy = true;
+        const clockSeam: Clock = {
+          now: () => Date.now(),
+          monotonicMs: () => (monotonicHealthy ? Date.now() : Number.NaN),
+        };
+        /** The death records the injected logger saw. */
+        const errorRecords: Array<{ message: string; data: unknown }> = [];
+        const logger: Pick<Logger, 'debug' | 'error'> = {
+          debug: () => undefined,
+          error: (message, data) => {
+            errorRecords.push({ message, data });
+          },
+        };
+        const engine = harness({ ids: ['a'], clock: clockSeam, logger });
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(errorRecords).toHaveLength(0); // a healthy loop logs no death
+        // Break the clock's monotonic reading; the next scheduling pass
+        // dies — and the death becomes observable: exactly one `error`
+        // record through the composition's logger seam, carrying the
+        // retained error (the same value stop() rethrows).
+        monotonicHealthy = false;
+        engine.scheduler.requestManualTest('a');
+        await clock.advanceMsAsync(0);
+        expect(engine.scheduler.running).toBe(false);
+        expect(errorRecords).toHaveLength(1);
+        expect(errorRecords[0]!.message).toBe(
+          'polling engine died: the dispatch loop exited unexpectedly; scheduling has stopped',
+        );
+        expect(errorRecords[0]!.data).toEqual({
+          error: expect.objectContaining({ message: expect.stringMatching(/monotonicMs/u) }),
+        });
+        // No further pass runs (the loop is dead), so no further record —
+        // one per death event, never a spam of retries.
+        await clock.advanceMsAsync(60_000);
+        expect(errorRecords).toHaveLength(1);
+        // R4 preserved: the retained error still re-surfaces through
+        // stop() — the death record is additive observability, not a
+        // replacement for the rethrow.
+        await expect(engine.scheduler.stop()).rejects.toThrow(/monotonicMs/u);
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
+  it('stays silent at loop death when no logger is wired (the standalone embedding)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const account: PollingAccount = {
+          accountId: 'b',
+          keyIdentity: 'key:b',
+          attempt: async () => ({ providerId: 'b' }),
+          settleCycle: async () => classifySuccess(),
+        };
+        const brokenClock = timersClock();
+        // No logger option at all: the default embedding must not crash
+        // on the death path — the record simply goes nowhere.
+        const broken = createPollingScheduler({
+          accounts: [account],
+          intervalMs: 60_000,
+          clock: brokenClock,
+          suspensions: createAccountSuspensions({ clock: brokenClock }),
+          random: () => 0,
+          sleep: () => Promise.reject(new Error('broken sleep seam')),
+        });
+        broken.start();
+        await clock.advanceMsAsync(0);
+        expect(broken.running).toBe(false);
+        await expect(broken.stop()).rejects.toThrow(/broken sleep seam/u);
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
   it('survives a large wall-clock regression during a deferral, resuming at the gate (P2-1)', async () => {
     await withFakeTimers(
       async (clock) => {
@@ -1493,6 +1577,17 @@ describe('createPollingScheduler validation', () => {
     expect(() =>
       createPollingScheduler({ intervalMs: 60_000, clock, suspensions, inFlight: {} as never }),
     ).toThrow(/inFlight/u);
+    // FSM-4/D-192: the diagnostics seam requires both halves — a logger
+    // without `error` cannot carry the death record, so it fails at
+    // assembly like every other broken seam.
+    expect(() =>
+      createPollingScheduler({
+        intervalMs: 60_000,
+        clock,
+        suspensions,
+        logger: { debug: () => undefined } as never,
+      }),
+    ).toThrow(/logger/u);
     expect(() =>
       createPollingScheduler({
         intervalMs: 60_000,

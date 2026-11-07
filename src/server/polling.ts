@@ -160,6 +160,15 @@ export interface PollingEngine {
    * `onManualTestRejected`.
    */
   manualTestRejected(accountId: string): void;
+  /**
+   * Whether the scheduler's dispatch loop is alive (FSM-4, D-192) — false
+   * after the component has stopped and also after the loop died of a
+   * wiring failure (the death itself logs one `error` record through the
+   * shared logger). The composition feeds this getter to the
+   * authenticated `/api/health` diagnostics, so the owner can tell a dead
+   * engine from a healthy one without shell access to the journal.
+   */
+  readonly running: boolean;
 }
 
 /* ── Secret resolution (§6.3 — the store's `secretOf` vocabulary) ───────── */
@@ -207,7 +216,9 @@ export function createPollingEngine(options: PollingEngineOptions): PollingEngin
     inFlight,
     // R6/D-190: held-plan kind transitions log at debug through the
     // composition's redacting logger (the scheduler's own optional seam —
-    // a standalone embedding stays silent).
+    // a standalone embedding stays silent). FSM-4/D-192: the same seam's
+    // `error` half logs exactly one record when the dispatch loop dies of
+    // a wiring failure — the observability this composition owes §16.
     logger,
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
   });
@@ -325,6 +336,11 @@ export function createPollingEngine(options: PollingEngineOptions): PollingEngin
 
   return {
     component,
+    // A getter, not a snapshot: the value must reflect the scheduler's
+    // live loop state at every read (the health route reads per request).
+    get running(): boolean {
+      return scheduler.running;
+    },
     applyReloadChanges(result) {
       if (!started) return;
       // §6.4's live vocabulary drives exactly two feeds; the engine's own

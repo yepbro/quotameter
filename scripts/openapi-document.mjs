@@ -161,10 +161,15 @@ const OPERATIONS = [
     summary: 'Public health probe',
     description:
       'The one endpoint that answers without authentication in every auth mode (spec §13, §15.1). ' +
-      'The unauthenticated response is exactly `{ "status": "ok" }`; no diagnostics ride it.',
+      'The unauthenticated response is exactly `{ "status": "ok" }`; no diagnostics ride it. ' +
+      'A request the §15.1 layer would grant — direct loopback in `auto` mode, or a valid ' +
+      'session — additionally carries the `polling.running` diagnostics: whether the polling ' +
+      "engine's dispatch loop is alive (FSM-4, D-192).",
     public: true,
     schema: { response: { 200: healthSchemas.HealthResponseSchema } },
-    responseDescriptions: { 200: 'The service is up.' },
+    responseDescriptions: {
+      200: 'The service is up; granted requests also learn whether the polling engine is running.',
+    },
     errorCodes: ['VALIDATION', 'FORBIDDEN', 'INTERNAL'],
   },
   {

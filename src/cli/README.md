@@ -933,6 +933,16 @@ composed of landed layers only, each fact from the layer that owns it:
   every §6.3 secret source — file-stored keys, environment-supplied key
   values, and the password hash (§7.4's rule mirrored — the public sanitizer
   is payload-shaped).
+- **Dead-engine suspicion (FSM-4, D-192)** — a separate process cannot
+  probe the polling engine, so the report reads the same silence §12.2's
+  timeline reads: `assessEngineLiveness` warns — one advisory line with a
+  `quotameter logs` pointer — when the lock is held by a live pid yet no
+  account the engine would poll (enabled, secret resolvable in this
+  invocation's environment) has recorded a cycle for more than three
+  jitter-expanded intervals (`gapThresholdMs` from `history-gaps.ts`, the
+  one threshold source; any outcome counts — a failing cycle still proves
+  the loop alive). A stopped service's old cycles are expected and never
+  warn; the suspicion is exit-neutral (D-114: states are not failures).
 - **§10 time discipline** — every rendered timestamp is
   `formatZonedDate`/`formatZonedTime` in the configured display zone with the
   zone's name, never a machine-local reading; `now` comes from the injectable
@@ -966,7 +976,8 @@ Branch coverage: the installed-scope × manager × running × configuration ×
 storage matrix is seam-driven in `test/unit/cli-service-status.spec.ts`
 (beside the pure-helper tables — the manager probe plan, the outcome-filtered
 latest-error read, the §6.3 secret resolution, the §10 formatter, the
-redaction — and the production opener against real directories, including a
+redaction, the dead-engine liveness table — and the production opener against
+real directories, including a
 corrupt database); the real-launcher routes — the bare machine, the full
 report over a real configuration and a real migrated SQLite database (marker
 key never rendered), the invalid configuration, and a real §5.6 lock naming a

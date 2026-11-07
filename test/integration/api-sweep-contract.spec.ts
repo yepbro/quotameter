@@ -98,10 +98,16 @@ function seededConfig(): unknown {
 }
 
 describe('the §13 endpoint inventory through the production composition', () => {
-  it('answers the public health route with the byte-exact literal (§13)', async () => {
+  it('answers the public health route with the granted diagnostics (§13, D-192)', async () => {
+    // The production composition wires the diagnostics source, and the
+    // sweep's direct loopback call sits in §15.1's `not-required` cell —
+    // so the granted body carries the engine's live loop state. The
+    // byte-exact `{"status":"ok"}` literal is the UNGRANTED contract
+    // (no source wired, or the §15.1 layer would refuse the request);
+    // `api-health.spec.ts` pins both halves through the route stack.
     const response = await api.call('GET', '/api/health');
     expect(response.statusCode).toBe(200);
-    expect(response.body).toBe('{"status":"ok"}');
+    expect(response.body).toBe('{"status":"ok","polling":{"running":true}}');
     expectJsonContentType(response, 'health');
   });
 

@@ -92,7 +92,12 @@ registered `/api` scope every Stage-12 endpoint joins, `health.ts`
 (task 147) is the first endpoint — the public `GET /api/health` returning
 exactly `{"status":"ok"}` (§13), unauthenticated in every auth mode, its
 shape enforced by the closed TypeBox response contract in
-`src/schemas/api/health.ts` — and `error.ts` (task 148) is the §13 error
+`src/schemas/api/health.ts` — where a request the §15.1 layer would
+grant (direct loopback in `auto` mode, or a valid session) additionally
+receives the `polling.running` diagnostics (FSM-4, D-192: the grant rule
+reuses `classifyAuthMode` and the same credential seam the guard
+consults, so the unauthenticated body stays byte-exact by construction)
+— and `error.ts` (task 148) is the §13 error
 envelope every error response answers through: the code registry lives in
 `src/schemas/api/error.ts`, while `ApiError` (the throw-side extension
 point the auth/CSRF/rate-limit/endpoint tasks reject through), the pure

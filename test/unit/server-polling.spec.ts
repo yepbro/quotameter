@@ -339,6 +339,20 @@ describe('createPollingEngine lifecycle and feeds', () => {
     expect(harness.scheduler.stopped).toBe(true);
   });
 
+  it('exposes the loop state live through running (FSM-4, D-192)', async () => {
+    // A getter, never a snapshot: the health route reads it per request,
+    // so the value must track the scheduler at every reading — false
+    // before start, true while the loop lives, false again after stop
+    // (and false after a wiring death, which the spy's `running` models
+    // the same way the real engine does).
+    const harness = engineHarness(configOf([]));
+    expect(harness.engine.running).toBe(false);
+    await harness.engine.component.start();
+    expect(harness.engine.running).toBe(true);
+    await harness.engine.component.stop();
+    expect(harness.engine.running).toBe(false);
+  });
+
   it('applyReloadChanges is a no-op before start and an accounts feed after', async () => {
     const harness = engineHarness(configOf([]));
     const added = reloadOf(

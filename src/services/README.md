@@ -417,14 +417,19 @@ leave-the-polled-set drop and the admission re-arm — so dispatch gating and
 abort every live flight, resolve promptly — with the optional structural
 in-flight tracker (D-020) for the server's graceful drain; a wiring-level
 loop failure is retained and observable (`running` turns false, `stop()`
-re-surfaces the error), and every wake is sliced to `MAX_WAKE_MS` (one
-hour) so a wall-regressed gate wait can never busy-spin. The scheduler is
+re-surfaces the error, and — since FSM-4, D-192 — exactly one `error`
+record fires at the moment of death through the injected logger), and
+every wake is sliced to `MAX_WAKE_MS` (one hour) so a wall-regressed gate
+wait can never busy-spin. The scheduler is
 composed into the running service — the shared clock, the shared tracker,
 one recorder per pollable account, and (since FSM-1) the shared redacting
-logger for `debug`-level plan-transition diagnostics — by
+logger for `debug`-level plan-transition diagnostics (its `error` half
+carrying the loop-death record since FSM-4) — by
 [`../server/polling.ts`](../server/polling.ts) since U-051 (D-176):
 `src/server/composition.ts` registers it in the documented §5.6 order and
-feeds `setAccounts`/`setIntervalMs` from §6.4 reloads.
+feeds `setAccounts`/`setIntervalMs` from §6.4 reloads; the composition
+also surfaces the engine's live `running` getter to the authenticated
+`/api/health` diagnostics (D-192).
 
 Landed: [`polling-phase.ts`](./polling-phase.ts) — the dispatcher's
 explicit per-account phase model (task FSM-1, decision D-190, the D-066

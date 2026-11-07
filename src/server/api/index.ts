@@ -46,7 +46,7 @@ import type { AccountsRouteOptions } from './accounts';
 import { accountRoutes } from './accounts';
 import { createAuthModeGuard, type AuthModeGuardOptions } from './auth';
 import { sendApiError, unmatchedApiClassification } from './error';
-import { healthRoutes } from './health';
+import { healthRoutes, type HealthRouteOptions } from './health';
 import type { HistoryRouteOptions } from './history';
 import { historyRoutes } from './history';
 import type { ProvidersRouteOptions } from './providers';
@@ -123,6 +123,18 @@ export interface ApiRoutesOptions {
    */
   readonly peakHours?: PeakHoursRouteOptions;
   /**
+   * The health route's diagnostics source (FSM-4, D-192) — the polling
+   * engine's live `running` reader. Optional like every dependency-carrying
+   * member: absent, the route keeps task 147's literal-body contract in
+   * every state; present, the authenticated branch additionally carries
+   * the `polling.running` diagnostics. The §15.1 facts and the credential
+   * seam the grant rule needs are NOT a member here — the scope injects
+   * them from its own required `auth` options below (the session reader's
+   * D-182 single-source precedent), so the guard, the reader, and this
+   * grant rule can never drift on mode, bind, password, or session truth.
+   */
+  readonly health?: Omit<HealthRouteOptions, 'authMode' | 'isAuthenticated'>;
+  /**
    * The auth endpoints' dependencies (tasks U-041/U-055, D-146/D-182) —
    * the storage facade, the live stored-hash reader, the clock, and
    * (optionally) the login-delay sleep; registers `POST /api/auth/login`
@@ -169,8 +181,26 @@ export const apiRoutes: FastifyPluginAsync<ApiRoutesOptions> = async (fastify, o
   // route config (`./auth`, task 147's §13 pin).
   fastify.addHook('onRequest', createAuthModeGuard(options.auth));
   // Task 147: the public health response (§13) — the one endpoint that
-  // stays unauthenticated in every auth mode (§15.1).
-  await fastify.register(healthRoutes);
+  // stays unauthenticated in every auth mode (§15.1). Since FSM-4 (D-192)
+  // the route may carry the authenticated `polling.running` diagnostics:
+  // the scope injects the §15.1 facts and the credential seam from its own
+  // guard options when the construction wires a diagnostics source, so the
+  // grant rule reads exactly the truth the guard reads (the session
+  // reader's D-182 single-source pattern at its second consumer).
+  await fastify.register(
+    healthRoutes,
+    options.health === undefined
+      ? {}
+      : {
+          ...options.health,
+          authMode: {
+            mode: options.auth.mode,
+            bindHost: options.auth.bindHost,
+            passwordConfigured: options.auth.passwordConfigured,
+          },
+          isAuthenticated: options.auth.isAuthenticated,
+        },
+  );
 
   // Task 159 (spec §13, §8.2; decision D-128): the accounts endpoints —
   // list/create/update/archive/purge/test with write-only keys. Registered

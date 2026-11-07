@@ -7,17 +7,22 @@ import {
   createHttpServerComponent,
   type HttpServerComponent,
 } from '../../src/server/http';
+import { healthRoutes } from '../../src/server/api/health';
 import { HealthResponseSchema } from '../../src/schemas/api/health';
 import { createLogger, type Logger } from '../../src/util/logger';
 import { createMemoryLogSink, type MemoryLogSink } from '../helpers/logSink';
 
 /**
- * The public health response (task 147, spec §13, §15.1, §15.5; decision
- * D-111): unauthenticated `GET /api/health` answers with the byte-exact
- * literal `{"status":"ok"}` — no versions, uptime, memory, storage state,
- * account data, errors, or timestamps — and stays public in every auth mode
- * (nothing here consults credentials; the request-security tasks 149–152 are
- * bound by §13's "except the public health response").
+ * The public health response (task 147, spec §13, §15.1, §15.5; decisions
+ * D-111 and D-192): unauthenticated `GET /api/health` answers with the
+ * byte-exact literal `{"status":"ok"}` — no versions, uptime, memory,
+ * storage state, account data, errors, or timestamps — and stays public in
+ * every auth mode (nothing here consults credentials; the
+ * request-security tasks 149–152 are bound by §13's "except the public
+ * health response"). Since FSM-4 (D-192) the authenticated branch — a
+ * request the §15.1 layer would grant — additionally carries the
+ * `polling.running` diagnostics through the wired source; every other
+ * shape keeps the literal, pinned byte-exactly below.
  *
  * Integration project on purpose: the route is exercised through the full
  * task-146 construction (`buildHttpServer`, `fastify.inject` — no sockets),
@@ -153,6 +158,183 @@ describe('GET /api/health — routing edges (§13)', () => {
   });
 });
 
+describe('GET /api/health — the authenticated polling diagnostics (§13, FSM-4/D-192)', () => {
+  /**
+   * Builds a server with the diagnostics source wired — the shape the
+   * production composition registers (`routes.health.polling.running`).
+   * `running` and the §15.1 facts are per-test; the credential seam
+   * defaults to fail-closed false exactly as an unwired seam would.
+   */
+  function buildDiagnosticsServer(options: {
+    readonly running: () => boolean;
+    readonly mode?: 'auto' | 'required';
+    readonly passwordConfigured?: () => boolean;
+    readonly isAuthenticated?: (request: unknown) => boolean | Promise<boolean>;
+  }): { server: FastifyInstance; sink: MemoryLogSink } {
+    const sink = createMemoryLogSink();
+    const logger: Logger = createLogger({ level: 'warn', destination: sink });
+    const server = buildHttpServer({
+      host: '127.0.0.1',
+      port: 0,
+      logger,
+      ...(options.mode === undefined && options.passwordConfigured === undefined
+        ? {}
+        : {
+            auth: {
+              ...(options.mode === undefined ? {} : { mode: options.mode }),
+              ...(options.passwordConfigured === undefined
+                ? {}
+                : { passwordConfigured: options.passwordConfigured }),
+              ...(options.isAuthenticated === undefined
+                ? {}
+                : { isAuthenticated: options.isAuthenticated }),
+            },
+          }),
+      routes: { health: { polling: { running: options.running } } },
+    });
+    openServers.push(server);
+    return { server, sink };
+  }
+
+  it('grants the diagnostics on the §15.1 not-required cell — both running values', async () => {
+    // Auto mode, loopback bind, no proxy indication: the local operator's
+    // trust cell — the same boundary that serves /api/status without a
+    // password. The diagnostics ride the authenticated branch; the body
+    // is the literal plus exactly the declared block.
+    for (const running of [true, false]) {
+      const { server } = buildDiagnosticsServer({ running: () => running });
+      const response = await server.inject({ method: 'GET', url: '/api/health' });
+      expect(response.statusCode, `running=${running}`).toBe(200);
+      expect(response.body, `running=${running}`).toBe(
+        `{"status":"ok","polling":{"running":${running}}}`,
+      );
+      const parsed = response.json();
+      expect(Object.keys(parsed)).toEqual(['status', 'polling']);
+      expect(parsed).toEqual({ status: 'ok', polling: { running } });
+    }
+  });
+
+  it('reads the source per request — the value never goes stale behind a cached response', async () => {
+    let running = true;
+    const { server } = buildDiagnosticsServer({ running: () => running });
+    const first = await server.inject({ method: 'GET', url: '/api/health' });
+    expect(first.body).toBe('{"status":"ok","polling":{"running":true}}');
+    // The engine dies between the two probes; the next granted request
+    // reports the death — the audit's dead-state finding made observable.
+    running = false;
+    const second = await server.inject({ method: 'GET', url: '/api/health' });
+    expect(second.body).toBe('{"status":"ok","polling":{"running":false}}');
+  });
+
+  it('grants the diagnostics in required mode through the credential seam', async () => {
+    const { server } = buildDiagnosticsServer({
+      running: () => false,
+      mode: 'required',
+      passwordConfigured: () => true,
+      isAuthenticated: () => true, // the session the guard itself would accept
+    });
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { cookie: 'quotameter-session=valid-session-token' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe('{"status":"ok","polling":{"running":false}}');
+  });
+
+  it('keeps the byte-exact literal when the credential seam refuses (required mode)', async () => {
+    // No session cookie, a garbage cookie, and a seam that rejects the
+    // presented cookie all collapse to the same public body — the §15.1
+    // layer would not grant this request any protected route, so the
+    // diagnostics are not its to see (D-124's indistinguishable-absence
+    // rule, mirrored at this route).
+    for (const headers of [
+      {},
+      { cookie: 'quotameter-session=garbage' },
+      { authorization: 'Bearer not-a-real-token' },
+    ]) {
+      const { server } = buildDiagnosticsServer({
+        running: () => false,
+        mode: 'required',
+        passwordConfigured: () => true,
+        isAuthenticated: () => false,
+      });
+      const response = await server.inject({ method: 'GET', url: '/api/health', headers });
+      expect(response.statusCode, JSON.stringify(headers)).toBe(200);
+      expect(response.body, JSON.stringify(headers)).toBe('{"status":"ok"}');
+    }
+  });
+
+  it('keeps the byte-exact literal for the passwordless proxied request — fail-closed', async () => {
+    // §15.1's proxy-without-password cell: a protected route would answer
+    // the 403-instructions envelope; health stays public (D-121) and the
+    // diagnostics stay away — no password is configured, so no session
+    // can exist for the fail-closed seam to accept.
+    const { server } = buildDiagnosticsServer({ running: () => true });
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { 'x-forwarded-for': '203.0.113.7' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe('{"status":"ok"}');
+  });
+
+  it('refuses the passwordless proxied request even when the seam would accept — structural (review P1)', async () => {
+    // The seam is NOT consulted on this verdict — the guard's own table
+    // 403s the cell without any credential question, and the grant rule
+    // mirrors it structurally. The reachable production shape: the hash
+    // is a live fact (a hand-edit removing it does not revoke existing
+    // session rows), so a proxied request with a still-valid cookie must
+    // still learn nothing beyond the public literal.
+    const { server } = buildDiagnosticsServer({
+      running: () => true,
+      isAuthenticated: () => true, // a seam that would accept anything
+    });
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { 'x-forwarded-for': '203.0.113.7', cookie: 'quotameter-session=still-valid' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe('{"status":"ok"}');
+  });
+
+  it('requires the session once a proxied request faces a password (auto mode)', async () => {
+    // Auto + loopback + proxy indication + a configured password: the
+    // §15.1 verdict flips to required, so the seam decides — granted with
+    // a valid session, the literal without one.
+    const granted = await buildDiagnosticsServer({
+      running: () => true,
+      passwordConfigured: () => true,
+      isAuthenticated: () => true,
+    }).server.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { 'x-forwarded-for': '203.0.113.7', cookie: 'quotameter-session=valid' },
+    });
+    expect(granted.body).toBe('{"status":"ok","polling":{"running":true}}');
+    const refused = await buildDiagnosticsServer({
+      running: () => true,
+      passwordConfigured: () => true,
+      isAuthenticated: () => false,
+    }).server.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { 'x-forwarded-for': '203.0.113.7' },
+    });
+    expect(refused.body).toBe('{"status":"ok"}');
+  });
+
+  it('keeps the HEAD twin bodyless on the granted branch — nothing can leak', async () => {
+    const { server } = buildDiagnosticsServer({ running: () => true });
+    const response = await server.inject({ method: 'HEAD', url: '/api/health' });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe('');
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+});
+
 describe('GET /api/health — the live listener (§5.6)', () => {
   it('answers through a real ephemeral loopback socket', async () => {
     const sink = createMemoryLogSink();
@@ -202,6 +384,29 @@ describe('the schema-compiled serializer — the structural leak guard (D-111)',
       expect(response.statusCode, path).toBe(200);
       expect(response.body, path).toBe('{"status":"ok"}');
     }
+  });
+});
+
+describe('healthRoutes registration — the fail-fast wiring guards (D-192)', () => {
+  it('refuses a diagnostics source whose reader is not a function', async () => {
+    const app = Fastify();
+    openServers.push(app);
+    await expect(
+      app.register(healthRoutes, {
+        polling: { running: 'not-a-function' as never },
+        authMode: { mode: 'auto', bindHost: '127.0.0.1' },
+      }),
+    ).rejects.toThrow(/polling\.running/u);
+  });
+
+  it('refuses a diagnostics source without the §15.1 facts', async () => {
+    // Diagnostics without the grant rule would be a wiring bug: the
+    // registration refuses loudly rather than diagnosing everyone.
+    const app = Fastify();
+    openServers.push(app);
+    await expect(app.register(healthRoutes, { polling: { running: () => true } })).rejects.toThrow(
+      /authMode/u,
+    );
   });
 });
 

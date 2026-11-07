@@ -25,7 +25,9 @@ with derived types, spec defaults, and the cross-field invariants of
 and `api/` (the spec §13 HTTP API request/response contracts every route
 serializes through and task 163 generates OpenAPI from — `health.ts` is
 the first route contract: the closed `{ "status": "ok" }` literal of the
-public health response, task 147; `error.ts` (task 148) is the common
+public health response, task 147, plus (since FSM-4, D-192) the optional
+`polling: { running }` diagnostics block the authenticated branch of the
+route may carry; `error.ts` (task 148) is the common
 error envelope — the stable-code registry `API_ERROR_DEFINITIONS`
 (`VALIDATION`/`UNAUTHENTICATED`/`FORBIDDEN`/`NOT_FOUND`/`PAYLOAD_TOO_LARGE`/
 `URI_TOO_LONG`/`UNSUPPORTED_MEDIA_TYPE`/`INTERNAL`, each with status and
