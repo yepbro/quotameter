@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
 import { apiRoutes } from '../../src/server/api/index';
+import { accountView } from '../../src/server/api/accounts';
 import type { AuthModeGuardOptions } from '../../src/server/api/auth';
 import type { AccountConfigStore, ManagedAccountConfig } from '../../src/server/api/accounts';
 import { apiErrorHandler } from '../../src/server/api/error';
@@ -67,6 +68,13 @@ interface SeedAccount {
   readonly row?: boolean;
   /** Whether the seeded row starts archived (§8.2's end state). */
   readonly archived?: boolean;
+  /**
+   * Whether the configuration entry stays beside the archived row — the
+   * hand-re-add shape (FSM-2, TZ-fsm §4.1): the id was archived, then
+   * re-added to the config file by hand, and the config-sync skips the
+   * archived row (D-061), so both halves hold the id at once.
+   */
+  readonly readd?: boolean;
 }
 
 class ReadOnlyAccountStore implements AccountConfigStore {
@@ -166,9 +174,11 @@ async function withStatusApi(
       if (seed.archived === true) repository.archiveAccount(seed.id, NOW);
     }
     // An archived seed models the archived end state (§8.2): the storage
-    // row stays, the configuration entry is gone (the archive removed it).
+    // row stays, the configuration entry is gone (the archive removed it)
+    // — unless the seed is the hand-re-add shape, where the entry stayed
+    // (FSM-2's contradiction reproducible: both halves hold the id).
     const store = new ReadOnlyAccountStore(
-      (options.seed ?? []).filter((seed) => seed.archived !== true),
+      (options.seed ?? []).filter((seed) => seed.archived !== true || seed.readd === true),
       options.env ?? {},
     );
     const suspensions = new Map<string, AuthSuspensionState>();
@@ -316,7 +326,7 @@ describe('GET /api/status — service state and account statuses (§13/§7.3)', 
     );
   });
 
-  it('derives disabled for a disabled account even with fresh data, and for archived rows', async () => {
+  it('derives disabled for a disabled account even with fresh data; archived rows read archived (rank 0)', async () => {
     await withStatusApi(
       async ({ app, repository }) => {
         persistCollectionCycle(repository, successCycle('off', NOW - 60_000));
@@ -327,7 +337,7 @@ describe('GET /api/status — service state and account statuses (§13/§7.3)', 
           }
         ).accounts;
         expect(accounts).toEqual([
-          { id: 'gone', status: 'disabled', lastSuccessAt: NOW - 58_800, lastError: null },
+          { id: 'gone', status: 'archived', lastSuccessAt: NOW - 58_800, lastError: null },
           { id: 'off', status: 'disabled', lastSuccessAt: NOW - 58_800, lastError: null },
         ]);
       },
@@ -335,6 +345,83 @@ describe('GET /api/status — service state and account statuses (§13/§7.3)', 
         seed: [
           { id: 'off', enabled: false, apiKey: MARKER_KEY },
           { id: 'gone', archived: true },
+        ],
+      },
+    );
+  });
+
+  it('never derives a runtime status for a hand-re-added archived id — the projections agree (FSM-2, TZ-fsm §4.1)', async () => {
+    await withStatusApi(
+      async ({ app, repository, store }) => {
+        // §8.2 retained the history: the account collected while active,
+        // was archived, and then the id was re-added to the configuration
+        // file by hand — the config-sync skips the archived row (D-061),
+        // so the entry sits beside it with a resolvable key and fresh data.
+        persistCollectionCycle(repository, successCycle('zombie', NOW - 60_000));
+        const accountsSurface = accountView(
+          await store.find('zombie'),
+          repository.getAccount('zombie'),
+        );
+        expect(accountsSurface.status).toBe('archived');
+        const rows = (
+          (await app.inject({ method: 'GET', url: '/api/status' })).json() as {
+            accounts: Array<{ id: string; status: string }>;
+          }
+        ).accounts;
+        // The §7.3 archived-dominance rule (spec 1.1, D-180): the
+        // lifecycle fact outranks the whole precedence list — the status
+        // row may not answer `fresh` where the accounts surface answers
+        // `archived`.
+        expect(rows).toEqual([
+          { id: 'zombie', status: 'archived', lastSuccessAt: NOW - 58_800, lastError: null },
+        ]);
+        // The same wrong-half trap on the quota route: the entry
+        // (enabled, keyed) beside the archived row must read the
+        // lifecycle token there too, not `fresh`.
+        const quota = await app.inject({ method: 'GET', url: '/api/quota?accountId=zombie' });
+        expect((quota.json() as { status: string }).status).toBe('archived');
+      },
+      { seed: [{ id: 'zombie', archived: true, readd: true, apiKey: MARKER_KEY }] },
+    );
+  });
+
+  it('answers the enabled × archived × configured matrix consistently (FSM-2, TZ-fsm §4.3 R4)', async () => {
+    // Every cell of the lifecycle matrix through the route, one world:
+    // archived cells carry fresh success runs where an entry sits beside
+    // the row (the dominance must hold against live data, not absence).
+    await withStatusApi(
+      async ({ app, repository }) => {
+        for (const id of ['cell-1', 'cell-3', 'cell-8']) {
+          persistCollectionCycle(repository, successCycle(id, NOW - 60_000));
+        }
+        const rows = (
+          (await app.inject({ method: 'GET', url: '/api/status' })).json() as {
+            accounts: Array<{ id: string; status: string }>;
+          }
+        ).accounts;
+        expect(rows).toEqual([
+          { id: 'cell-1', status: 'archived', lastSuccessAt: NOW - 58_800, lastError: null },
+          { id: 'cell-2', status: 'archived', lastSuccessAt: null, lastError: null },
+          { id: 'cell-3', status: 'archived', lastSuccessAt: NOW - 58_800, lastError: null },
+          { id: 'cell-4', status: 'archived', lastSuccessAt: null, lastError: null },
+          { id: 'cell-5', status: 'disabled', lastSuccessAt: null, lastError: null },
+          { id: 'cell-6', status: 'disabled', lastSuccessAt: null, lastError: null },
+          { id: 'cell-7', status: 'not-configured', lastSuccessAt: null, lastError: null },
+          { id: 'cell-8', status: 'fresh', lastSuccessAt: NOW - 58_800, lastError: null },
+        ]);
+      },
+      {
+        seed: [
+          // (enabled, archived, configured) — the hand-re-add shape for
+          // the archived cells with an entry, the plain shapes beside.
+          { id: 'cell-1', archived: true, readd: true, apiKey: MARKER_KEY },
+          { id: 'cell-2', archived: true, readd: true, apiKeyEnv: 'ZAI_UNSET_KEY' },
+          { id: 'cell-3', archived: true, readd: true, enabled: false, apiKey: MARKER_KEY },
+          { id: 'cell-4', archived: true },
+          { id: 'cell-5', enabled: false, apiKey: MARKER_KEY },
+          { id: 'cell-6', enabled: false, apiKeyEnv: 'ZAI_UNSET_KEY' },
+          { id: 'cell-7', apiKeyEnv: 'ZAI_UNSET_KEY' },
+          { id: 'cell-8', apiKey: MARKER_KEY },
         ],
       },
     );
@@ -587,14 +674,16 @@ describe('GET /api/quota — the last valid values (§13/§8.4/§7.2)', () => {
     );
   });
 
-  it('serves an archived account — §8.2 retains its history (reads are not refused)', async () => {
+  it('serves an archived account — §8.2 retains its history under the archived token', async () => {
     await withStatusApi(
       async ({ app, repository }) => {
         persistCollectionCycle(repository, successCycle('gone', NOW - 90_000));
         const response = await app.inject({ method: 'GET', url: '/api/quota?accountId=gone' });
         expect(response.statusCode).toBe(200);
         const body = response.json() as { status: string; metrics: unknown[] };
-        expect(body.status).toBe('disabled');
+        // Reads are not refused, and the lifecycle token outranks the
+        // retained fresh data (D-180/D-191).
+        expect(body.status).toBe('archived');
         expect(body.metrics).toHaveLength(1);
       },
       { seed: [{ id: 'gone', archived: true }] },

@@ -12,9 +12,11 @@
  * `getLatestSnapshot` for the header facts. The accounts the views cover
  * come from the same two halves the accounts surface merges (D-128): the
  * configuration store's entries (enabled, secret state) and the storage
- * rows (lifecycle, history) — an archived account, whose entry the archive
- * removed, stays visible with `enabled: false` and derives §7.3's
- * `Disabled`, its history still honest beside it (§8.2).
+ * rows (lifecycle, history) — an archived account, whether its entry was
+ * removed by the archive or re-added to the file by hand (the config-sync
+ * skips archived rows, D-061), derives the `archived` lifecycle token:
+ * spec 1.1's dominance rule (D-180) reads rank 0 inside the shared
+ * derivation (D-191), its history still honest beside it (§8.2).
  *
  * Two seams this module adds beside 159's precedent ({@link
  * StatusRouteOptions}): `pollingIntervalSeconds` is read **per request** —
@@ -141,6 +143,12 @@ export function redactSecretOccurrences(text: string, secret: string | null): st
 /** Everything one status row derives from, besides the error view. */
 export interface StatusAccountInput {
   readonly id: string;
+  /**
+   * Whether the account's storage row is archived (§8.2) — the rank-0
+   * lifecycle fact the shared derivation consumes (D-191); the handler
+   * resolves it from the merged row half, never the configuration entry.
+   */
+  readonly archived: boolean;
   /** Whether the account is enabled in the live configuration (§6.2). */
   readonly enabled: boolean;
   /** Whether a usable secret resolves for the account (§7.3's gate). */
@@ -151,10 +159,10 @@ export interface StatusAccountInput {
 }
 
 /**
- * Builds one {@link StatusAccountView}: the §7.3 derivation (the single
- * owner of the precedence — this function adds nothing to it) beside
- * §7.2's last success (the evidence's own snapshot stamp). Pure; the
- * handler owns gathering the halves.
+ * Builds one {@link StatusAccountView}: the canonical lifecycle derivation
+ * (the single owner of the precedence — this function adds nothing to it)
+ * beside §7.2's last success (the evidence's own snapshot stamp). Pure;
+ * the handler owns gathering the halves.
  */
 export function statusAccountView(
   input: StatusAccountInput,
@@ -238,6 +246,7 @@ export const statusRoutes: FastifyPluginAsync<StatusRouteOptions> = async (fasti
       const managed = await store.list();
       const managedById = new Map(managed.map((entry) => [entry.id, entry]));
       const records = repository.listAccounts();
+      const recordsById = new Map(records.map((record) => [record.id, record]));
       const accounts: StatusAccountView[] = [];
       for (const id of statusAccountIds(managed, records)) {
         const entry = managedById.get(id);
@@ -250,6 +259,11 @@ export const statusRoutes: FastifyPluginAsync<StatusRouteOptions> = async (fasti
           statusAccountView(
             {
               id,
+              // The storage row owns the lifecycle fact (rank 0, D-191):
+              // archived stays archived beside a hand-re-added entry, and
+              // a storage-only row (D-128's honest gap) reads active here
+              // with `enabled: false` deriving `disabled` below.
+              archived: recordsById.get(id)?.status === 'archived',
               // The configuration owns enablement; a storage-only row (an
               // archived account, D-128's honest gap) reads disabled.
               enabled: entry?.enabled ?? false,
@@ -299,6 +313,10 @@ export const statusRoutes: FastifyPluginAsync<StatusRouteOptions> = async (fasti
         accountId,
         status: deriveAccountStatus(
           {
+            // The storage row owns the lifecycle fact (rank 0, D-191) —
+            // an archived account keeps reading its retained history
+            // (§8.2) under the archived token, never a runtime status.
+            archived: record?.status === 'archived',
             enabled: managed?.enabled ?? false,
             configured: managed?.keyConfigured === true && resolvedKey !== null,
             suspension: suspensionOf(accountId),

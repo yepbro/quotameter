@@ -19,6 +19,9 @@ const props = defineProps<{
 
 /** The visual tone groups: shape + color families, never meaning alone. */
 const TONES: Record<AccountStatusToken, 'ok' | 'pending' | 'warn' | 'error' | 'neutral'> = {
+  // The lifecycle token (D-191): neutral like the other account-level
+  // switches — the attention notice beside it carries the fuller story.
+  archived: 'neutral',
   fresh: 'ok',
   collecting: 'pending',
   stale: 'warn',
@@ -38,6 +41,8 @@ const tone = computed(() => TONES[props.status]);
  */
 const label = computed(() => {
   switch (props.status) {
+    case 'archived':
+      return t('overview.status.archived');
     case 'fresh':
       return t('overview.status.fresh');
     case 'collecting':

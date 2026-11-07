@@ -30,13 +30,16 @@ import { ID_PATTERN } from '../config';
 /* ── The §7.3 status vocabulary on the wire ─────────────────────────────── */
 
 /**
- * Every account status token spec §7.3/§14.6 distinguishes, as the wire
- * literals of {@link StatusAccountViewSchema}. Membership, not order, is the
+ * Every account status token spec §7.3/§14.6 distinguishes plus the
+ * `archived` lifecycle token (spec 1.1's archived-dominance rule,
+ * D-180/D-191), as the wire literals of {@link StatusAccountViewSchema}.
+ * Membership, not order, is the
  * contract; a `test/unit/api-status-schema.spec.ts` drift row pins this list
  * against `ACCOUNT_STATUSES` (the derivation's own vocabulary in
  * `src/services/polling-status.ts`) so the two cannot fork.
  */
 export const ACCOUNT_STATUS_TOKENS = Object.freeze([
+  'archived',
   'auth-rejected',
   'format-changed',
   'unreachable',
@@ -47,12 +50,15 @@ export const ACCOUNT_STATUS_TOKENS = Object.freeze([
   'not-configured',
 ] as const);
 
-/** One status token (§7.3/§14.6). */
+/** One status token (§7.3/§14.6 plus the archived lifecycle fact). */
 export type AccountStatusToken = (typeof ACCOUNT_STATUS_TOKENS)[number];
 
 const AccountStatusTokenSchema = Type.Union(
   ACCOUNT_STATUS_TOKENS.map((token) => Type.Literal(token)),
-  { description: 'The §7.3 primary displayed status.' },
+  {
+    description:
+      'The primary displayed status; archived (the §8.2 lifecycle fact) outranks the list (D-180/D-191).',
+  },
 );
 
 /* ── The last-error view (§7.2's "most recent error") ───────────────────── */
@@ -243,15 +249,16 @@ export type MetricView = Static<typeof MetricViewSchema>;
  * The `GET /api/quota` response — §13's "Latest successful snapshot for
  * `accountId`" in task 122's reading (D-077/D-130): the header facts come
  * from the latest successful snapshot, the metric rows from the
- * last-valid-value query, and the §7.3 status rides along as the freshness
- * context the overview renders beside the numbers. Absence is honest
- * (`metrics: []`, null header facts), never zero (§7.2).
+ * last-valid-value query, and the canonical status (the §7.3 working
+ * statuses or the `archived` lifecycle token, D-191) rides along as the
+ * freshness context the overview renders beside the numbers. Absence is
+ * honest (`metrics: []`, null header facts), never zero (§7.2).
  */
 export const QuotaResponseSchema = Type.Object(
   {
     /** The requested account. */
     accountId: Type.String({ pattern: ID_PATTERN, description: 'Stable account id.' }),
-    /** The account's current §7.3 status. */
+    /** The account's current canonical status (working or lifecycle token). */
     status: AccountStatusTokenSchema,
     /** The latest successful snapshot's stamp; `null` when none exists. */
     collectedAt: Type.Union([Type.Integer(), Type.Null()], {

@@ -167,8 +167,12 @@ export const en = {
       // The same absent snapshot under an account-level blocker (no
       // key, polling off, archived): the waiting sentence's promise
       // would be false — the attention notice above the region
-      // carries the actionable why (task 173, D-138).
-      noSnapshotBlocked: 'No usage values yet — collection is not running for this account.',
+      // carries the actionable why (task 173, D-138). The wording
+      // asserts no polling fact: the hand-re-added archived shape
+      // keeps an entry the engine polls (D-191), so "not running"
+      // would be false there — the notice is the truthful why.
+      noSnapshotBlocked:
+        'No usage values yet — the notice above explains what is keeping this account from collecting.',
       // A snapshot that succeeded but recognized no metric rows (the
       // adapter's skip path) — a different fact from no snapshot.
       noMetrics: 'The latest successful collection reported no quota values.',
@@ -178,8 +182,12 @@ export const en = {
     // and what to do about it — the link renders exactly where the
     // remedy is a UI action.
     attention: {
+      // Lifecycle-safe wording (D-191): the normal archive stops polling
+      // (the entry is removed), but the hand-re-added archived id keeps a
+      // configured entry the engine still polls — the sentence states the
+      // lifecycle facts true in every shape, never the polling state.
       archived:
-        'This account is archived: polling is stopped and its collected history is retained. Manage or purge it on the Accounts page.',
+        'This account is archived: its collected history is retained and it can no longer be modified. Manage or purge it on the Accounts page.',
       disabled:
         'Polling is disabled for this account. Enable it on the Accounts page to resume collection.',
       // An environment-sourced key is read-only through the API
@@ -190,8 +198,10 @@ export const en = {
         'No API key is configured for this account. Set the API key on the Accounts page so collection can run.',
       cta: 'Go to Accounts',
     },
-    // The §14.6 status vocabulary (rendered by AccountStatusBadge).
+    // The §14.6 status vocabulary plus the archived lifecycle token
+    // (D-180/D-191), rendered by AccountStatusBadge.
     status: {
+      archived: 'Archived',
       fresh: 'Fresh',
       collecting: 'Collecting',
       unreachable: 'Unreachable',

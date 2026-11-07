@@ -800,6 +800,7 @@ describe('overview identity card (§14.3/§14.6)', () => {
       // The exact label AND the expected tone: a mis-wired label or a
       // wrong tone must fail (the review round's P3).
       const expectedLabel: Record<AccountStatusToken, string> = {
+        archived: en.overview.status.archived,
         fresh: en.overview.status.fresh,
         collecting: en.overview.status.collecting,
         unreachable: en.overview.status.unreachable,
@@ -810,6 +811,10 @@ describe('overview identity card (§14.3/§14.6)', () => {
         'not-configured': en.overview.status.notConfigured,
       };
       const expectedTone: Record<AccountStatusToken, string> = {
+        // The lifecycle token renders neutral like the other
+        // account-level switches (D-191); the attention notice beside it
+        // carries the fuller story.
+        archived: 'tone-neutral',
         fresh: 'tone-ok',
         collecting: 'tone-pending',
         stale: 'tone-warn',
@@ -1132,9 +1137,10 @@ describe('overview fresh-install matrix (task 173, D-138)', () => {
 
   it('an archived account outranks the disabled/keyless facts its wire shape carries', async () => {
     // The archived wire shape reads `enabled: false`, `hasKey: false`,
-    // `keySource: 'none'` — all three blockers at once — and §7.3
-    // derives `disabled` for it. The archived notice is the fuller
-    // story and wins the precedence (D-138).
+    // `keySource: 'none'` — all three blockers at once — and the §7.3
+    // derivation answers the lifecycle token for it (D-191; a stale
+    // row still saying `disabled` loses to the storage fact). The
+    // archived notice is the fuller story and wins the precedence.
     const backend = new FakeOverviewBackend({
       accounts: [
         account({
@@ -1338,6 +1344,21 @@ describe('accountAttentionOf (the D-138 precedence, pure)', () => {
       view: account({ status: 'archived', enabled: false, hasKey: false, keySource: 'none' }),
       row: statusRow({ status: 'disabled' }),
       expected: 'archived',
+    },
+    {
+      // D-191: the unified verdict arrives over the wire — a row reading
+      // `archived` outranks a stale active list load (the cross-load race
+      // resolves to the lifecycle truth in both directions).
+      label: "the row's archived verdict outranks a stale active list",
+      view: account(),
+      row: statusRow({ status: 'archived' }),
+      expected: 'archived',
+    },
+    {
+      label: "the row's disabled verdict outranks a stale enabled list",
+      view: account({ enabled: true }),
+      row: statusRow({ status: 'disabled' }),
+      expected: 'disabled',
     },
     {
       label: 'disabled — the operator switch',

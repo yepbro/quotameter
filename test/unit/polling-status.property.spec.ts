@@ -19,9 +19,11 @@ import {
 import { fc } from '../helpers/property';
 
 /**
- * Property-based pins of the §7.3 derivation (task 111, decision D-070) —
+ * Property-based pins of the §7.3 derivation (task 111, decision D-070;
+ * the rank-0 lifecycle input is D-191, FSM-2) —
  * the relations that must hold over *every* input, not just the table's
- * corners: totality over the eight statuses, the dominance of the two
+ * corners: totality over the nine statuses, the dominance of the
+ * archived lifecycle fact, of the two
  * configuration states and of an active suspension, biconditional agreement
  * with D-048's contribution table on the failure ranks and with the
  * three-interval arithmetic on the age ranks, freshness downward-closed in
@@ -60,6 +62,8 @@ interface GeneratedEvidence {
   readonly lastSuccessOffset: number | null;
   readonly firstAttemptOffset: number | null;
   readonly suspended: boolean;
+  /** The rank-0 lifecycle fact (D-191) — generated like every other input. */
+  readonly archived: boolean;
 }
 
 const evidence = fc.record({
@@ -68,6 +72,7 @@ const evidence = fc.record({
   lastSuccessOffset: epochOrAbsent,
   firstAttemptOffset: epochOrAbsent,
   suspended: fc.boolean(),
+  archived: fc.boolean(),
 });
 
 /** Materializes generated evidence into a derivation input at `now`. */
@@ -82,6 +87,7 @@ function toInput(
         .state
     : INITIAL_SUSPENSION_STATE;
   return {
+    archived: generated.archived,
     enabled,
     configured,
     suspension,
@@ -97,7 +103,7 @@ function toInput(
 }
 
 describe('account status derivation properties', () => {
-  it('is total: every generated derivation yields one of the eight statuses', () => {
+  it('is total: every generated derivation yields one of the nine statuses', () => {
     fc.assert(
       fc.property(evidence, offsets, (generated, nowOffset) => {
         const status = deriveAccountStatus(toInput(generated), NOW + nowOffset);
@@ -106,12 +112,25 @@ describe('account status derivation properties', () => {
     );
   });
 
-  it('a disabled account shows Disabled whatever the rest of the evidence', () => {
+  it('an archived account shows Archived whatever the rest of the evidence (rank 0, D-191)', () => {
     fc.assert(
       fc.property(evidence, offsets, (generated, nowOffset) => {
-        expect(deriveAccountStatus(toInput(generated, false, true), NOW + nowOffset)).toBe(
-          'disabled',
-        );
+        expect(
+          deriveAccountStatus(toInput({ ...generated, archived: true }), NOW + nowOffset),
+        ).toBe('archived');
+      }),
+    );
+  });
+
+  it('a disabled account shows Disabled whatever the rest of the evidence below rank 0', () => {
+    fc.assert(
+      fc.property(evidence, offsets, (generated, nowOffset) => {
+        expect(
+          deriveAccountStatus(
+            toInput({ ...generated, archived: false }, false, true),
+            NOW + nowOffset,
+          ),
+        ).toBe('disabled');
       }),
     );
   });
@@ -119,9 +138,12 @@ describe('account status derivation properties', () => {
   it('an enabled account without a resolved key shows Not configured', () => {
     fc.assert(
       fc.property(evidence, offsets, (generated, nowOffset) => {
-        expect(deriveAccountStatus(toInput(generated, true, false), NOW + nowOffset)).toBe(
-          'not-configured',
-        );
+        expect(
+          deriveAccountStatus(
+            toInput({ ...generated, archived: false }, true, false),
+            NOW + nowOffset,
+          ),
+        ).toBe('not-configured');
       }),
     );
   });
@@ -129,7 +151,11 @@ describe('account status derivation properties', () => {
   it('an active suspension always shows Auth rejected (§7.3 rank 1)', () => {
     fc.assert(
       fc.property(evidence, offsets, (generated, nowOffset) => {
-        const forcedSuspended: GeneratedEvidence = { ...generated, suspended: true };
+        const forcedSuspended: GeneratedEvidence = {
+          ...generated,
+          archived: false,
+          suspended: true,
+        };
         expect(deriveAccountStatus(toInput(forcedSuspended), NOW + nowOffset)).toBe(
           'auth-rejected',
         );
@@ -140,7 +166,7 @@ describe('account status derivation properties', () => {
   it('agrees by biconditional with D-048’s contribution on the failure ranks', () => {
     fc.assert(
       fc.property(evidence, offsets, (generated, nowOffset) => {
-        const input = toInput({ ...generated, suspended: false });
+        const input = toInput({ ...generated, archived: false, suspended: false });
         const status = deriveAccountStatus(input, NOW + nowOffset);
         const contribution =
           generated.latestRunOutcome === null
@@ -157,14 +183,16 @@ describe('account status derivation properties', () => {
   });
 
   it('agrees by biconditional with the three-interval arithmetic on Fresh', () => {
-    // A dedicated generator: no suspension and a guaranteed latest success,
-    // so the age branch is always reachable and nothing is vacuous.
+    // A dedicated generator: no suspension, no archive, and a guaranteed
+    // latest success, so the age branch is always reachable and nothing
+    // is vacuous.
     const freshEvidence = fc.record({
       intervalSeconds: intervals,
       latestRunOutcome: latestOutcomes,
       lastSuccessOffset: offsets,
       firstAttemptOffset: epochOrAbsent,
       suspended: fc.constant(false),
+      archived: fc.constant(false),
     });
     fc.assert(
       fc.property(freshEvidence, offsets, (generated, nowOffset) => {

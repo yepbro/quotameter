@@ -89,5 +89,13 @@ direction:
   response timestamps are epoch milliseconds everywhere — D-139's
   one-format-per-direction rule, recorded as the deliberate API
   representation by the §10 amendment of spec 1.2 (D-183).
+- **Account statuses** (spec §7.3, spec 1.1's archived-dominance rule —
+  D-180/D-191): the status fields of `/api/status` rows and `/api/quota`
+  carry the canonical lifecycle precedence `archived` → `disabled` →
+  `not-configured` → the §7.3 working statuses. An account whose storage
+  row is archived (§8.2) answers `archived` on every surface — including
+  a hand-re-added archived id whose configuration entry still claims
+  enabled/keyed — and never a runtime status; its reads stay unrefused
+  with the retained history honestly labeled.
 - **API keys** (spec §15.4): never on the wire — accounts carry `hasKey` and
   a constant, content-free mask.

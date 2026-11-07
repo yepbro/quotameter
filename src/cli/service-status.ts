@@ -30,14 +30,18 @@
  *   answer with the init hint; invalid prints the pipeline's field-addressed
  *   problems and costs the accounts section.
  * - **Per-account facts** — task 111's `deriveAccountStatus` (§7.3's
- *   vocabulary, D-070) over `readPollingRunEvidence` storage reads, with the
- *   two inputs a separate process cannot observe fixed to their honest
- *   proxies: the D-064 suspension state passes `INITIAL_SUSPENSION_STATE`
+ *   vocabulary, D-070; the archived rank-0 input is D-191, FSM-2) over
+ *   `readPollingRunEvidence` storage reads, with the two inputs a
+ *   separate process cannot observe fixed to their honest proxies: the
+ *   D-064 suspension state passes `INITIAL_SUSPENSION_STATE`
  *   (the derivation's `auth_error`-run branch keeps rank 1 truthful — the
  *   stance D-070 recorded for exactly this consumer), and `configured`
  *   resolves `apiKeyEnv` against **this invocation's** environment (the
  *   D-112 residual: the CLI cannot see the service's environment; the
- *   service's own log line is the authority).
+ *   service's own log line is the authority). The archived lifecycle
+ *   fact comes from the storage row beside the configured entry — the
+ *   hand-re-added archived id reports `Archived`, agreeing with the web
+ *   UI's accounts surface instead of a live runtime status.
  * - **Last collection / last error** — §7.2's "most recent successful
  *   collection and most recent error" as two independent facts: the evidence
  *   object's `lastSuccessAt` (the latest snapshot's §8.4 stamp) and the
@@ -646,12 +650,15 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
       interface AccountFacts {
         readonly evidence: PollingRunEvidence;
         readonly errorRun: CollectionRunRecord | null;
+        /** Whether the account's storage row is archived (§8.2, rank 0). */
+        readonly archived: boolean;
       }
 
       /** The storage reads of one account — the only I/O in the block. */
       const readAccountFacts = (repository: QuotaRepository, accountId: string): AccountFacts => ({
         evidence: readPollingRunEvidence(repository, accountId),
         errorRun: findLatestErrorRun(repository, accountId),
+        archived: repository.getAccount(accountId)?.status === 'archived',
       });
 
       /** The pure render of one account's block (no I/O). */
@@ -661,6 +668,7 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
       ): AccountReportLine => {
         const status = deriveAccountStatus(
           {
+            archived: facts.archived,
             enabled: account.enabled !== false,
             configured: resolveAccountConfigured(account, env),
             suspension: INITIAL_SUSPENSION_STATE,
@@ -701,6 +709,9 @@ export function runStatusCommand(deps: ServiceStatusDeps = {}): CliHandler {
       const emptyFacts: AccountFacts = {
         evidence: { latestRunOutcome: null, lastSuccessAt: null, firstAttemptAt: null },
         errorRun: null,
+        // No database file: no rows exist by construction, so nothing is
+        // archived — the derivation's `archived: false` is the honest read.
+        archived: false,
       };
 
       const openStore = deps.openStore ?? openStatusStore;

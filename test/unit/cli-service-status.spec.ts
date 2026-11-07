@@ -127,14 +127,16 @@ interface SeededRun {
 }
 
 /**
- * An in-memory repository over the three methods the status reads use
- * (`readPollingRunEvidence`'s validated surface plus the outcome-filtered
- * latest read). Ordering mirrors the real SQL: latest by
+ * An in-memory repository over the four reads the status handler uses
+ * (`readPollingRunEvidence`'s validated surface, the outcome-filtered
+ * latest read, and the lifecycle read for the derivation's rank-0 fact).
+ * Ordering mirrors the real SQL: latest by
  * `(started_at, id)` desc, oldest-first for `listCollectionRuns`.
  */
 function fakeRepository(
   runs: readonly SeededRun[],
   snapshots: readonly number[] = [],
+  archivedIds: readonly string[] = [],
 ): QuotaRepository {
   let nextId = 1;
   const runRows: CollectionRunRecord[] = runs.map((run) => ({
@@ -156,6 +158,21 @@ function fakeRepository(
     planName: null,
   }));
   return {
+    getAccount(accountId: string) {
+      // The handler reads only the lifecycle fact (rank 0, D-191): an
+      // archived id answers its §8.2 row, anything else no row at all.
+      return archivedIds.includes(accountId)
+        ? {
+            id: accountId,
+            providerId: 'zai',
+            label: 'Work plan',
+            planName: null,
+            status: 'archived',
+            createdAt: NOW - 86_400_000,
+            archivedAt: NOW - 3_600_000,
+          }
+        : null;
+    },
     getLatestCollectionRun(accountId: string, outcome?: RunOutcome) {
       const matching = runRows.filter(
         (row) => row.accountId === accountId && (outcome === undefined || row.outcome === outcome),
@@ -579,6 +596,7 @@ describe('quotameter status — per-account facts', () => {
     runs: readonly SeededRun[] = [],
     snapshots: readonly number[] = [],
     env: NodeJS.ProcessEnv = PATH_ENV,
+    archivedIds: readonly string[] = [],
   ): Promise<{ code: number; out: string; err: string }> {
     let closed = 0;
     const result = await run({
@@ -586,7 +604,7 @@ describe('quotameter status — per-account facts', () => {
       env,
       store: {
         state: 'open',
-        repository: fakeRepository(runs, snapshots),
+        repository: fakeRepository(runs, snapshots, archivedIds),
         close: () => {
           closed += 1;
         },
@@ -654,6 +672,24 @@ describe('quotameter status — per-account facts', () => {
       accountConfig({ apiKey: undefined, apiKeyEnv: 'QUOTAMETER_TEST_KEY' }),
     );
     expect(notConfigured.out).toContain('    Status: Not configured');
+  });
+
+  it('renders Archived for a hand-re-added archived id — the lifecycle fact outranks fresh data (D-191)', async () => {
+    // The §4.1 contradiction's CLI face: the configured entry (enabled,
+    // key resolved) beside an archived row with retained fresh history.
+    // The report must agree with the web UI's accounts surface, not
+    // derive a runtime status from the entry.
+    const result = await reportAccount(
+      accountConfig(),
+      [{ outcome: 'success', startedAt: FRESH_AT - 1_000, endedAt: FRESH_AT }],
+      [FRESH_AT],
+      PATH_ENV,
+      ['work'],
+    );
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('    Status: Archived');
+    // The retained history stays honest beside the lifecycle token (§8.2).
+    expect(result.out).toContain(`    Last collection: ${BERLIN_NOW}`);
   });
 
   it('renders the three §7.3 failure statuses from the latest run', async () => {

@@ -19,10 +19,12 @@ import {
 
 /**
  * Task 111's done-condition — "every state and transition has tests" (spec
- * §7.3, §14.6, decision D-070): each of the eight statuses derives from its
+ * §7.3, §14.6, decision D-070; the rank-0 lifecycle input is D-191,
+ * FSM-2): each of the nine statuses derives from its
  * defining evidence, the three-interval boundary is pinned on both anchors
  * from both sides, the precedence pins cover every cross-evidence overlap
- * (suspension over inconclusive probes, latest-run over older failures,
+ * (archived over everything, suspension over inconclusive probes,
+ * latest-run over older failures,
  * 429's fall-through to the age states), the transition matrix walks every
  * observable status change an account can undergo, and the fail-fast
  * contract rejects every malformed input. Time is data (D-021); the
@@ -55,6 +57,7 @@ function suspendedAt(at: number): AuthSuspensionState {
  */
 function healthyInput(overrides: Partial<AccountStatusInput> = {}): AccountStatusInput {
   return {
+    archived: false,
     enabled: true,
     configured: true,
     suspension: INITIAL_SUSPENSION_STATE,
@@ -76,8 +79,9 @@ function derive(input: AccountStatusInput, now = NOW): AccountStatus {
 /* ── The vocabulary ────────────────────────────────────────────────────── */
 
 describe('account status vocabulary', () => {
-  it('lists exactly the eight §7.3/§14.6 statuses, ranked ones first', () => {
+  it('lists exactly the nine statuses — archived rank 0, then the six ranked, then the two separate', () => {
     expect([...ACCOUNT_STATUSES]).toEqual([
+      'archived',
       'auth-rejected',
       'format-changed',
       'unreachable',
@@ -89,8 +93,9 @@ describe('account status vocabulary', () => {
     ]);
   });
 
-  it('labels every status with its exact §7.3/§14.6 English spelling', () => {
+  it('labels every status with its exact English spelling', () => {
     expect(ACCOUNT_STATUS_LABELS).toEqual({
+      archived: 'Archived',
       'auth-rejected': 'Auth rejected',
       'format-changed': 'Format changed',
       unreachable: 'Unreachable',
@@ -196,7 +201,31 @@ describe('each status derives from its defining evidence', () => {
     ).toBe('auth-rejected');
   });
 
-  it('disabled: enablement outranks every other input', () => {
+  it('archived: the storage lifecycle fact outranks every other input (rank 0, D-180/D-191)', () => {
+    // The §4.1 contradiction shape at its loudest: an archived row with
+    // the id hand-re-added to the configuration — enabled, key resolved,
+    // fresh data, even an active suspension — still displays `archived`.
+    expect(
+      derive(
+        healthyInput({
+          archived: true,
+          enabled: true,
+          configured: true,
+          suspension: suspendedAt(NOW - 60_000),
+        }),
+      ),
+    ).toBe('archived');
+  });
+
+  it('archived outranks disabled and not-configured (the canonical chain)', () => {
+    expect(derive(healthyInput({ archived: true, enabled: false }))).toBe('archived');
+    expect(derive(healthyInput({ archived: true, enabled: false, configured: false }))).toBe(
+      'archived',
+    );
+    expect(derive(healthyInput({ archived: true, configured: false }))).toBe('archived');
+  });
+
+  it('disabled: enablement outranks every other input below archived', () => {
     expect(
       derive(
         healthyInput({
@@ -437,6 +466,10 @@ describe('precedence pins', () => {
 describe('transitions', () => {
   /** A representative input per status, for the dominance events. */
   const representatives: Readonly<Record<AccountStatus, AccountStatusInput>> = {
+    // The archived representative carries the §4.1 zombie shape — fresh
+    // data and an entry beside the archived row — so the dominance loops
+    // below prove rank 0 against the strongest lower-rank evidence.
+    archived: healthyInput({ archived: true }),
     'auth-rejected': healthyInput({
       suspension: suspendedAt(NOW - 60_000),
       runs: {
@@ -480,17 +513,40 @@ describe('transitions', () => {
     }
   });
 
-  it('disabling the account shows Disabled from every status', () => {
+  it('archiving the row shows Archived from every status (§8.2 terminality, D-061)', () => {
     for (const [status, input] of Object.entries(representatives)) {
+      expect(derive({ ...input, archived: true }), `from ${status}`).toBe('archived');
+    }
+  });
+
+  it('disabling the account shows Disabled from every non-archived status', () => {
+    for (const [status, input] of Object.entries(representatives)) {
+      if (status === 'archived') continue; // rank 0 outranks the enable switch
       expect(derive({ ...input, enabled: false }), `from ${status}`).toBe('disabled');
     }
   });
 
-  it('losing the resolved key shows Not configured from every enabled status', () => {
+  it('losing the resolved key shows Not configured from every enabled non-archived status', () => {
     for (const [status, input] of Object.entries(representatives)) {
       if (status === 'disabled') continue; // enablement stays the outermost switch
+      if (status === 'archived') continue; // rank 0 outranks the key state
       expect(derive({ ...input, configured: false }), `from ${status}`).toBe('not-configured');
     }
+  });
+
+  it('an archived row keeps Archived under every lower-rank event (no resurrection by display)', () => {
+    // Disabling, losing the key, a fresh success, a rejection — none of
+    // them moves the display while the storage fact holds (D-061).
+    const zombie = representatives.archived;
+    expect(derive({ ...zombie, enabled: false })).toBe('archived');
+    expect(derive({ ...zombie, configured: false })).toBe('archived');
+    expect(derive({ ...zombie, suspension: suspendedAt(NOW - 60_000) })).toBe('archived');
+    expect(
+      derive({
+        ...zombie,
+        runs: { latestRunOutcome: null, lastSuccessAt: null, firstAttemptAt: null },
+      }),
+    ).toBe('archived');
   });
 
   it('re-enabling a disabled account with healthy evidence shows Fresh', () => {
@@ -738,6 +794,11 @@ describe('input validation', () => {
     { name: 'input is null', input: null, error: TypeError },
     { name: 'input is a string', input: 'nope', error: TypeError },
     { name: 'enabled is a string', input: { ...healthyInput(), enabled: 'yes' }, error: TypeError },
+    {
+      name: 'archived is a string (the rank-0 fact is a wiring input, D-191)',
+      input: { ...healthyInput(), archived: 'yes' },
+      error: TypeError,
+    },
     {
       name: 'configured is a number',
       input: { ...healthyInput(), configured: 1 },

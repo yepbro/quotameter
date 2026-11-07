@@ -451,6 +451,115 @@ describe('composeApplication — the config-sync (D-128)', () => {
       });
     },
   );
+
+  it(
+    'keeps the archived row terminal through a hand-re-added config id, with every surface agreeing (FSM-2, D-061/D-191)',
+    { timeout: 20_000 },
+    async () => {
+      await withTempDir(async (dir) => {
+        const configDir = join(dir.path, 'config');
+        const dataDir = join(dir.path, 'data');
+        await mkdir(configDir, { recursive: true, mode: 0o700 });
+        const configPath = configFilePath(configDir);
+        const env = { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: dataDir };
+        const behavior = createBehavior();
+
+        // Lifecycle one: the configured account is mirrored, then archived
+        // through the real API — the row retires, the entry is removed.
+        const seeded = {
+          app: { timezone: 'UTC' },
+          accounts: [
+            {
+              id: 'seed',
+              providerId: 'zai-coding-plan',
+              label: 'Work plan',
+              apiKey: MARKER_KEY,
+            },
+          ],
+        };
+        await writeConfigFile(configPath, seeded);
+        const first = await composeApplication({
+          env,
+          clock: createFixedClock(T0),
+          logger: createLogger({ level: 'warn', destination: createMemoryLogSink() }),
+          providers: [providerOf(behavior)],
+          port: 0,
+        });
+        const firstApp = new QuotameterApp({ components: first.components });
+        await firstApp.start();
+        const archived = await first.httpServer.server.inject({
+          method: 'DELETE',
+          url: '/api/accounts/seed',
+          headers: { ...MUTATION_HEADER },
+        });
+        expect(archived.statusCode).toBe(200);
+        expect(archived.json()).toMatchObject({ result: 'archived' });
+        // Before stop: the composed repository is a lazy getter that
+        // answers only while the storage component runs.
+        expect(first.repository.getAccount('seed')).toMatchObject({ status: 'archived' });
+        await firstApp.stop();
+
+        // The hand edit: the archived id re-enters the configuration file.
+        // The next startup's config-sync must skip the archived row (its
+        // D-061 terminality) — no resurrection, no label mirror — while
+        // the status and accounts surfaces answer the lifecycle token.
+        await writeConfigFile(configPath, {
+          app: { timezone: 'UTC' },
+          accounts: [
+            {
+              id: 'seed',
+              providerId: 'zai-coding-plan',
+              label: 'Hand-re-added label',
+              apiKey: MARKER_KEY,
+            },
+          ],
+        });
+        const second = await composeApplication({
+          env,
+          clock: createFixedClock(T0),
+          logger: createLogger({ level: 'warn', destination: createMemoryLogSink() }),
+          providers: [providerOf(behavior)],
+          port: 0,
+        });
+        const secondApp = new QuotameterApp({ components: second.components });
+        await secondApp.start();
+        // The sync-skip pin (D-061): the row stays the archived original —
+        // createdAt unchanged proves no re-create, the archived status no
+        // resurrection, the stale label no mirror update.
+        expect(second.repository.getAccount('seed')).toMatchObject({
+          status: 'archived',
+          label: 'Work plan',
+          createdAt: T0,
+          archivedAt: T0,
+        });
+        // The two §13 surfaces agree on the lifecycle token (D-191): the
+        // status row may not derive a runtime status beside the archived
+        // row, whatever the configuration half claims. (This suite's
+        // provider double fails `fetchSnapshot` closed — D-069's fail-fast
+        // shape persists nothing — so the dominance-over-live-data half of
+        // the invariant is pinned where fresh runs are seedable: the
+        // status suite's matrix archives cells that carry successful
+        // cycles.)
+        const status = await second.httpServer.server.inject({ method: 'GET', url: '/api/status' });
+        expect((status.json() as StatusResponse).accounts).toHaveLength(1);
+        expect((status.json() as StatusResponse).accounts[0]).toMatchObject({
+          id: 'seed',
+          status: 'archived',
+        });
+        const accounts = await second.httpServer.server.inject({
+          method: 'GET',
+          url: '/api/accounts',
+        });
+        expect((accounts.json() as AccountsListResponse).accounts[0]).toMatchObject({
+          id: 'seed',
+          status: 'archived',
+          enabled: true,
+          archivedAt: T0,
+        });
+        await secondApp.stop();
+      });
+    },
+  );
 });
 
 describe('composeApplication — the account store over the real file', () => {

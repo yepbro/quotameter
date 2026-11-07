@@ -297,7 +297,7 @@ snapshots).
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `src/views/OverviewView.vue`                | the six page-level loads (one `useApiCall` each), the selector, the reconciliation, the last-good copies, the attention wiring, the range wiring, the per-metric chart targets |
 | `src/components/AccountOverviewCard.vue`    | the identity facts: provider name, label, plan (`Unknown` when absent), the status badge, last success / last error (`Never`/`None`)                                           |
-| `src/components/AccountStatusBadge.vue`     | the eight §14.6/§7.3 statuses as text + tone class + CSS-drawn shape marker (§14.1: never color alone)                                                                         |
+| `src/components/AccountStatusBadge.vue`     | the nine statuses (the §14.6/§7.3 vocabulary plus the `archived` lifecycle token, D-191) as text + tone class + CSS-drawn shape marker (§14.1: never color alone)              |
 | `src/components/AccountAttentionNotice.vue` | the account-level attention notice (task 173): the remedy sentence plus a link exactly where the remedy is a UI action                                                         |
 | `src/components/MetricCard.vue`             | one metric: label, quota type (+ rolling window), per-field values with explicit units, reset and collection stamps                                                            |
 | `src/components/HistoryRangeControls.vue`   | the §14.4 rolling-range radio group (task 174, D-147): five options, retention-aware disabling with the explanation as text                                                    |
@@ -371,7 +371,7 @@ served by `page.route`.
 | load failed          | any of the seven loads                    | its own notice (+ retry where carried) — never a fake empty state                  |
 | **no accounts**      | a completed list answered zero            | the titled guidance block + a link to `/accounts`                                  |
 | account attention    | archived / disabled / keyless (see below) | the attention notice between the identity card and the metrics region              |
-| no snapshot, blocked | `collectedAt` null **and** attention      | the honest line — collection is not running (the notice above carries the remedy)  |
+| no snapshot, blocked | `collectedAt` null **and** attention      | the honest line — the notice above says what is keeping values from appearing      |
 | no snapshot, waiting | `collectedAt` null, no blocker            | the waiting sentence — values appear after the first successful poll               |
 | zero-metric snapshot | stamp set, `metrics: []`                  | its own different fact (the adapter's skip path)                                   |
 | registry-empty build | providers list answers `[]`               | raw provider ids and metric keys verbatim (D-137's documented fallback)            |
@@ -381,16 +381,25 @@ state: a real install registers its adapters.
 
 **The attention precedence** (the pure classifier `accountAttentionOf`
 in `src/account-attention.ts`, fed the account view AND its §7.3
-status row) mirrors §7.3's own derivation order — `archived` (the UI
-lifecycle fact) outermost, then `disabled` (the operator's enable
-switch), then the key state — so the notice can never contradict the
-status badge rendered from the same facts:
+status row) consumes the server classifier's own verdict over the wire
+(D-191, task FSM-2): the archived/disabled branches read the status
+row's token first — the canonical precedence `archived → disabled →
+not-configured → the working statuses` decided server-side — with the
+accounts surface's raw facts (the storage lifecycle field, the enable
+switch — the very inputs the server feeds the same ranks) kept beside
+them as the row-absent fallback and the cross-load-race tie-breaker in
+both directions (a stale list cannot outvote a fresher verdict, nor
+the reverse). The notice and the badge agree whenever both loads are
+current:
 
-1. **archived** — polling stopped, history retained; manage or purge on
+1. **archived** — history retained; manage or purge on
    the Accounts page (+ link). An archived account's wire shape reads
-   `enabled: false, hasKey: false, keySource: 'none'` — the terminal
-   lifecycle outranks both switches, matching the `disabled` status
-   §7.3 derives for it. The storage row is the authoritative fact even
+   `enabled: false, hasKey: false, keySource: 'none'` when the archive
+   removed the entry (§8.2's usual end state) — and the hand-re-add
+   shape (D-191) keeps `enabled: true, keySource: 'file'` beside the
+   archived row, matching the `archived` status token §7.3 now derives
+   for both (the lifecycle fact outranks the whole precedence list,
+   D-180). The storage row is the authoritative fact even
    in the transient window after a partial archive (the row retired,
    the entry removal still retrying server-side): the row IS retired.
 2. **disabled** — enable polling on the Accounts page (+ link).

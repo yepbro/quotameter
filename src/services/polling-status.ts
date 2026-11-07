@@ -1,21 +1,32 @@
 /**
- * Account status derivation (spec §7.3, §14.6, §13; task 111, decision D-070).
+ * Account status derivation (spec §7.3, §14.6, §13; task 111, decision
+ * D-070; the unified lifecycle projection is D-191, task FSM-2).
  *
- * The pure view over the polling pipeline: {@link deriveAccountStatus} picks
- * the primary displayed account status from §7.3's precedence using exactly
- * the evidence the landed tasks already produce — task 105's
+ * The one canonical account-lifecycle classifier — the shared top-level
+ * projection every status surface reads (the §13 status routes, the UI
+ * attention through the row's token, and §5.2's `quotameter status`;
+ * the accounts view exposes the same storage half as the raw
+ * `archived` fact rank 0 consumes): {@link deriveAccountStatus} picks
+ * the primary displayed
+ * account status from the canonical precedence — `archived` (§8.2's
+ * storage lifecycle fact, rank 0) → `disabled` → `not-configured` → the
+ * §7.3 working ranks — using exactly the evidence the landed tasks
+ * already produce — task 105's
  * `STATUS_CONTRIBUTION_BY_OUTCOME` for the three failure-defined ranks (no
  * re-derivation: a 429 or a success contributes nothing and falls through to
  * the age-based states, D-048's explicit delegation), task 108's D-064
  * suspension state for `Auth rejected` (§7.2's pause *is* the status: it is
  * entered by a 401/403 and released only by a key change, a manual test, or
  * a successful probe), and the repository's latest-by-outcome run reads for
- * the time dimension. {@link readPollingRunEvidence} is the storage seam:
+ * the time dimension. The consistency invariant (TZ-fsm §4.2): for any
+ * combination of source facts — `enabled × archived × configured` — every
+ * projection agrees; an archived row never displays a runtime status.
+ * {@link readPollingRunEvidence} is the storage seam:
  * the three §11.2 lookups D-058 designed for this consumer (latest cycle,
  * latest snapshot, oldest cycle), frozen into the evidence object the
  * caller spreads beside its configuration and scheduler inputs.
  *
- * Pinned interpretations (D-070):
+ * Pinned interpretations (D-070; the lifecycle rank 0 is D-191, FSM-2):
  *
  * - **`Auth rejected` = the suspension is active OR the latest run is an
  *   `auth_error`** — the "outcome contribution plus suspension state" D-064
@@ -27,6 +38,19 @@
  *   or re-armed, the last recorded verdict is still a rejection) keeps the
  *   truthful display until the next cycle supersedes it — one cycle long,
  *   because D-066 makes the post-release poll immediately due.
+ * - **`Archived` is rank 0, the storage lifecycle fact (§8.2, D-061)** —
+ *   spec 1.1's archived-dominance rule (D-180): an account whose storage
+ *   row is archived never displays a runtime status, whatever the
+ *   configuration half claims. This closes the audit's reproducible
+ *   contradiction (TZ-fsm §4.1): an archived id re-added to the
+ *   configuration file by hand keeps `enabled: true` and a resolvable key
+ *   (the config-sync skips archived rows, D-061), so without rank 0 the
+ *   status surface derived `collecting`/`fresh` while the accounts surface
+ *   showed `archived`. The lifecycle fact outranks `Disabled` and `Not
+ *   configured` too (TZ-fsm's canonical chain: archived → disabled →
+ *   not-configured → the working ranks), so the caller resolves it from
+ *   the account row — the one fact the status derivation previously
+ *   ignored.
  * - **`Collecting` = no successful collection yet, within three configured
  *   intervals of the account's first attempt (or no attempts at all)**.
  *   `Fresh`/`Stale` are defined by the age of the *latest success*, which
@@ -47,14 +71,16 @@
  *   no recency qualifier to `Unreachable` ("latest cycle failed due to
  *   network issue, timeout, or 5xx"); the age dimension enters exclusively
  *   through ranks 4–6, so rank 3 beats a stale-but-recently-cycled account.
- * - **`Disabled` outranks `Not configured`**, both ahead of the precedence
- *   list: the operator's enablement is the outermost switch, so a disabled
- *   account shows `Disabled` whether or not its key is resolved.
- *   `configured` means *a usable secret is resolved* — `apiKey` set, or
- *   `apiKeyEnv` naming a variable the process provides (§6.3). The config
- *   contract rejects an account declaring neither source, so the reachable
- *   `Not configured` account is the unresolved-`apiKeyEnv` one; the caller
- *   resolves the flag from the live configuration.
+ * - **`Disabled` outranks `Not configured`**, both behind `Archived` and
+ *   ahead of the precedence list: the operator's enablement is the
+ *   outermost switch an operator flips, so a disabled account shows
+ *   `Disabled` whether or not its key is resolved — and the storage
+ *   lifecycle outranks them both (rank 0 above). `configured` means *a
+ *   usable secret is resolved* — `apiKey` set, or `apiKeyEnv` naming a
+ *   variable the process provides (§6.3). The config contract rejects an
+ *   account declaring neither source, so the reachable `Not configured`
+ *   account is the unresolved-`apiKeyEnv` one; the caller resolves the
+ *   flag from the live configuration.
  *
  * Time never comes from the machine clock (D-021): `nowEpochMs` is an
  * argument of {@link deriveAccountStatus}, and the reader reads no time at
@@ -75,13 +101,15 @@ import { isSuspended, type AuthSuspensionState } from './polling-suspension';
 /* ── The §7.3/§14.6 status vocabulary ──────────────────────────────────── */
 
 /**
- * Every account status spec §7.3/§14.6 distinguishes, in §7.3's precedence
- * order for the six ranked states, followed by the two separate
- * (`Disabled`, `Not configured`) states. Membership, not order, is the
- * wire contract for §13's API; a new status is a code change plus a
- * decision.
+ * Every account status spec §7.3/§14.6 distinguishes plus the `archived`
+ * lifecycle token of spec 1.1's dominance rule (D-180/D-191) — ranked
+ * first as rank 0, then §7.3's precedence order for the six ranked
+ * states, then the two separate (`Disabled`, `Not configured`) states.
+ * Membership, not order, is the wire contract for §13's API; a new status
+ * is a code change plus a decision.
  */
 export const ACCOUNT_STATUSES = Object.freeze([
+  'archived',
   'auth-rejected',
   'format-changed',
   'unreachable',
@@ -96,11 +124,13 @@ export const ACCOUNT_STATUSES = Object.freeze([
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 
 /**
- * The exact §7.3/§14.6 English spellings, keyed by machine token — the
- * display vocabulary for §5.2's `quotameter status` (English-only CLI
- * output); the web UI maps the tokens through its own i18n catalog.
+ * The exact §7.3/§14.6 English spellings plus the lifecycle token, keyed
+ * by machine token — the display vocabulary for §5.2's `quotameter status`
+ * (English-only CLI output); the web UI maps the tokens through its own
+ * i18n catalog.
  */
 export const ACCOUNT_STATUS_LABELS: Readonly<Record<AccountStatus, string>> = Object.freeze({
+  archived: 'Archived',
   'auth-rejected': 'Auth rejected',
   'format-changed': 'Format changed',
   unreachable: 'Unreachable',
@@ -212,8 +242,12 @@ function requireStatusInput(input: AccountStatusInput, caller: string): void {
   if (typeof input !== 'object' || input === null) {
     throw new TypeError(`${caller}: input must be an AccountStatusInput`);
   }
-  if (typeof input.enabled !== 'boolean' || typeof input.configured !== 'boolean') {
-    throw new TypeError(`${caller}: enabled and configured must be booleans`);
+  if (
+    typeof input.archived !== 'boolean' ||
+    typeof input.enabled !== 'boolean' ||
+    typeof input.configured !== 'boolean'
+  ) {
+    throw new TypeError(`${caller}: archived, enabled, and configured must be booleans`);
   }
   // The derivation reads only the gate; D-064's own transitions validate the
   // full state, and a hand-crafted `{ suspended: <non-boolean> }` must fail
@@ -246,6 +280,16 @@ function requireStatusInput(input: AccountStatusInput, caller: string): void {
 
 /** Everything §7.3's precedence consumes besides the clock reading. */
 export interface AccountStatusInput {
+  /**
+   * Whether the account's storage row is archived (§8.2, D-061) — the
+   * rank-0 lifecycle fact of spec 1.1's archived-dominance rule (D-180):
+   * an archived account displays `Archived`, never a runtime status,
+   * whatever the configuration half claims (a hand-re-added archived id
+   * keeps `enabled: true` and a resolvable key beside its archived row —
+   * the config-sync skips archived rows). The caller resolves this from
+   * the account row (D-191, FSM-2).
+   */
+  readonly archived: boolean;
   /** Whether the account is enabled in the live configuration (§6.2). */
   readonly enabled: boolean;
   /**
@@ -275,6 +319,7 @@ export interface AccountStatusInput {
  *
  * | Order | Status | Condition |
  * | --- | --- | --- |
+ * | 0 | `archived` | the storage row is archived (§8.2; the lifecycle fact outranks everything, D-180/D-191) |
  * | 0a | `disabled` | `enabled` is false |
  * | 0b | `not-configured` | no usable secret is resolved |
  * | 1 | `auth-rejected` | D-064 suspension active, or the latest run is `auth_error` |
@@ -284,17 +329,22 @@ export interface AccountStatusInput {
  * | 5 | `collecting` | no success yet, within three intervals of the first attempt (or no runs) |
  * | 6 | `fresh` | latest success no older than three intervals |
  *
- * Ranks 1–3 consume D-048's contribution table as data (`rate_limited` and
- * `success` contribute nothing and fall through); ranks 4–6 measure the age
- * of the latest success — or of the first attempt when none exists —
- * against `STATUS_FRESHNESS_INTERVALS × intervalSeconds`. A wall reading
- * behind the last success (clock regression, D-021) yields a negative age
- * and stays `Fresh`: fail-safe in the direction of not alarming.
+ * Rank 0 is the archived-dominance rule (D-191): an archived row never
+ * displays a runtime status nor `Disabled`/`Not configured` — the
+ * canonical chain archived → disabled → not-configured → the working
+ * ranks. Ranks 1–3 consume D-048's contribution table as data
+ * (`rate_limited` and `success` contribute nothing and fall through);
+ * ranks 4–6 measure the age of the latest success — or of the first
+ * attempt when none exists — against `STATUS_FRESHNESS_INTERVALS ×
+ * intervalSeconds`. A wall reading behind the last success (clock
+ * regression, D-021) yields a negative age and stays `Fresh`: fail-safe
+ * in the direction of not alarming.
  */
 export function deriveAccountStatus(input: AccountStatusInput, nowEpochMs: number): AccountStatus {
   requireStatusInput(input, 'deriveAccountStatus');
   requireFiniteNow(nowEpochMs, 'deriveAccountStatus');
 
+  if (input.archived) return 'archived';
   if (!input.enabled) return 'disabled';
   if (!input.configured) return 'not-configured';
 

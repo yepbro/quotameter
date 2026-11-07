@@ -95,6 +95,7 @@ function insertSuccess(repository: QuotaRepository, accountId: string, startedAt
 /** The derivation input for `accountId`'s read evidence, healthy otherwise. */
 function statusInput(repository: QuotaRepository, accountId: string): AccountStatusInput {
   return {
+    archived: false,
     enabled: true,
     configured: true,
     suspension: INITIAL_SUSPENSION_STATE,

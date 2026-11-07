@@ -305,8 +305,12 @@
                             "type": "string"
                           },
                           "status": {
-                            "description": "The §7.3 primary displayed status.",
+                            "description": "The primary displayed status; archived (the §8.2 lifecycle fact) outranks the list (D-180/D-191).",
                             "anyOf": [
+                              {
+                                "const": "archived",
+                                "type": "string"
+                              },
                               {
                                 "const": "auth-rejected",
                                 "type": "string"
@@ -3571,8 +3575,12 @@
                       "type": "string"
                     },
                     "status": {
-                      "description": "The §7.3 primary displayed status.",
+                      "description": "The primary displayed status; archived (the §8.2 lifecycle fact) outranks the list (D-180/D-191).",
                       "anyOf": [
+                        {
+                          "const": "archived",
+                          "type": "string"
+                        },
                         {
                           "const": "auth-rejected",
                           "type": "string"

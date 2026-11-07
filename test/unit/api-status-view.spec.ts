@@ -129,6 +129,7 @@ describe('statusAccountView (the §7.3 delegation)', () => {
   it('derives fresh within the window and stale past it', () => {
     const input = {
       id: 'work',
+      archived: false,
       enabled: true,
       configured: true,
       suspension: INITIAL_SUSPENSION_STATE,
@@ -148,6 +149,7 @@ describe('statusAccountView (the §7.3 delegation)', () => {
     const view = statusAccountView(
       {
         id: 'work',
+        archived: false,
         enabled: true,
         configured: true,
         suspension: INITIAL_SUSPENSION_STATE,
@@ -165,11 +167,12 @@ describe('statusAccountView (the §7.3 delegation)', () => {
     });
   });
 
-  it('derives disabled for the storage-only (archived) row — enabled wins', () => {
+  it('derives archived for the storage-only row — rank 0 over the fresh evidence', () => {
     expect(
       statusAccountView(
         {
           id: 'gone',
+          archived: true,
           enabled: false,
           configured: false,
           suspension: INITIAL_SUSPENSION_STATE,
@@ -179,7 +182,25 @@ describe('statusAccountView (the §7.3 delegation)', () => {
         null,
         T0,
       ).status,
-    ).toBe('disabled');
+    ).toBe('archived');
+  });
+
+  it('derives archived for the hand-re-added row even enabled and keyed (D-191)', () => {
+    expect(
+      statusAccountView(
+        {
+          id: 'zombie',
+          archived: true,
+          enabled: true,
+          configured: true,
+          suspension: INITIAL_SUSPENSION_STATE,
+          runs: freshEvidence,
+          intervalSeconds: 300,
+        },
+        null,
+        T0,
+      ).status,
+    ).toBe('archived');
   });
 });
 

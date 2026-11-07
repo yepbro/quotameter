@@ -316,7 +316,10 @@ these routes like every other `/api` route; none is public.
   account reads `status: 'active'` with null history facts, and an archived
   account (whose configuration entry the archive removed) stays listed with
   `enabled: false`, `keySource: 'none'` (§8.2: archive retains identity and
-  history).
+  history). The hand-re-add shape (D-191: an archived id re-entered the
+  configuration file by hand; the config-sync skips the row, D-061) keeps
+  `enabled: true` and its key state beside `status: 'archived'` — the
+  lifecycle field is the row's own fact, whatever the entry claims.
 - **`POST /api/accounts`** — create; the key is write-only. The id is
   client-supplied (the §6.2 charset, shared with the API schema via the
   now-exported `ID_PATTERN` — one pattern, two consumers, D-100's rule) or
@@ -414,14 +417,16 @@ no-half-wired-surface pin, one test per family).
 - **`src/server/api/status.ts`** (spec §13, §7.2, §7.3, §8.4) registers
   `GET /api/status` and `GET /api/quota?accountId=` — the §7.3-facts
   family over one options object. Both routes are read-only composition:
-  the status token is task 111's `deriveAccountStatus` over
+  the status token is the canonical lifecycle derivation — task 111's
+  `deriveAccountStatus` with the storage row's archived fact as rank 0
+  (D-191) — over
   `readPollingRunEvidence`, never re-derived here; the quota metrics are
   task 122's `getLatestValidMetricValues` (D-077 — the last **valid**
   value per metric key, per-row collection stamps, an invalid newer row
   never erasing a metric) beside `getLatestSnapshot`'s header facts; the
   account set is the D-128 union of configuration entries and storage
-  rows, so an archived account stays visible (`disabled`, its §8.2-retained
-  history still served by `/api/quota`). §7.2's "most recent error" is the
+  rows, so an archived account stays visible (`archived`, its §8.2-retained
+  history still served by `/api/quota` under the lifecycle token). §7.2's "most recent error" is the
   newest non-success run found by six bounded, indexed outcome-filtered
   probes (the D-114 CLI method — no unbounded scan, no facade change), and
   the stored message passes an exact-occurrence redaction of the account's
