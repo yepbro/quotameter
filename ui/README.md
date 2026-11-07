@@ -63,8 +63,8 @@ npm run preview:ui    # serve the built UI on 127.0.0.1:4173 (Playwright)
 ```
 
 Build output goes to `ui/dist`, or to `$DIST_DIR` when set — the
-development container redirects it into the isolated data volume so the
-container (uid 1000) never writes into the host-owned tree
+development container redirects it into the isolated data volume so build
+output never lands in the host-owned tree
 (`docs/agents/environment.md`). `$DIST_DIR` must name a directory
 dedicated to build output: every build empties it before writing. The
 served directory is resolved by the server (`src/server/http.ts`).

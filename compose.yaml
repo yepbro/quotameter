@@ -10,6 +10,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Build the container user to match the host user (decision D-181): the
+      # Makefile exports the host uid/gid as DEV_UID/DEV_GID; the 1000:1000
+      # defaults keep the image's own `node` user. See
+      # docs/agents/environment.md ("Matching the host user").
+      args:
+        DEV_UID: ${DEV_UID:-1000}
+        DEV_GID: ${DEV_GID:-1000}
     working_dir: /app
     # Keep the container alive so `docker compose exec` / `run` can be used
     # for repeat commands without restarting the environment.

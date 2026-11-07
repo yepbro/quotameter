@@ -12,10 +12,10 @@
  * Output directory: `SCHEMA_DIR` when set, otherwise `schema` (repository
  * root — the host-friendly default). The development container sets
  * `SCHEMA_DIR` to a path inside its data volume (see compose.yaml and
- * docs/agents/environment.md): the container runs as uid 1000 and must not
- * write into the bind-mounted repository tree. `make schema` generates into
- * the volume and streams the file back, so the repository copy is always
- * written by a host-side process.
+ * docs/agents/environment.md): generated output goes to the data volume,
+ * not the bind-mounted repository tree, and `make schema` generates into
+ * the volume and streams the file back, so the repository copy changes
+ * through one deliberate host-side step.
  *
  * TypeScript is loaded through `jiti` (an existing devDependency) because
  * plain Node on the minimum runtime (22.13.0) cannot import `.ts` modules

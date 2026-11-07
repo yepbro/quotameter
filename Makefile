@@ -15,6 +15,18 @@ RUN = docktree exec -T dev --
 # Interactive execution (TTY) for shells and watch modes.
 RUN_TTY = docktree exec dev --
 
+# Run the dev container as the host user (decision D-181): container-side
+# tools (prettier --write, eslint --fix, codegen) must be able to rewrite
+# tracked files created host-side. Exported for every recipe below and
+# consumed by compose as build args (see compose.yaml and
+# docs/agents/environment.md, "Matching the host user"). The make assignment
+# wins over the ambient environment: override per build with
+# `make DEV_UID=… DEV_GID=… image`, and pin the ids in the worktree's `.env`
+# only for builds that bypass make (direct `docktree build`); the 1000:1000
+# defaults keep the image's own `node` user.
+export DEV_UID := $(shell id -u)
+export DEV_GID := $(shell id -g)
+
 #@ ─ Container lifecycle ───────────────────────────────────────────────
 
 .PHONY: image

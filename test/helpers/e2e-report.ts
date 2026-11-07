@@ -11,9 +11,10 @@ export type E2eReportEnv = { CI?: string | undefined; REPORTS_DIR?: string | und
  *
  * The XML is a CI/report artifact, not a run artifact: it lands in the same
  * `REPORTS_DIR` the Vitest JUnit uses (package.json `test:ci`), which the
- * container points at the isolated data volume so container runs never
- * write into the bind-mounted repository tree (docs/agents/environment.md —
- * the container uid invariant). The relative default keeps host and CI runs
+ * container points at the isolated data volume so container runs keep
+ * generated output out of the bind-mounted repository tree
+ * (docs/agents/environment.md — the generated-output routing contract).
+ * The relative default keeps host and CI runs
  * on the pre-U-034 `reports/` path, so the CI workflow is unchanged.
  *
  * The directory is created at resolution time exactly like the sibling

@@ -13,11 +13,13 @@ import { resolveE2eJunitOutputFile } from '../helpers/e2e-report';
  *
  * `playwright.config.ts` used to hardcode the CI JUnit reporter's
  * `outputFile: 'reports/e2e-junit.xml'` relative to the repository root —
- * the one writing tool left that ignored the container uid invariant: with
- * `CI` set inside the development container the reporter would write into
- * the bind-mounted repository tree (container uid 1000, host uid 1001) and
+ * the one writing tool left that ignored the container output-routing
+ * invariant: with `CI` set inside the development container the reporter
+ * would write into the bind-mounted repository tree and
  * fail with `EACCES` only after the whole suite had passed (the reporter
- * mkdirs/writes at `onEnd`). Every other writing tool routes its output
+ * mkdirs/writes at `onEnd`; at the time the container ran as uid 1000
+ * against host uid 1001 — the pre-D-181 mismatch). Every other writing
+ * tool routes its output
  * through an env-configured directory with a host-friendly default; the fix
  * moves the JUnit XML to `REPORTS_DIR` — the same directory the Vitest
  * JUnit report uses (package.json `test:ci`) — keeping `reports/e2e-junit.xml`

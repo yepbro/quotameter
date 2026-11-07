@@ -37,8 +37,8 @@ $ make openapi
 
 `make openapi` regenerates the file inside the development container and
 writes `docs/openapi.json` back to the repository from the host side — the
-same uid-safety pattern as `make schema` (the container runs as uid 1000 and
-must not write into the bind-mounted source tree; the generator's output
+same generated-output-to-the-data-volume pattern as `make schema` (the
+generator's output
 directory is env-configured through `OPENAPI_DIR`, see
 [docs/agents/environment.md](agents/environment.md)). Without `make`, run
 `npm run openapi:generate` and copy the file from `$OPENAPI_DIR` if you set

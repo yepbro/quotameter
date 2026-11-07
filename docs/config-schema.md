@@ -78,8 +78,9 @@ $ make schema
 
 `make schema` regenerates the file inside the development container and
 writes `schema/config.schema.json` back to the repository from the host side:
-the container runs as uid 1000 and must not write into the bind-mounted source
-tree, so the generator's output directory is env-configured (`SCHEMA_DIR`,
+generated output goes to the container's isolated data volume, not the
+bind-mounted source tree, so the generator's output directory is
+env-configured (`SCHEMA_DIR`,
 default `schema/` on the host, `/var/lib/quotameter/schema` in the container —
 see [docs/agents/environment.md](agents/environment.md)). Without `make`, run
 `npm run schema:generate` and copy the file from `$SCHEMA_DIR` if you set it.
