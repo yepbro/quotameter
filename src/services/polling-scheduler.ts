@@ -1,5 +1,6 @@
 /**
- * The polling scheduler (spec §7.1, §7.2; task 109, decision D-066).
+ * The polling scheduler (spec §7.1, §7.2; task 109, decision D-066; the
+ * explicit phase model FSM-1/D-190).
  *
  * The engine behind the §7.1 collection loop: it runs each account's first
  * poll immediately, polls accounts sequentially with a random jitter of up
@@ -14,6 +15,15 @@
  * account arrives as injectable closures, and the run writer (110)
  * is the seam that turns a retried cycle into a classified, stored run.
  *
+ * Since FSM-1 the per-account schedule is an explicit state machine
+ * (`polling-phase.ts`, D-190): the entry holds exactly one {@link PollPlan}
+ * (what the dispatcher owes the account next), every mutation goes through
+ * the pure transition table `nextPlan`, and each scheduling pass derives
+ * the observed {@link PollPhase} per account (`pollPhaseOf`) and switches
+ * over it exhaustively — a future phase variant without a dispatcher arm
+ * is a compile error, not a missed gate (the U-028/P2-3 bug class). Kind
+ * transitions log at `debug` through the optional injected logger.
+ *
  * Composition of the landed seams:
  *
  * - {@link runCycleWithRetries} (D-059) wraps every cycle attempt — the
@@ -26,16 +36,17 @@
  *   hourly verification attempts, and receives every classified outcome —
  *   all through the injected `AccountSuspensions` store (FSM-3, D-189):
  *   the engine holds no suspension state of its own, so its dispatch gates
- *   and the status surfaces read one value per account. Key-change
- *   releases ride on `setAccounts` (the configuration observation) and a
- *   manual test is {@link PollingScheduler.requestManualTest};
+ *   and the status surfaces read one value per account, and the phase model
+ *   references that value without copying it. Key-change releases ride on
+ *   `setAccounts` (the configuration observation) and a manual test is
+ *   {@link PollingScheduler.requestManualTest};
  * - a failure for one account never stops the others (§7.2): provider
  *   failures arrive as `CycleRetryResult` values, and even a **throwing**
  *   `settleCycle` seam is contained — the account simply reschedules on
- *   the plain interval. A **throwing wrapper** (a broken sleep seam, an
- *   invalid random roll) gets the same containment plus the optional
- *   `abandonCycle` notification, so a cycle that can never settle leaves
- *   no per-cycle state behind (U-035/D-169).
+ *   the plain interval (the `contained-failure` transition). A **throwing**
+ *   wrapper (a broken sleep seam, an invalid random roll) gets the same
+ *   containment plus the optional `abandonCycle` notification, so a cycle
+ *   that can never settle leaves no per-cycle state behind (U-035/D-169).
  *
  * The one interplay the spec leaves open is decided in D-066: what
  * "sequential" means when a cycle hangs. The dispatcher is strictly
@@ -56,12 +67,21 @@
  */
 
 import type { Clock } from '../util/clock';
+import type { Logger } from '../util/logger';
 import { TransportAbortError } from '../providers/transport';
 import { type AccountSuspensions } from './account-suspensions';
 import type { CycleOutcome } from './polling-outcomes';
+import {
+  initialPlan,
+  nextPlan,
+  pollPhaseOf,
+  type PhaseFlight,
+  type PollPlan,
+  type PollPlanEvent,
+} from './polling-phase';
 import { runCycleWithRetries, type CycleRetryResult } from './polling-retry';
 import { deferNextPoll } from './polling-retry-after';
-import { isSuspended, isVerificationDue } from './polling-suspension';
+import { isSuspended } from './polling-suspension';
 
 /* ── The §7.1 interval contract ────────────────────────────────────────── */
 
@@ -215,8 +235,17 @@ export interface PollingSchedulerOptions {
    * dispatches around it (default {@link DEFAULT_CYCLE_HANG_THRESHOLD_MS}).
    */
   readonly cycleHangThresholdMs?: number;
-  /** D-020's in-flight tracker, if the composition root wires the drain. */
+  /**
+   * D-020's in-flight tracker, if the composition root wires the drain.
+   */
   readonly inFlight?: PollingInFlightTracker;
+  /**
+   * Optional diagnostics channel (R6, D-190): held-plan kind transitions
+   * log at `debug` — accountId, the event, and the from/to kinds, never a
+   * secret. Absent means silent (a standalone embedding needs no logger);
+   * the composition passes the shared redacting logger.
+   */
+  readonly logger?: Pick<Logger, 'debug'>;
   /**
    * The D-064 suspension store (FSM-3, D-189) — the ONE per-account state
    * holder this engine reads its gates from and writes its transitions
@@ -297,31 +326,17 @@ export interface PollingScheduler {
 
 /* ── Internal state ────────────────────────────────────────────────────── */
 
-/** The engine's per-account schedule state (D-066). */
+/**
+ * The engine's per-account state (D-066; the phase model D-190): the wiring
+ * plus exactly one held {@link PollPlan} — the field scatter (the monotonic
+ * due, the D-062 gate, the owed-attempt flag) is gone; every mutation goes
+ * through the pure transition table (`nextPlan`) and the dispatcher decides
+ * exclusively through the observed phase (`pollPhaseOf`).
+ */
 interface AccountEntry {
   account: PollingAccount;
-  /** When the next normal poll is due, on the monotonic clock (§7.1). */
-  nextPollMonotonicMs: number;
-  /**
-   * The D-062 `Retry-After` gate in epoch ms (`-Infinity` = open). Replaced
-   * by every completed cycle's own decision; dispatch never starts before
-   * it — manual tests and due verification probes included (§7.2's "do
-   * not poll before that time" is unconditional).
-   */
-  notBeforeEpochMs: number;
-  // No suspension field of its own (FSM-3, D-189): the D-064 state lives in
-  // the injected `AccountSuspensions` store — every gate reads
-  // `suspensions.suspensionOf(...)`, so dispatch gating and the status
-  // surfaces share one value per account.
-  /**
-   * An operator-requested attempt is owed (§7.2's manual test): consumed
-   * at dispatch — it makes the account due immediately, bypasses the
-   * suspension gate (D-064 releases on the request), and survives an
-   * in-flight cycle (review P2-3: the manual attempt runs when the current
-   * cycle settles, instead of being silently overwritten by it) and an
-   * interval change. The `Retry-After` gate still applies.
-   */
-  pendingManualTest: boolean;
+  /** What the dispatcher owes this account next (FSM-1, D-190). */
+  plan: PollPlan;
 }
 
 /** One dispatched cycle, live until its post-processing completes. */
@@ -448,6 +463,10 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   if (inFlightTracker !== undefined && typeof inFlightTracker.begin !== 'function') {
     throw new TypeError('createPollingScheduler: inFlight must expose begin()');
   }
+  const logger = options.logger ?? { debug: () => undefined };
+  if (typeof logger.debug !== 'function') {
+    throw new TypeError('createPollingScheduler: logger must expose debug()');
+  }
   const suspensions = options.suspensions;
   if (typeof suspensions !== 'object' || suspensions === null) {
     throw new TypeError('createPollingScheduler: suspensions must be an AccountSuspensions');
@@ -534,6 +553,26 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
 
   /* ── Account-set management ────────────────────────────────────────── */
 
+  /**
+   * Applies one transition-table event to the entry's held plan, logging
+   * the kind change at `debug` (R6): accountId, the event, from → to —
+   * never a secret (the plan holds timestamps only). Log calls never throw
+   * (the logger's own contract), so the transition is unconditional.
+   */
+  function setPlan(entry: AccountEntry, event: PollPlanEvent): void {
+    const from = entry.plan;
+    const to = nextPlan(from, event);
+    if (to.kind !== from.kind) {
+      logger.debug('polling scheduler: account plan transitioned', {
+        accountId: entry.account.accountId,
+        event: event.kind,
+        from: from.kind,
+        to: to.kind,
+      });
+    }
+    entry.plan = to;
+  }
+
   function freshEntry(account: PollingAccount, nowMonotonicMs: number): AccountEntry {
     // §7.1: the first collection runs immediately — also for an account
     // added mid-run, which mirrors a startup for that account (D-066). The
@@ -542,12 +581,7 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
     // manual test planted while the account was unpolled — which the pause
     // then honors (D-189's corner: the probe cadence, not a normal poll,
     // verifies a key the provider already refused).
-    return {
-      account,
-      nextPollMonotonicMs: nowMonotonicMs,
-      notBeforeEpochMs: Number.NEGATIVE_INFINITY,
-      pendingManualTest: false,
-    };
+    return { account, plan: initialPlan(nowMonotonicMs) };
   }
 
   function applyAccounts(next: readonly PollingAccount[]): void {
@@ -566,7 +600,7 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       if (suspensions.reportKeyIdentity(account.accountId, account.keyIdentity)) {
         // Released by the key change: normal polling resumes immediately
         // (the stale schedule was paused mid-air, D-066).
-        existing.nextPollMonotonicMs = mono;
+        setPlan(existing, { kind: 'key-released', nowMonotonicMs: mono });
       }
       existing.account = account;
       nextEntries.set(account.accountId, existing);
@@ -588,20 +622,6 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
 
   /* ── Cycle execution ───────────────────────────────────────────────── */
 
-  /** Reschedules an account after a completed (or contained) cycle. */
-  function scheduleNextPoll(entry: AccountEntry): void {
-    if (isSuspended(suspensions.suspensionOf(entry.account.accountId))) {
-      // Normal polling stays paused; the wake math derives the probe time
-      // from the armed instant. nextPollMonotonicMs stays where it was and
-      // is re-anchored on release.
-      return;
-    }
-    // Not suspended — either never was, or this very cycle released the
-    // account (a successful probe just collected, so the next normal poll
-    // is a full interval out). Either way: interval + jitter, monotonic.
-    entry.nextPollMonotonicMs = monotonicNow() + pollingDelayMs(intervalMs, random);
-  }
-
   /**
    * Runs one full cycle for the account, detached from the loop: the
    * D-059 wrapper around the raw attempt, the settle seam, and every
@@ -617,9 +637,13 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
    * stale when the entry was removed or re-keyed mid-flight: task 110's
    * seam has still recorded the run (history is per-account), but the
    * engine consumes no gate from a cycle that no longer describes the
-   * configured key.
+   * configured key — no store feed, no plan transition.
    */
   function startFlight(entry: AccountEntry): void {
+    // The dispatch consumes whatever the account was owed (the table's
+    // single consume site): an owed manual attempt becomes a live cycle,
+    // and the dormant schedule stands ready for the settle to rewrite.
+    setPlan(entry, { kind: 'dispatched' });
     const account = entry.account; // the wiring this cycle runs with
     const flight: Flight = {
       accountId: account.accountId,
@@ -674,10 +698,21 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
         // reads the same store, so the feed needs no mirror).
         suspensions.polledCycleOutcome(account.accountId, classified, account.keyIdentity);
         // D-062: the 429 gate — replaced by this cycle's own decision; a
-        // non-deferred reason falls back to the plain interval below.
+        // non-deferred reason falls back to the plain interval below. The
+        // re-anchor pair (the monotonic reading and the jitter roll) is
+        // drawn only when the schedule will consume it — the suspended row
+        // keeps the probe cadence, so it takes no reading and draws no roll
+        // (D-066's read/roll-consumption order preserved bit for bit).
         const defer = deferNextPoll(classified, wall);
-        entry.notBeforeEpochMs = defer.deferred ? defer.notBeforeEpochMs : Number.NEGATIVE_INFINITY;
-        scheduleNextPoll(entry);
+        const suspended = isSuspended(suspensions.suspensionOf(account.accountId));
+        setPlan(entry, {
+          kind: 'cycle-settled',
+          suspended,
+          notBeforeEpochMs: defer.deferred ? defer.notBeforeEpochMs : Number.NEGATIVE_INFINITY,
+          ...(suspended
+            ? {}
+            : { nowMonotonicMs: monotonicNow(), nextDelayMs: pollingDelayMs(intervalMs, random) }),
+        });
       } catch {
         // Programming mistakes only (a fail-fast random roll, a broken sleep
         // seam, a throwing abandon hook): same containment, same
@@ -702,19 +737,29 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   }
 
   /**
-   * The contained-failure fallback: next poll one plain interval out. Best
-   * effort by construction — it runs inside containment, where the seam
-   * that just failed (a broken clock, a throwing random) may fail again,
-   * and a second escape would become an unhandled rejection.
+   * The contained-failure fallback (the `contained-failure` transition):
+   * next poll one plain interval out, gate untouched — unless the account
+   * is owed (the attempt dispatches anyway) or suspended (the armed
+   * instant governs). Best effort by construction — it runs inside
+   * containment, where the seam that just failed (a broken clock, a
+   * throwing random) may fail again, and a second escape would become an
+   * unhandled rejection.
    */
   function rescheduleBestEffort(entry: AccountEntry): void {
     try {
       if (entries.get(entry.account.accountId) !== entry) return;
-      if (isSuspended(suspensions.suspensionOf(entry.account.accountId))) {
-        return; // the armed instant still governs
-      }
-      if (entry.pendingManualTest) return; // the owed attempt dispatches anyway
-      entry.nextPollMonotonicMs = monotonicNow() + intervalMs;
+      const suspended = isSuspended(suspensions.suspensionOf(entry.account.accountId));
+      // The monotonic reading is taken only on the plain-interval row — the
+      // suspended and owed rows reschedule nothing (and the old code read
+      // no clock on them either).
+      setPlan(entry, {
+        kind: 'contained-failure',
+        suspended,
+        intervalMs,
+        ...(suspended || entry.plan.kind === 'manual-owed'
+          ? {}
+          : { nowMonotonicMs: monotonicNow() }),
+      });
     } catch {
       // The clock itself is broken: the loop's next scheduling pass will
       // hit the same failure and retain it as its own error (running
@@ -739,11 +784,113 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   }
 
   /**
+   * One pass's flight view: the per-account presences built once (an account
+   * with a live flight is never dispatchable, hung included — at most one
+   * flight per account exists, so the first hit is the answer).
+   */
+  function flightPresenceMap(): Map<string, PhaseFlight> {
+    const presence = new Map<string, PhaseFlight>();
+    for (const flight of flights) {
+      if (!presence.has(flight.accountId)) {
+        presence.set(flight.accountId, flight.hung ? 'hung' : 'flying');
+      }
+    }
+    return presence;
+  }
+
+  /** One account's decision for a single scheduling pass. */
+  type DispatchDecision =
+    | { readonly kind: 'skip' }
+    | { readonly kind: 'wait'; readonly ms: number }
+    | { readonly kind: 'dispatch'; readonly entry: AccountEntry };
+
+  const SKIP: DispatchDecision = Object.freeze({ kind: 'skip' });
+
+  /**
+   * Derives the account's observed phase and maps it to this pass's
+   * decision — the exhaustive dispatcher switch of the phase model (R3,
+   * D-190): every {@link PollPhase} variant has exactly one arm, and a
+   * future variant without one is a compile error here (TS2366, the
+   * `classifyTransportError` totality pattern), never a missed gate.
+   *
+   * The wait-vs-blocked placement of each arm is the parity contract:
+   * a gated account contributes its wait even while the queue is held
+   * (the gate opens on its own clock), while cadence-due and plain-due
+   * shapes are re-examined after the hold lifts.
+   */
+  function decide(
+    entry: AccountEntry,
+    presence: ReadonlyMap<string, PhaseFlight>,
+    blocked: boolean,
+    wallEpochMs: number,
+    monotonicMs: number,
+  ): DispatchDecision {
+    const accountId = entry.account.accountId;
+    const phase = pollPhaseOf({
+      plan: entry.plan,
+      flight: presence.get(accountId) ?? 'none',
+      suspension: suspensions.suspensionOf(accountId),
+      wallEpochMs,
+      monotonicMs,
+    });
+    switch (phase.kind) {
+      case 'absent':
+        // Unreachable through the loop (the entry exists) — the arm keeps
+        // the switch total over the phase vocabulary.
+        return SKIP;
+      case 'in-flight':
+      case 'hung':
+        // §7.1's overlap prohibition: an account with a live flight is
+        // never dispatchable — including flights already declared hung
+        // (D-066: hung skips dispatch, it does not free the account).
+        return SKIP;
+      case 'manual-gated':
+        // §7.2's "do not poll before that time" binds the owed attempt
+        // (U-028) — even while the queue is held, the gate's opening must
+        // end the wait.
+        return { kind: 'wait', ms: phase.untilEpochMs - wallEpochMs };
+      case 'manual-owed':
+        // Due now, suspension bypassed (the request already released the
+        // store, D-064); consumed by the dispatch itself (`dispatched`).
+        if (blocked) return SKIP;
+        return { kind: 'dispatch', entry };
+      case 'probe-waiting':
+      case 'probe-gated':
+        // The D-064 cadence (the machine's own boundary predicate, never
+        // a hand-rolled twin) — with the U-028 order: the gate is checked
+        // after the cadence predicate, so an admission is never consumed
+        // behind a shut gate and a deferral opening first adds no wake.
+        if (blocked) return SKIP; // the queue is held; re-examine after the wake
+        return { kind: 'wait', ms: phase.untilEpochMs - wallEpochMs };
+      case 'probe-due': {
+        if (blocked) return SKIP;
+        // The single admission path (D-064/D-189): the store re-arms at
+        // admission, so the pacing survives a lost outcome by construction.
+        const admission = suspensions.admitVerification(accountId);
+        if (admission.admitted) return { kind: 'dispatch', entry };
+        // Unreachable through this engine's own math (the phase derivation
+        // used the same wall reading); wait a tick and recompute from a
+        // fresh reading rather than trusting the disagreement.
+        return {
+          kind: 'wait',
+          ms:
+            admission.reason === 'too-early'
+              ? Math.max(1, admission.nextVerificationAtEpochMs - wallEpochMs)
+              : 1,
+        };
+      }
+      case 'waiting':
+        return { kind: 'wait', ms: phase.untilMonotonicMs - monotonicMs };
+      case 'due':
+        if (blocked) return SKIP;
+        return { kind: 'dispatch', entry };
+    }
+  }
+
+  /**
    * One scheduling pass: admit the next due account, or report how long to
-   * wait. Accounts with a live flight are never dispatchable — the §7.1
-   * overlap prohibition; suspended accounts are admitted only through the
-   * D-064 gate, which re-arms at admission — and never before the D-062
-   * `Retry-After` gate opens (U-028).
+   * wait. Every per-account decision comes from {@link decide} — the
+   * observed-phase switch above; this loop only folds the decisions.
    */
   function nextAction():
     | { readonly action: 'dispatch'; readonly entry: AccountEntry }
@@ -752,66 +899,11 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
     const blocked = isBlockedByFlight();
     const wall = wallNow();
     const mono = monotonicNow();
-    // Accounts with a live flight are never dispatchable — §7.1's overlap
-    // prohibition, including flights already declared hung.
-    const flying = new Set([...flights].map((flight) => flight.accountId));
+    const presence = flightPresenceMap();
     for (const entry of entries.values()) {
-      if (flying.has(entry.account.accountId)) continue;
-      if (entry.pendingManualTest) {
-        // The owed manual attempt: due now, suspension bypassed (the
-        // request already released it, D-064), `Retry-After` respected.
-        const gate = retryAfterRemainingMs(entry.notBeforeEpochMs, wall);
-        if (gate > 0) {
-          waitMs = minDelay(waitMs, gate);
-          continue;
-        }
-        if (blocked) continue;
-        entry.pendingManualTest = false; // consumed at dispatch
-        return { action: 'dispatch', entry };
-      }
-      const suspension = suspensions.suspensionOf(entry.account.accountId);
-      if (isSuspended(suspension)) {
-        const armed = suspension.nextVerificationAtEpochMs;
-        if (blocked) continue; // the queue is held; re-examine after the wake
-        if (!isVerificationDue(suspension, wall)) {
-          // The machine's own boundary predicate (D-064), not a hand-rolled
-          // twin of it — drift between the two would be a second scheduler.
-          waitMs = minDelay(waitMs, armed - wall);
-          continue;
-        }
-        // §7.2's "do not poll before that time" binds the verification
-        // probe too (U-028): a `Retry-After` deferral the probe's own 429
-        // left behind holds the admission until the gate opens. Checked
-        // before the admission request — admission re-arms the armed
-        // instant, so an admission consumed behind a shut gate would push
-        // the probe a full extra hour — and after the cadence predicate,
-        // so a deferral that opens first never adds a spurious wake.
-        const gate = retryAfterRemainingMs(entry.notBeforeEpochMs, wall);
-        if (gate > 0) {
-          waitMs = minDelay(waitMs, gate);
-          continue;
-        }
-        const admission = suspensions.admitVerification(entry.account.accountId);
-        if (admission.admitted) {
-          // The store re-arms at admission (D-064) — the pacing survives a
-          // lost outcome by construction.
-          return { action: 'dispatch', entry };
-        }
-        // Unreachable through this engine's own math (the due check above
-        // used the same wall reading); wait a tick and recompute from a
-        // fresh reading rather than trusting the disagreement.
-        waitMs = minDelay(waitMs, Math.max(1, armed - wall));
-        continue;
-      }
-      const gated =
-        entry.notBeforeEpochMs === Number.NEGATIVE_INFINITY
-          ? entry.nextPollMonotonicMs
-          : Math.max(entry.nextPollMonotonicMs, mono + Math.max(0, entry.notBeforeEpochMs - wall));
-      if (gated <= mono) {
-        if (blocked) continue;
-        return { action: 'dispatch', entry };
-      }
-      waitMs = minDelay(waitMs, gated - mono);
+      const decision = decide(entry, presence, blocked, wall, mono);
+      if (decision.kind === 'dispatch') return { action: 'dispatch', entry: decision.entry };
+      if (decision.kind === 'wait') waitMs = minDelay(waitMs, decision.ms);
     }
     // While blocked, the wait must also end when the holding flight crosses
     // the hang threshold, so the skip can engage without an external kick.
@@ -825,19 +917,6 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
   function minDelay(current: number | undefined, candidate: number): number {
     if (current === undefined || candidate < current) return candidate;
     return current;
-  }
-
-  /**
-   * The remaining D-062 `Retry-After` gate in wall ms —
-   * `Number.NEGATIVE_INFINITY` when the gate is open. The one hold every
-   * immediately-due dispatch shape shares (the owed manual attempt and a
-   * due verification probe, U-028): §7.2's "do not poll before that time"
-   * is unconditional, so a positive remainder waits instead of dispatching.
-   */
-  function retryAfterRemainingMs(notBeforeEpochMs: number, wallEpochMs: number): number {
-    return notBeforeEpochMs === Number.NEGATIVE_INFINITY
-      ? Number.NEGATIVE_INFINITY
-      : notBeforeEpochMs - wallEpochMs;
   }
 
   async function loop(): Promise<void> {
@@ -892,12 +971,19 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       intervalMs = requireIntervalMs(nextIntervalMs, 'setIntervalMs');
       const mono = monotonicNow();
       for (const entry of entries.values()) {
-        if (isSuspended(suspensions.suspensionOf(entry.account.accountId))) {
-          continue; // §7.2's fixed cadence
-        }
+        const suspended = isSuspended(suspensions.suspensionOf(entry.account.accountId));
         // Re-anchor from now: an interval change must never leave a stale
         // long wait pending, and never fire earlier than one new interval.
-        entry.nextPollMonotonicMs = mono + pollingDelayMs(intervalMs, random);
+        // The jitter roll is drawn per entry, only when the re-anchoring row
+        // consumes it (the suspended row keeps §7.2's fixed cadence — the
+        // mono reading itself was already taken once, as before).
+        setPlan(entry, {
+          kind: 'interval-changed',
+          suspended,
+          ...(suspended
+            ? {}
+            : { nowMonotonicMs: mono, nextDelayMs: pollingDelayMs(intervalMs, random) }),
+        });
       }
       kick();
     },
@@ -912,11 +998,11 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       // no-op on the released state, and the engine's standalone coherence
       // (its own tests, a non-composed embedding) requires it.
       suspensions.manualTestRequested(accountId);
-      // The owed attempt is a flag, not a due timestamp: it survives an
-      // in-flight cycle (whose settle rescheduling would overwrite a due,
+      // The owed attempt is a plan variant, not a due timestamp: it survives
+      // an in-flight cycle (whose settle rescheduling would overwrite a due,
       // review P2-3) and an interval change, and is consumed at dispatch —
       // through the loop, so the sequential and overlap rules hold (D-066).
-      entry.pendingManualTest = true;
+      setPlan(entry, { kind: 'manual-test-requested' });
       kick();
       return true;
     },
@@ -930,7 +1016,7 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       // engine-side half drops the owed attempt (if never dispatched) — a
       // key the provider just refused has nothing left to try, and the
       // probe cadence owns the next attempt.
-      entry.pendingManualTest = false;
+      setPlan(entry, { kind: 'manual-test-rejected' });
       kick();
       return true;
     },

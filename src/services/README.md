@@ -420,10 +420,40 @@ loop failure is retained and observable (`running` turns false, `stop()`
 re-surfaces the error), and every wake is sliced to `MAX_WAKE_MS` (one
 hour) so a wall-regressed gate wait can never busy-spin. The scheduler is
 composed into the running service — the shared clock, the shared tracker,
-and one recorder per pollable account — by
+one recorder per pollable account, and (since FSM-1) the shared redacting
+logger for `debug`-level plan-transition diagnostics — by
 [`../server/polling.ts`](../server/polling.ts) since U-051 (D-176):
 `src/server/composition.ts` registers it in the documented §5.6 order and
 feeds `setAccounts`/`setIntervalMs` from §6.4 reloads.
+
+Landed: [`polling-phase.ts`](./polling-phase.ts) — the dispatcher's
+explicit per-account phase model (task FSM-1, decision D-190, the D-066
+successor): the entry's scheduling state is one held `PollPlan` value —
+`scheduled` (a monotonic due behind the D-062 wall gate) or `manual-owed`
+(one operator attempt due now, carrying the dormant normal schedule beside
+the owed marker) — moved only by `nextPlan(plan, event)`, a pure
+transition table over an explicit event union (`key-released`,
+`cycle-settled`, `contained-failure`, `manual-test-requested`,
+`manual-test-rejected`, `interval-changed`, `dispatched` — the single
+consume site of an owed attempt — plus `initialPlan` for §7.1's immediate
+first poll), where every row mirrors the D-066 field mutation it replaces
+(nothing invented, and the clock readings and jitter rolls drawn only
+where the old code drew them — the re-anchor arguments reach the table
+only when a consuming row will read them). Per dispatch pass the engine derives the
+observed `PollPhase` — `pollPhaseOf({plan, flight, suspension, wall,
+mono})`, a pure projection folding in live-flight membership (with the
+sticky D-066 hang flag) and the D-064 state **referenced from the shared
+store, never copied** — and the dispatcher switches over it exhaustively
+with compile-time totality: adding a phase without a dispatcher arm is a
+compile error, never a missed gate (the U-028/P2-3 bug class). The
+standing proofs are the golden parity suite
+`test/unit/polling-phase.golden.spec.ts` (decision traces captured from
+the pre-refactor engine, byte-identical after), the property suite
+`polling-phase.property.spec.ts` (no per-account overlap under generated
+command scripts, a hung account never starving the others, owed survival,
+the unconditional gate over all three attempt kinds, the
+never-dispatchable flight), and the table spec
+`polling-phase.spec.ts`.
 
 Landed: [`peak-hours-intervals.ts`](./peak-hours-intervals.ts) — the §9.3
 peak-hours interval calculation (task 114, decision D-073): a validated

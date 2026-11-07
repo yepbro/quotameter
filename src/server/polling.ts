@@ -205,6 +205,10 @@ export function createPollingEngine(options: PollingEngineOptions): PollingEngin
     clock,
     suspensions,
     inFlight,
+    // R6/D-190: held-plan kind transitions log at debug through the
+    // composition's redacting logger (the scheduler's own optional seam —
+    // a standalone embedding stays silent).
+    logger,
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
   });
 
