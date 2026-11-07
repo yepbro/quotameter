@@ -468,7 +468,9 @@ async function finishInit(
   // the file, then run init again" — or a re-pointed QUOTAMETER_CONFIG_DIR).
   // Setting a password over such a database revokes them in `passwd`'s
   // fail-secure order: revoke **before** the write, a failed revocation
-  // aborts with nothing stored. A fresh machine's probe reads absence and
+  // aborts with nothing stored (the shared rationale of every
+  // password-writing path: docs/security/password-change-revocation.md,
+  // D-184). A fresh machine's probe reads absence and
   // is silent.
   let revocation: SessionRevocation | undefined;
   if (passwordHash !== undefined) {

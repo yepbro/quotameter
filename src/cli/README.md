@@ -983,7 +983,11 @@ what is on disk).
   "no stored sessions to revoke") **before** the configuration is
   written. A failed revocation aborts with the password unchanged; the
   safe-direction residual (revoked, then the write fails) is reported
-  exactly: sessions revoked, password unchanged, run passwd again.
+  exactly: sessions revoked, password unchanged, run passwd again. The
+  settings PUT's password change follows the same order (the settings
+  store revokes before its configuration mutation, D-184); the shared
+  rationale lives in
+  [docs/security/password-change-revocation.md](../../docs/security/password-change-revocation.md).
 - **The reload advisory**: when D-112's lock read finds a live holder, the
   report names the pid and the `quotameter reload` step —
   `auth.passwordHash` is live-on-reload by D-026's classification (one of

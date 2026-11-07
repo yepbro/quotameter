@@ -96,9 +96,11 @@ cross-process, not defensive). The
 verdict never deletes — §11.3's cleanup (D-061) owns expired-row
 deletion. `revokeSession({ repository, token })` is the logout
 revocation: digest the token, delete the one row, answer whether one
-existed (idempotent); password-change revocation stays where task 144
-landed it (`revokeAllSessions` in `src/cli/passwd.ts` over the facade's
-`deleteAllSessions` — a service wrapper would only forward one facade
+existed (idempotent); password-change revocation lives in the two
+password-change paths — `revokeAllSessions` in `src/cli/passwd.ts` and
+the settings store's pre-mutation call (`src/server/config-stores.ts`),
+both over the facade's `deleteAllSessions` in the fail-secure order of
+D-184 (a service wrapper would only forward one facade
 call). Fake-clock tests pin both rules and both revocations over a
 behavioral stub (`test/unit/sessions.spec.ts`) and the canonical schema
 (`test/integration/sessions-authentication.spec.ts`); the login/logout

@@ -850,8 +850,12 @@ startup environment snapshot; the settings store persists only the mutable
 scalars the request attempted (the payload's `attempted` set, D-140 — never
 an environment-owned field, never the
 sections a PUT cannot own), hashes a supplied `pendingPassword` itself
-(`hashPassword`, D-130's obligation), and revokes every session after a
-password write (§15.2/D-124, the fail-safe direction). The composition's
+(`hashPassword`, D-130's obligation), and revokes every session BEFORE
+the password write — the fail-secure order shared with `quotameter
+passwd` (§15.2/D-124; the single rationale home is
+[docs/security/password-change-revocation.md](../../docs/security/password-change-revocation.md),
+D-184: a failed revocation refuses the change with nothing written, and
+the revoked-then-failed arm is reported exactly). The composition's
 reload wrapper runs the config-sync — configured accounts mirrored into
 storage rows at startup (post-migrations) and after every reload whose
 `applied` includes `accounts` (D-128's pre-sync gap): missing rows are

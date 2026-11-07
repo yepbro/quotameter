@@ -1,6 +1,7 @@
 /**
  * Production configuration stores over the config file (spec §6.2–§6.4,
- * §13, §15.2; task U-040, decisions D-128, D-130, D-140).
+ * §13, §15.2; task U-040, decisions D-128, D-130, D-140; the password
+ * revocation order of the settings half is D-184).
  *
  * The consumer-owned seams the route families defined — `AccountConfigStore`
  * (task 159, D-128) and `SettingsStore` (task 160, D-130) — implemented by
@@ -381,7 +382,10 @@ function writeSectionField(
 
 /** Options of {@link createConfigFileSettingsStore}. */
 export interface ConfigFileSettingsStoreOptions {
-  /** The session store — password change revokes every session (§15.2). */
+  /**
+   * The session store — a password change revokes every session BEFORE
+   * the configuration write (§15.2, the fail-secure order of D-184).
+   */
   readonly repository: QuotaRepository;
   /** The data directory of the §14.5 read-only paths block. */
   readonly dataDir: string;
@@ -420,10 +424,15 @@ export function appliedRetentionDaysOf(repository: QuotaRepository): number | nu
  * auth.mode), and the password hash only ever from a fresh `hashPassword`
  * of the supplied plaintext (the effective hash is not copied back, so a
  * concurrent `passwd` write survives). A password change revokes every
- * session once the write and its reload both succeeded (§15.2/D-124): the
- * revocation rides the accepted reload, so a rejected reload leaves the
- * incumbent hash effective and its sessions coherent with it — the coherent
- * pairing on both arms.
+ * session BEFORE the configuration mutation — the fail-secure order of
+ * D-184, `quotameter passwd`'s recorded reasoning (§15.2/D-124), with
+ * the shared rationale documented once in
+ * `docs/security/password-change-revocation.md`: a failed revocation
+ * refuses the change with nothing written, and a mutation failing after
+ * a successful revocation is rethrown with the revocation stated
+ * arm-true (sessions gone, the running service keeps the current
+ * password, the file's state named as uncertain because a rejected
+ * reload leaves it ahead of memory).
  */
 export function createConfigFileSettingsStore(
   owner: ConfigFileOwner,
@@ -446,43 +455,87 @@ export function createConfigFileSettingsStore(
         change.pendingPassword === undefined
           ? undefined
           : await hashPassword(change.pendingPassword);
-      let passwordWritten = false;
-      const result = await owner.mutate((file) => {
-        let wrote = false;
-        for (const field of MUTABLE_SETTINGS_FIELDS) {
-          // Only what the request attempted is a write candidate: a change
-          // validated against an older snapshot must not revert a field a
-          // concurrent request already applied (the `sources` payload's
-          // write-side twin, D-140)…
-          if (!change.attempted.includes(field.path)) continue;
-          // …and the environment's fields are never file-written (D-130):
-          // the file keeps its own values, so unsetting the variable cannot
-          // be silently replaced by a baked-in copy.
-          if (change.sources.fields.includes(field.path)) continue;
-          const next = field.read(change.config);
-          // An undefined read cannot be expressed by the PUT (the boundary
-          // returns canonical, defaults-completed configurations) — writing
-          // it would silently delete the field from the file, so it is
-          // skipped.
-          if (next === undefined) continue;
-          field.write(file, next);
-          wrote = true;
+      // Fail-secure order (§15.2, D-184 — `quotameter passwd`'s reasoning,
+      // now shared by both password-change paths): revoke first, write
+      // second. The reverse order's failed-revocation arm would leave the
+      // NEW hash effective with every old session still valid — the exact
+      // state "changing the password revokes all sessions" forbids — so a
+      // failed revocation refuses the whole change: nothing is queued,
+      // nothing written, the incumbent hash and its sessions stay coherent.
+      // The revocation deliberately runs OUTSIDE the file owner's queue:
+      // it is a synchronous storage call needing no atomicity with the
+      // write (every interleaving is fail-secure), and the mutation
+      // callback stays a pure file edit.
+      let revokedSessions = 0;
+      if (passwordHash !== undefined) {
+        try {
+          revokedSessions = options.repository.deleteAllSessions();
+        } catch (error) {
+          throw new Error(
+            'revoking the sessions failed (the password change was refused, ' +
+              `nothing was written): ${describeError(error)}`,
+            { cause: error },
+          );
         }
-        if (passwordHash !== undefined) {
-          const auth = file.auth;
-          if (auth !== undefined && (auth === null || typeof auth !== 'object')) {
-            throw new Error(
-              'configuration file auth: expected a JSON object (refusing to overwrite)',
-            );
+      }
+      let result: ReloadSuccess;
+      try {
+        result = await owner.mutate((file) => {
+          let wrote = false;
+          for (const field of MUTABLE_SETTINGS_FIELDS) {
+            // Only what the request attempted is a write candidate: a change
+            // validated against an older snapshot must not revert a field a
+            // concurrent request already applied (the `sources` payload's
+            // write-side twin, D-140)…
+            if (!change.attempted.includes(field.path)) continue;
+            // …and the environment's fields are never file-written (D-130):
+            // the file keeps its own values, so unsetting the variable cannot
+            // be silently replaced by a baked-in copy.
+            if (change.sources.fields.includes(field.path)) continue;
+            const next = field.read(change.config);
+            // An undefined read cannot be expressed by the PUT (the boundary
+            // returns canonical, defaults-completed configurations) — writing
+            // it would silently delete the field from the file, so it is
+            // skipped.
+            if (next === undefined) continue;
+            field.write(file, next);
+            wrote = true;
           }
-          file.auth = { ...(auth as Record<string, unknown>), passwordHash };
-          passwordWritten = true;
-          wrote = true;
+          if (passwordHash !== undefined) {
+            const auth = file.auth;
+            if (auth !== undefined && (auth === null || typeof auth !== 'object')) {
+              throw new Error(
+                'configuration file auth: expected a JSON object (refusing to overwrite)',
+              );
+            }
+            file.auth = { ...(auth as Record<string, unknown>), passwordHash };
+            wrote = true;
+          }
+          return wrote;
+        });
+      } catch (error) {
+        // The safe-direction residual, reported exactly and arm-true: the
+        // revocation already happened and the change did not become
+        // effective. What the file holds depends on WHERE the mutation
+        // failed — a refused candidate or a failed atomic write leaves it
+        // untouched, a rejected reload leaves it AHEAD (the new hash
+        // written, §6.2's incumbent effective until a later reload adopts
+        // it) — so the annotation states the one truth every arm shares
+        // (the running service keeps the current password) beside the
+        // uncertainty (the file may already hold the new hash). Only when
+        // sessions were actually deleted; a zero-count revocation lost
+        // nothing and rethrows bare.
+        if (revokedSessions > 0) {
+          const noun = revokedSessions === 1 ? 'session' : 'sessions';
+          throw new Error(
+            `${describeError(error)} (the password change did not complete, but ` +
+              `${revokedSessions} stored ${noun} had already been revoked — the running ` +
+              'service keeps the current password, and the configuration file may ' +
+              'already hold the new hash, which a later reload would apply)',
+            { cause: error },
+          );
         }
-        return wrote;
-      });
-      if (passwordWritten) {
-        options.repository.deleteAllSessions();
+        throw error;
       }
       return { applied: result.applied, restartRequired: result.restartRequired };
     },

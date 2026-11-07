@@ -25,7 +25,9 @@
  * order would leave old sessions valid under a password the user believes
  * changed; this order's worst case — the write fails after a successful
  * revocation — leaves the password unchanged and everyone logged out,
- * which the report states exactly.
+ * which the report states exactly. The shared rationale of every
+ * password-writing path lives in
+ * `docs/security/password-change-revocation.md` (D-184).
  *
  * Exit codes: 0 exactly when a valid password pair was entered, the
  * sessions were revoked (or none existed), and the configuration was

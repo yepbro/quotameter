@@ -99,11 +99,13 @@
  *   tombstones and no revoked-vs-unknown distinction: storage cannot
  *   tell a never-existed digest from a deleted one, and the consumer's
  *   401 is identical. `revokeSession` (logout) digests the token and
- *   deletes the one row; password-change revocation stays where task
- *   144 landed it (`revokeAllSessions` in `src/cli/passwd.ts` → the
- *   facade's `deleteAllSessions`, over its own connection while the
- *   server runs) — a service wrapper that only forwarded one facade
- *   call would add a second name, no logic.
+ *   deletes the one row; password-change revocation lives in the two
+ *   password-change paths, both over the facade's `deleteAllSessions`
+ *   and both in the fail-secure order (revoke before the write, D-184 —
+ *   `revokeAllSessions` in `src/cli/passwd.ts` over its own connection
+ *   while the server runs, and the settings store's pre-mutation call
+ *   in `src/server/config-stores.ts`) — a service wrapper that only
+ *   forwarded one facade call would add a second name, no logic.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -374,9 +376,10 @@ export interface RevokeSessionOptions {
  * endpoint) makes the client forget the token either
  * way. No timestamp is written, so there is no `now` to pass; the
  * password-change half ("changing the password revokes all sessions")
- * stays where task 144 landed it — `revokeAllSessions` in
- * `src/cli/passwd.ts` over the facade's `deleteAllSessions` — and the
- * future UI password-change endpoint composes the same facade call.
+ * lives in the two password-change paths, both in the fail-secure order
+ * of D-184 — `revokeAllSessions` in `src/cli/passwd.ts` and the
+ * settings store's pre-mutation call (`src/server/config-stores.ts`) —
+ * over the facade's `deleteAllSessions` each.
  */
 export function revokeSession(options: RevokeSessionOptions): boolean {
   return options.repository.deleteSession(hashSessionToken(options.token));

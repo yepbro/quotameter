@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -23,8 +24,10 @@ import { withTempDir } from '../helpers/isolation';
  * this file pins the owner's error and edge arms — the absent-file base,
  * malformed and non-object files, duplicate ids, unknown ids, the
  * refuse-before-write guarantee, reload-rejection propagation, `apiKeyEnv`
- * resolution, mutation serialization, and the settings write's
- * attempted-only rule.
+ * resolution, mutation serialization, the settings write's attempted-only
+ * rule, and the settings password change's fail-secure revocation order —
+ * revoke before the write, refuse with nothing written on a failed
+ * revocation, honest reporting of the revoked-then-failed arm (D-184).
  */
 
 /** A valid configuration as parsed — the effective() double's currency. */
@@ -81,6 +84,12 @@ interface StoreHarness {
   readonly reload: ReloadDouble;
   readonly repository: {
     deleteAllSessionsCalls: number;
+    /** What the next successful `deleteAllSessions` reports deleted. */
+    deleteAllSessionsReturns: number;
+    /** Raw file bytes observed at each revocation — the order proof. */
+    revokeSnapshots: readonly string[];
+    /** Makes the next `deleteAllSessions` throw the given detail. */
+    failNextDeleteAllSessions(detail: string): void;
     /** Seeds the `retention:applied-days` marker the settings read serves. */
     setAppliedRetentionDays(raw: string | null): void;
   };
@@ -108,14 +117,30 @@ async function withStores(
     }
     const state = { effective: effectiveOf(parsed({ app: { timezone: 'UTC' } })) };
     const reload = new ReloadDouble(state);
-    // The repository double: the §15.2 revocation call the store makes,
-    // plus the §11.3 applied-retention marker its read serves.
+    // The repository double: the §15.2 revocation call the store makes
+    // (order-observing through per-call file snapshots, injectably
+    // failing, with a configurable deleted count), plus the §11.3
+    // applied-retention marker its read serves.
     let appliedRetentionDays: string | null = null;
+    let deleteAllSessionsFailure: Error | null = null;
     const repository = {
       deleteAllSessionsCalls: 0,
+      deleteAllSessionsReturns: 0,
+      revokeSnapshots: [] as string[],
       deleteAllSessions(): number {
         this.deleteAllSessionsCalls++;
-        return 0;
+        // The bytes as they lie AT the revocation: proving the fail-secure
+        // order (D-184) means proving the write had not happened yet.
+        this.revokeSnapshots.push(readFileSync(configPath, 'utf8'));
+        if (deleteAllSessionsFailure !== null) {
+          const failure = deleteAllSessionsFailure;
+          deleteAllSessionsFailure = null;
+          throw failure;
+        }
+        return this.deleteAllSessionsReturns;
+      },
+      failNextDeleteAllSessions(detail: string): void {
+        deleteAllSessionsFailure = new Error(detail);
       },
       getMetaValue(key: string): string | null {
         return key === 'retention:applied-days' ? appliedRetentionDays : null;
@@ -383,7 +408,7 @@ describe('createConfigFileSettingsStore', () => {
     });
   });
 
-  it('hashes a supplied password, stores only the encoding, and revokes sessions', async () => {
+  it('hashes a supplied password, revokes sessions BEFORE the write, stores only the encoding', async () => {
     await withStores({}, async (h) => {
       await h.settingsStore.apply({
         config: parsed({ app: { timezone: 'UTC' } }),
@@ -395,6 +420,110 @@ describe('createConfigFileSettingsStore', () => {
       expect(file.auth?.passwordHash).toMatch(/^scrypt\$N=/);
       expect(await h.readRaw()).not.toContain('correct-horse-battery');
       expect(h.repository.deleteAllSessionsCalls).toBe(1);
+      // The fail-secure order (§15.2, D-184): the revocation ran against
+      // the PRE-write file — the snapshot it observed carries no hash yet.
+      expect(h.repository.revokeSnapshots).toHaveLength(1);
+      expect(h.repository.revokeSnapshots[0]).not.toMatch(/scrypt\$N=/);
+      expect(h.reload.calls).toBe(1);
+    });
+  });
+
+  it('a failed revocation refuses the change with nothing written — the old hash stays', async () => {
+    const oldHash = 'scrypt$N=65536,r=8,p=1,keylen=64$b2xkLXNhbHQ=$b2xkLWhhc2g=';
+    const initial = `${JSON.stringify({ app: { timezone: 'UTC' }, auth: { passwordHash: oldHash } })}\n`;
+    await withStores({ initialFile: initial }, async (h) => {
+      h.repository.failNextDeleteAllSessions('synthetic database failure');
+      await expect(
+        h.settingsStore.apply({
+          config: parsed({ app: { timezone: 'UTC' } }),
+          pendingPassword: 'correct-horse-battery',
+          sources: sourcesOf(),
+          attempted: [],
+        }),
+      ).rejects.toThrow(
+        /revoking the sessions failed \(the password change was refused, nothing was written\): synthetic database failure/,
+      );
+      // Nothing was queued or written, nothing applied: the file keeps its
+      // bytes — the OLD hash is what remains effective (§6.2) — and the
+      // reload the write would have ridden never ran.
+      expect(await h.readRaw()).toBe(initial);
+      expect(h.reload.calls).toBe(0);
+    });
+  });
+
+  it('reports already-revoked sessions arm-truly when the mutation fails after revocation', async () => {
+    await withStores({}, async (h) => {
+      h.repository.deleteAllSessionsReturns = 2;
+      h.reload.next({
+        ok: false,
+        outcome: 'rejected',
+        problems: ['app.timezone: expected a string, got a number'],
+      });
+      // The safe-direction residual (D-184), in its reload-rejected arm:
+      // sessions gone, the change not applied — and the FILE ahead of
+      // memory (the write ran before the rejected reload), which is why
+      // the annotation states the file's state as uncertain instead of
+      // claiming the current password is what a next sign-in needs.
+      const failure = (await h.settingsStore
+        .apply({
+          config: parsed({ app: { timezone: 'UTC' } }),
+          pendingPassword: 'correct-horse-battery',
+          sources: sourcesOf(),
+          attempted: [],
+        })
+        .catch((error) => error)) as Error;
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toMatch(
+        /configuration reload rejected after the mutation.*2 stored sessions had already been revoked — the running service keeps the current password, and the configuration file may already hold the new hash, which a later reload would apply/,
+      );
+      // The file-ahead half of the arm, asserted: the new hash IS on disk.
+      const file = JSON.parse(await h.readRaw()) as { auth?: { passwordHash?: string } };
+      expect(file.auth?.passwordHash).toMatch(/^scrypt\$N=/);
+      // The wrapper preserves the original failure as its cause.
+      expect((failure.cause as Error).message).toMatch(
+        /configuration reload rejected after the mutation/,
+      );
+    });
+  });
+
+  it('revokes before even the mutation file read — the placement pin (D-184)', async () => {
+    // A malformed file would fail the mutation's own read ("cannot modify
+    // configuration file") — if that error is what surfaces, the
+    // revocation sat inside the mutation; the revocation error surfacing
+    // here proves it runs BEFORE the serialized mutation is entered.
+    await withStores({ initialFile: '{"app": ' }, async (h) => {
+      h.repository.failNextDeleteAllSessions('synthetic database failure');
+      await expect(
+        h.settingsStore.apply({
+          config: parsed({ app: { timezone: 'UTC' } }),
+          pendingPassword: 'correct-horse-battery',
+          sources: sourcesOf(),
+          attempted: [],
+        }),
+      ).rejects.toThrow(/revoking the sessions failed/);
+    });
+  });
+
+  it('rethrows the bare failure when the revocation deleted nothing', async () => {
+    await withStores({}, async (h) => {
+      h.reload.next({
+        ok: false,
+        outcome: 'rejected',
+        problems: ['app.timezone: expected a string, got a number'],
+      });
+      const failure = (await h.settingsStore
+        .apply({
+          config: parsed({ app: { timezone: 'UTC' } }),
+          pendingPassword: 'correct-horse-battery',
+          sources: sourcesOf(),
+          attempted: [],
+        })
+        .catch((error) => error)) as Error;
+      // The catch makes the success type reachable; prove it is not.
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toMatch(/configuration reload rejected after the mutation/);
+      // A zero-count revocation lost nothing: no annotation noise.
+      expect(failure.message).not.toMatch(/revoked/);
     });
   });
 

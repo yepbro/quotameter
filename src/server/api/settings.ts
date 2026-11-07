@@ -139,7 +139,13 @@ export interface SettingsStore {
   /**
    * Persists and applies a validated change; resolves the §6.4 outcome. A
    * rejected promise means the write or reload failed — the incumbent
-   * configuration stays effective (§6.2) and the endpoint answers INTERNAL.
+   * configuration stays effective (§6.2) and the endpoint answers INTERNAL —
+   * or, for a password change, one of the revocation's two arms (§15.2's
+   * fail-secure order, D-184): the pre-write revocation itself failed
+   * (nothing was written; the incumbent hash stays effective with its
+   * sessions coherent), or the revocation succeeded and the change then
+   * failed (the incumbent hash stays effective, but every stored session is
+   * gone — the operator must sign in again with the current password).
    *
    * `attempted` carries the fields the request body actually supplied (the
    * write-side twin of `sources`, D-140): the implementation persists only
