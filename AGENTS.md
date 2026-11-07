@@ -34,6 +34,7 @@ All commands go through `make` and run inside the worktree's container (no host 
 - `make check` — fast local gate (format, lint, type checks server + UI, tests).
 - `make check-all` — full CI parity; **run it before a push is requested** (plain `make test` does not enforce coverage thresholds; CI does).
 - Individual checks: `make test-unit`, `make lint`, `make typecheck`, …; `make help` lists everything.
+- **Docs-only changes** (nothing but `.md` files touched): formatting is the only required gate — verify with `make format-check` and fix with `make format` (or `prettier --write` on the file); the full test gates are not required for the commit.
 - Fresh checkout: `make image up` once; everything else auto-starts.
 
 ## Area guides
