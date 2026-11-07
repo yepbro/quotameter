@@ -55,6 +55,8 @@ interface StoreSeed {
   readonly input: unknown;
   readonly sources?: ReadonlyArray<EnvOverrideField>;
   readonly paths?: { readonly configPath: string; readonly dataDir: string };
+  /** The applied-retention marker's value (default: null — no cleanup yet). */
+  readonly appliedRetentionDays?: number | null;
 }
 
 class MemorySettingsStore implements SettingsStore {
@@ -62,6 +64,11 @@ class MemorySettingsStore implements SettingsStore {
   private readonly startup: Validated<Config>;
   private readonly sources: EnvironmentSources;
   private readonly paths: SettingsSnapshot['paths'];
+  /**
+   * §11.3's applied-retention reference (U-053/D-178) — the marker the
+   * production store reads from storage; the double serves it verbatim.
+   */
+  appliedRetentionDays: number | null;
   /** The last apply's payload — the write-path proof, secrets included. */
   lastApply:
     | {
@@ -86,10 +93,16 @@ class MemorySettingsStore implements SettingsStore {
       configPath: '/home/unit/.config/quotameter/config.json',
       dataDir: '/home/unit/.local/share/quotameter',
     };
+    this.appliedRetentionDays = seed.appliedRetentionDays ?? null;
   }
 
   async read(): Promise<SettingsSnapshot> {
-    return { config: this.current, sources: this.sources, paths: this.paths };
+    return {
+      config: this.current,
+      sources: this.sources,
+      paths: this.paths,
+      appliedRetentionDays: this.appliedRetentionDays,
+    };
   }
 
   async apply(change: {
@@ -156,6 +169,8 @@ interface HarnessOptions {
   readonly auth?: AuthModeGuardOptions;
   readonly sources?: ReadonlyArray<EnvOverrideField>;
   readonly input?: unknown;
+  /** The applied-retention marker the double serves (§11.3, D-178). */
+  readonly appliedRetentionDays?: number | null;
 }
 
 async function withSettingsApi(
@@ -178,6 +193,7 @@ async function withSettingsApi(
       ],
     },
     sources: options.sources,
+    appliedRetentionDays: options.appliedRetentionDays,
   });
   const sink = createMemoryLogSink();
   const app = Fastify({
@@ -240,10 +256,26 @@ describe('GET /api/settings — the safe view (§13/§14.5)', () => {
           configPath: '/home/unit/.config/quotameter/config.json',
           dataDir: '/home/unit/.local/share/quotameter',
         },
+        // §11.3/D-178: the applied-retention reference rides the response
+        // — null when no cleanup has completed (the double's default).
+        appliedRetentionDays: null,
       });
       expect(response.headers['cache-control']).toBe('no-store');
       expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
     });
+  });
+
+  it('serves the retention window the last completed cleanup applied (§11.3, D-178)', async () => {
+    await withSettingsApi(
+      async ({ app }) => {
+        const response = await app.inject({ method: 'GET', url: '/api/settings' });
+        expect(response.statusCode).toBe(200);
+        expect(
+          (response.json() as { appliedRetentionDays: number | null }).appliedRetentionDays,
+        ).toBe(180);
+      },
+      { appliedRetentionDays: 180 },
+    );
   });
 
   it('identifies restart-required settings and environment-overridden read-only fields (§6.4/§6.3)', async () => {

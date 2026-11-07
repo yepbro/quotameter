@@ -161,12 +161,16 @@ describe('buildApplication', () => {
           names = (await buildApplication()).components.map((component) => component.name);
         },
       );
-      // `shutdown.ts`'s documented §5.6 order, completed by U-051/D-176:
-      // the drain sits between storage and the scheduler so an aborted
-      // cycle's settlement never races the database close.
+      // `shutdown.ts`'s documented §5.6 order, completed by U-051/D-176
+      // and U-053/D-178: the retention schedule sits directly after
+      // storage (its startup cleanup runs after migrations; its daily
+      // wait is cancelled before the database closes), and the drain sits
+      // between it and the scheduler so an aborted cycle's settlement
+      // never races the database close.
       expect(names).toEqual([
         'single-instance-lock',
         'storage',
+        'retention',
         'graceful-drain',
         'polling',
         'http-listener',

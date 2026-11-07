@@ -35,6 +35,12 @@ const api = useApi();
 const props = defineProps<{
   /** The last successfully loaded annotated settings view. */
   readonly settings: SettingsView;
+  /**
+   * The retention window the last completed cleanup applied (§11.3,
+   * D-178); `null` before any cleanup — the reduce-retention warning's
+   * reference.
+   */
+  readonly appliedRetentionDays: number | null;
 }>();
 
 const emit = defineEmits<{
@@ -66,6 +72,25 @@ const intervalError = ref(false);
 const retentionError = ref(false);
 /** The last successful PUT's outcome — the saved and restart notices. */
 const savedOutcome = ref<UpdateSettingsResponse | null>(null);
+
+/**
+ * §11.3's reduce-retention warning, live: a retention draft the §11.3
+ * range would ACCEPT, below the window the last completed cleanup
+ * applied, means the records between the two windows are exactly what
+ * the NEXT cleanup deletes. Deliberately shown for an unchanged draft
+ * too (a previous reduction whose cleanup has not run yet is the same
+ * pending deletion), and it self-clears once a cleanup rewrites the
+ * applied marker to the new window. An out-of-range draft keeps the
+ * range error alone (the warning speaks about a window that could
+ * actually apply), and the warning is advisory — it never blocks the
+ * save (reducing retention is legal, §11.3 only demands the warning).
+ */
+const retentionReduceWarning = computed(() => {
+  const applied = props.appliedRetentionDays;
+  if (applied === null) return false;
+  if (!isIntegerInRange(retention.value, RETENTION_MIN_DAYS, RETENTION_MAX_DAYS)) return false;
+  return Number(retention.value.trim()) < applied;
+});
 
 // Drafts adopt the served truth whenever it changes: the parent reloads
 // after a save (this form's `saved` emit) and on its own retry, and the
@@ -349,6 +374,13 @@ function onSuggestionKeydown(event: KeyboardEvent): void {
       >
         {{ t('settings.facts.environment') }}
       </p>
+      <p v-if="retentionReduceWarning" class="warn-note" data-testid="settings-retention-warning">
+        {{
+          t('settings.general.retentionReduceWarning', {
+            days: Number(retention.trim()),
+          })
+        }}
+      </p>
       <p v-if="retentionError" class="field-error" role="alert">
         {{
           t('settings.general.retentionInvalid', {
@@ -472,6 +504,7 @@ select:disabled {
 
 .hint,
 .env-note,
+.warn-note,
 .field-error,
 .status {
   margin: 0;
@@ -480,6 +513,12 @@ select:disabled {
 .hint,
 .env-note {
   color: var(--qm-color-muted);
+}
+
+/* §11.3's reduce-retention heads-up — advisory (never blocks the save),
+ * so the wording carries the meaning and the color only emphasizes. */
+.warn-note {
+  color: var(--qm-color-danger);
 }
 
 .field-error {

@@ -21,6 +21,11 @@
  * candidate to `parseConfigWithEnv` (the exact reload pipeline) before any
  * byte is written: a mutation that would break the effective configuration
  * is refused without touching the file.
+ *
+ * The settings half's `read` also serves §11.3's applied-retention
+ * reference (U-053, D-178): the `retention:applied-days` storage marker,
+ * read through the repository — the one storage fact the settings surface
+ * needs, beside the configuration facts.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -30,6 +35,7 @@ import type { EffectiveConfig, ReloadResult, ReloadSuccess } from '../config/rel
 import { writeConfigFile } from '../config/write';
 import { hashPassword } from '../services/password-hash';
 import type { QuotaRepository } from '../storage/repository';
+import { RETENTION_APPLIED_DAYS_KEY } from '../storage/retention-cleanup';
 import type { Logger } from '../util/logger';
 import type { AccountConfigStore, ManagedAccountConfig } from './api/accounts';
 import type { SettingsSnapshot, SettingsStore } from './api/settings';
@@ -382,6 +388,27 @@ export interface ConfigFileSettingsStoreOptions {
 }
 
 /**
+ * Reads §11.3's reduce-retention warning reference from storage: the
+ * retention window the last completed cleanup applied
+ * (`retention:applied-days`, written by every `runRetentionCleanup` —
+ * D-063). Absent (no cleanup yet) reads `null`; a value that does not
+ * parse as an integer reads `null` too — fail-soft by design (D-178): the
+ * marker is a display annotation, and a corrupted marker must not take
+ * the settings page down with it (the cleanup rewrites it on its next
+ * run, which is also the repair).
+ */
+export function appliedRetentionDaysOf(repository: QuotaRepository): number | null {
+  const raw = repository.getMetaValue(RETENTION_APPLIED_DAYS_KEY);
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  // §11.3's own 7–3650 bounds make any negative (or non-integer) marker
+  // corrupt by construction — the cleanup only ever writes in-range days.
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
  * The production `SettingsStore`. `read` serves the effective configuration
  * with its environment marking; `apply` persists only the mutable scalars
  * the request ATTEMPTED (the payload's `attempted` set — a change validated
@@ -409,6 +436,7 @@ export function createConfigFileSettingsStore(
         config: current.config,
         sources: current.sources,
         paths: { configPath: owner.targetPath, dataDir: options.dataDir },
+        appliedRetentionDays: appliedRetentionDaysOf(options.repository),
       };
     },
     async apply(change) {

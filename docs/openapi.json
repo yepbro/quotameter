@@ -6485,7 +6485,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "type": "object",
-                  "required": ["settings", "paths"],
+                  "required": ["settings", "paths", "appliedRetentionDays"],
                   "properties": {
                     "settings": {
                       "additionalProperties": false,
@@ -6775,6 +6775,17 @@
                           "type": "string"
                         }
                       }
+                    },
+                    "appliedRetentionDays": {
+                      "description": "The retention window in days the last completed cleanup applied; null before the first cleanup (spec §11.3 — the reduce-retention warning reference).",
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
                 }

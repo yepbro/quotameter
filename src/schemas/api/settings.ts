@@ -166,11 +166,24 @@ export const SettingsPathsSchema = Type.Object(
 /** The shape of the read-only paths block. */
 export type SettingsPaths = Static<typeof SettingsPathsSchema>;
 
-/** The `GET /api/settings` response. */
+/**
+ * The `GET /api/settings` response. `appliedRetentionDays` (U-053, D-178)
+ * is §11.3's reduce-retention warning's reference: the retention window
+ * the last COMPLETED cleanup applied, read from the storage marker
+ * `retention:applied-days` (D-063) — `null` before any cleanup has
+ * completed (a fresh database). It stays outside {@link SettingsViewSchema}
+ * beside the paths block so the pure view builder remains a function of
+ * configuration and sources alone.
+ */
 export const SettingsResponseSchema = Type.Object(
   {
     settings: SettingsViewSchema,
     paths: SettingsPathsSchema,
+    appliedRetentionDays: Type.Union([Type.Integer(), Type.Null()], {
+      description:
+        'The retention window in days the last completed cleanup applied; ' +
+        'null before the first cleanup (spec §11.3 — the reduce-retention warning reference).',
+    }),
   },
   { additionalProperties: false },
 );

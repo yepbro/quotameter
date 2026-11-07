@@ -23,8 +23,9 @@
  *    suspension holder (D-064), and the provider registry (§8.1) with each
  *    adapter wrapped for manual-test observation;
  * 6. assemble the components in §5.6's startup dependency order —
- *    `[single-instance-lock, storage, graceful-drain, polling,
- *    http-listener]` (the documented order of `shutdown.ts`: scheduling
+ *    `[single-instance-lock, storage, retention, graceful-drain,
+ *    polling, http-listener]` (the documented order of `shutdown.ts`:
+ *    scheduling
  *    stops first, the drain's bounded wait covers aborted cycles' actual
  *    settlement while the database is still open, storage checkpoints and
  *    closes behind it, the lock releases last). The data directory is
@@ -32,6 +33,9 @@
  *    component — the repository the routes and the polling recorders
  *    receive is a lazy facade that resolves from the holder on first use
  *    and answers a clear wiring error before the app has started. The
+ *    retention schedule (U-053, D-178) runs §11.3's cleanup once after
+ *    migrations and then daily, reading the live retention window at each
+ *    run. The
  *    polling engine (U-051, D-176) builds one scheduler over the shared
  *    clock and the shared in-flight tracker, one cycle recorder per
  *    pollable account, feeds account/interval changes through the
@@ -78,6 +82,8 @@ import {
 import { createInitialAccountProvider, observingManualTests } from './providers';
 import { createPollingEngine } from './polling';
 import type { PollingSleep } from '../services/polling-scheduler';
+import { createRetentionSchedule } from './retention';
+import type { RetentionSleep } from './retention';
 import { createSingleInstanceLock } from './single-instance';
 import { createGracefulDrain, createInFlightTracker } from './shutdown';
 
@@ -128,6 +134,15 @@ export interface ComposeApplicationOptions {
    * production runs the scheduler's real abortable timer).
    */
   readonly pollingSleep?: PollingSleep;
+  /**
+   * Overrides the retention schedule's wait seam — the composition's test
+   * seam for time-compressed integration tests: §11.3's daily cadence
+   * makes a real-time "second cleanup" observation unfit for the test
+   * gate, so the retention suite injects a scaled clock plus a sleep that
+   * divides by the same factor (the `pollingSleep` precedent — production
+   * runs the schedule's real abortable timer).
+   */
+  readonly retentionSleep?: RetentionSleep;
 }
 
 /** The assembled application {@link composeApplication} returns. */
@@ -469,7 +484,24 @@ export async function composeApplication(
     },
   };
 
-  // §5.6 component 3: the graceful drain (task 075, D-020) — a passive
+  // §5.6 component 3: the retention schedule (U-053, D-178) — §11.3's
+  // cleanup once after storage has opened and migrated, then daily over
+  // the shared clock. Registered directly after storage so the startup
+  // run meets the final schema and the teardown cancels the daily wait
+  // before the database closes (the cleanup itself is synchronous, so it
+  // can never interleave with the close). Reload-aware by read-at-run-time:
+  // each run takes the live `historyRetentionDays` (§6.4), per §11.3's own
+  // "removed at the next cleanup" application point.
+  const retention = createRetentionSchedule({
+    clock,
+    logger,
+    config: currentConfig,
+    repository,
+    storage: () => storageState.connection,
+    ...(options.retentionSleep === undefined ? {} : { sleep: options.retentionSleep }),
+  });
+
+  // §5.6 component 4: the graceful drain (task 075, D-020) — a passive
   // component until shutdown, when (after the scheduler and the listener
   // have stopped) it waits — bounded at §5.6's ten seconds — for the
   // in-flight polling work the scheduler registered in the shared tracker,
@@ -545,13 +577,15 @@ export async function composeApplication(
   } satisfies HttpServerOptions);
 
   // §5.6's order (the `shutdown.ts` docblock's documented list): the lock,
-  // storage, the drain, the polling engine, the listener — so teardown is
-  // listener → engine (stop scheduling, abort flights) → drain (bounded
-  // settlement wait, database still open) → storage (checkpoint, close) →
-  // lock.
+  // storage, the retention schedule, the drain, the polling engine, the
+  // listener — so teardown is listener → engine (stop scheduling, abort
+  // flights) → drain (bounded settlement wait, database still open) →
+  // retention (cancel the daily cleanup wait) → storage (checkpoint,
+  // close) → lock.
   const components: readonly LifecycleComponent[] = [
     lock,
     storage,
+    retention.component,
     gracefulDrain,
     pollingEngine.component,
     httpServer,

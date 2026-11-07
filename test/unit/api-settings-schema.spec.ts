@@ -106,19 +106,20 @@ describe('SettingsViewSchema (§13/§14.5 safe view)', () => {
 });
 
 describe('SettingsResponseSchema (the GET envelope)', () => {
-  it('accepts the view plus the read-only paths block', () => {
+  it('accepts the view plus the read-only paths block and the applied-retention reference', () => {
     const validate = new Ajv2020().compile(SettingsResponseSchema);
-    expect(
-      validate({
-        settings: VALID_VIEW,
-        paths: {
-          configPath: '/home/u/.config/quotameter/config.json',
-          dataDir: '/home/u/.local/share/quotameter',
-        },
-      }),
-    ).toBe(true);
+    const paths = {
+      configPath: '/home/u/.config/quotameter/config.json',
+      dataDir: '/home/u/.local/share/quotameter',
+    };
+    expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: 180 })).toBe(true);
+    // §11.3/D-178: null before the first completed cleanup.
+    expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: null })).toBe(true);
     expect(validate({ settings: VALID_VIEW, paths: { configPath: '/x' } })).toBe(false);
     expect(validate({ settings: VALID_VIEW })).toBe(false);
+    // The reference is an integer-or-null, never a free-form value.
+    expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: '180' })).toBe(false);
+    expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: 180.5 })).toBe(false);
   });
 });
 

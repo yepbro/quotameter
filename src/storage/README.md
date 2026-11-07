@@ -824,15 +824,20 @@ bytes — against the production connection (task 079's readback-verified WAL).
 §11.3's cleanup as one repeat-safe operation: it deletes every row the window
 expired — through the facade's count-returning deletes (D-058), in one
 transaction that also writes the §11.2 cleanup metadata — and then runs the
-maintenance primitive. **Scheduling is not here**: when this runs (startup and
-daily) is the server lifecycle's concern; the module takes an explicit `now`
-and window (D-021 — the future scheduler computes them from the injectable
-clock and the loaded configuration) and is safe to call back-to-back.
-`test/integration/retention-cleanup.spec.ts` verifies the done-condition —
+maintenance primitive. **Scheduling is not here**: the composition's
+`retention` component (`src/server/retention.ts`, U-051's polling-composition
+shape — task U-053, decision D-178) runs this operation once after the storage
+component's migrations and then once every 24 h, reading `now` from the shared
+clock and the window from the live configuration at each run; this module takes
+an explicit `now` and window (D-021) and stays safe to call back-to-back.
+`test/integration/retention-cleanup.spec.ts` verifies the operation's own
+done-condition —
 "startup and daily cleanup are safe to repeat" — by running the cleanup twice
 over seeded multi-account history (identical input: the second run removes
 nothing and changes nothing), then at a later `now` (only the newly expired
-go), then at an earlier one (a harmless no-op).
+go), then at an earlier one (a harmless no-op);
+`test/unit/server-retention.spec.ts` and
+`test/integration/composition-retention.spec.ts` pin the schedule itself.
 
 | Table             | Time column   | Cutoff                     | Semantics                                                                                                               |
 | ----------------- | ------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -886,9 +891,10 @@ go), then at an earlier one (a harmless no-op).
   except the two markers is touched; expired history of archived accounts
   goes with the window (retention is a history rule), pinned by test.
 - **The reduce-retention warning is a recorded hook, not built here** — the
-  config/UI layer reads `retention:applied-days` and warns when a newly
-  configured window is smaller: the records between the two windows are
-  exactly what the next cleanup deletes.
+  settings surface reads `retention:applied-days` (served as
+  `GET /api/settings`'s `appliedRetentionDays` since task U-053, D-178) and
+  the settings UI warns when a drafted window is smaller: the records
+  between the two windows are exactly what the next cleanup deletes.
 
 ## `raw-response-retention.ts` — the §7.4 per-account cap (task 103, spec §7.4, §5.5, decision D-067)
 

@@ -13,10 +13,14 @@ D-140; called `buildComponents` before U-052) now delegates to
 enforces the §6.3 permissions eagerly (before the file's content is read),
 loads and validates through `loadConfigWithEnv` (§6.2's refuse-to-start),
 then assembles the §5.6 component list
-`[single-instance-lock, storage, graceful-drain, polling, http-listener]`
+`[single-instance-lock, storage, retention, graceful-drain, polling,
+http-listener]`
 (`shutdown.ts`'s documented order, completed by U-051/D-176: one shared
 in-flight tracker serves the scheduler's flight registrations and the
-drain's bounded wait, with every landed route family wired — the D-128
+drain's bounded wait, and by U-053/D-178: the retention schedule runs
+§11.3's cleanup after migrations and daily, its daily wait cancelled
+before storage closes in teardown, with every landed route family wired —
+the D-128
 `AccountConfigStore` and D-130 `SettingsStore` over `config-stores.ts`'s
 serialized config-file owner, the D-064 suspension holder
 (`src/services/account-suspensions.ts`) feeding `suspensionOf` and the
@@ -45,7 +49,8 @@ shutdown: the polling service registers in-flight operations in a shared
 them — bounded at 10 s by spec §5.6 — when the application stops. The HTTP
 listener keeps its own §5.6 bound instead (decision D-109): it stops before
 the drain in the documented registration order
-(`[lock, storage, graceful-drain, polling, http]`), and `fastify.close()`
+(`[lock, storage, retention, graceful-drain, polling, http]`), and
+`fastify.close()`
 already serializes the in-flight-request wait — so `http.ts` races the close
 against the same ten-second bound and forces completion
 (`closeAllConnections`) when it expires. Registered between storage and the
@@ -234,6 +239,34 @@ seeded worlds still by doubling the real adapter's `fetchSnapshot` off
 **Rule:** as the composition root it may import every layer except
 `src/cli/`. Route handlers validate input through `src/schemas/api/` and
 delegate to services; they never touch providers or SQL directly.
+
+## The retention cleanup schedule (task U-053, spec §11.3, §5.6, §6.4, §16; decision D-178)
+
+`src/server/retention.ts` is the schedule D-063 deferred to the server
+lifecycle: `createRetentionSchedule` exposes the `retention` component,
+registered directly after storage in the documented order. Its `start`
+runs §11.3's cleanup (`runRetentionCleanup` — the operation, unchanged)
+once — strictly after migrations, because storage's own `start` (open →
+migrate → config-sync) completes first by registration order — and then
+re-arms one fixed-duration 24 h abortable wait after each completed run
+(`ComposeApplicationOptions.retentionSleep` is the time-compression test
+seam, the `pollingSleep` precedent). The daily interval is a timer
+duration — monotonic by construction — and the shared clock's `now()` is
+read once per run as the cleanup's `now` (D-021); "daily" is 24 h after
+the previous run, not zone-aligned midnight (§11.3 names no alignment).
+§6.4 reload-awareness is read-at-run-time: each run takes the live
+`app.historyRetentionDays` — per §11.3's own sentence, a reduced window
+applies "at the next cleanup", so no reload feed exists. Faults are
+contained per §16: a failed run (startup or daily) is one `warn` and
+never rejects `start` nor kills the schedule (D-063's repeat-safety makes
+the next run the retry); a success is one `info` record with the removal
+counts. Teardown order (`retention` stops between the drain and storage)
+cancels the daily wait before the database closes — the cleanup itself is
+synchronous, so a run can never interleave with the close and the
+component registers nothing in the in-flight tracker. The done-condition
+is pinned by `test/unit/server-retention.spec.ts` (the schedule's own
+matrix) and `test/integration/composition-retention.spec.ts` (the
+production composition over a seeded temporary database).
 
 ## The accounts endpoints (task 159, spec §13, §8.2; decision D-128)
 

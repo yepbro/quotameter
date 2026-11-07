@@ -71,7 +71,8 @@
  *
  * §5.6's bounded in-flight-request wait (decision D-109): the component
  * stops last-but-first in the documented registration order
- * (`[lock, storage, graceful-drain, polling, http]`), before the shared
+ * (`[lock, storage, retention, graceful-drain, polling, http]`), before
+ * the shared
  * drain of `shutdown.ts` could observe it — and `fastify.close()` already
  * serializes the in-flight-request wait itself. The component therefore
  * owns the §5.6 bound directly: it races the close against ten seconds and

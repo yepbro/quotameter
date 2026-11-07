@@ -365,6 +365,8 @@ test('settings page has no WCAG violations in either theme (task 179)', async ({
           configPath: '/home/op/.config/quotameter/config.json',
           dataDir: '/home/op/.local/share/quotameter',
         },
+        // §11.3/D-178: null — no completed cleanup in the mocked world.
+        appliedRetentionDays: null,
       },
     }),
   );

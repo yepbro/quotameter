@@ -20,6 +20,10 @@
  * D-128). Every scalar is annotated with its §6.4 class and §6.3 source
  * (`source: 'environment'` is the read-only marking), so the UI renders
  * labels without re-deriving precedence (D-023's standing instruction).
+ * Since U-053 (D-178) the GET response also carries
+ * `appliedRetentionDays` — §11.3's reduce-retention warning reference,
+ * read from the storage marker the cleanup writes; `null` before the
+ * first completed cleanup.
  *
  * The PUT scope is §13's "Update settings allowed for runtime moderation"
  * read literally (D-130): the §6.4 live-applicable vocabulary is updatable;
@@ -84,6 +88,14 @@ export interface SettingsSnapshot {
   readonly sources: EnvironmentSources;
   /** The read-only §14.5 display paths. */
   readonly paths: SettingsPaths;
+  /**
+   * The retention window the last completed cleanup applied, read from
+   * the `retention:applied-days` marker (§11.3, D-063/D-178) — `null`
+   * before any cleanup has completed. The reduce-retention warning's
+   * reference: the records between a smaller configured window and this
+   * applied one are exactly what the next cleanup deletes.
+   */
+  readonly appliedRetentionDays: number | null;
 }
 
 /**
@@ -333,7 +345,11 @@ export const settingsRoutes: FastifyPluginAsync<SettingsRouteOptions> = async (
     async (_request, reply) => {
       const snapshot = await store.read();
       reply.header('cache-control', 'no-store');
-      return { settings: settingsViewOf(snapshot.config, snapshot.sources), paths: snapshot.paths };
+      return {
+        settings: settingsViewOf(snapshot.config, snapshot.sources),
+        paths: snapshot.paths,
+        appliedRetentionDays: snapshot.appliedRetentionDays,
+      };
     },
   );
 

@@ -8,7 +8,7 @@
  * shared in-flight tracker (D-020 — the graceful drain waits on it), plus
  * one {@link CycleRecorder} (D-069) per pollable account, and exposes them
  * as the §5.6 `polling` component registered in the documented order
- * `[lock, storage, graceful-drain, polling, http]`: startup opens storage
+ * `[lock, storage, retention, graceful-drain, polling, http]`: startup opens storage
  * before the first cycle can settle, and shutdown stops scheduling
  * (aborting live flights) before the drain's bounded wait, so an aborted
  * cycle's settlement — which D-069 deliberately leaves unpersisted — races
