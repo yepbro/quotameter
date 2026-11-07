@@ -99,7 +99,10 @@ export interface CollectionRunInput {
   readonly accountId: string;
   /** §11.2 cycle start, UTC epoch milliseconds. */
   readonly startedAt: EpochMs;
-  /** §11.2 cycle end, UTC epoch milliseconds; never before `startedAt`. */
+  /** §11.2 cycle end, UTC epoch milliseconds; never before `startedAt` —
+   * a row violating that is clock skew the §13 composition projects to a
+   * zero-duration cycle at `startedAt` upstream (D-185), not an input this
+   * function ever sees. */
   readonly endedAt: EpochMs;
   /** The §7.1 configured interval in effect for this cycle (60–3600 s). */
   readonly intervalSeconds: number;
@@ -240,7 +243,12 @@ function requireRange(range: TimelineQueryRange, caller: string): void {
  * Validates the runs. Blank ids, non-finite timestamps, inverted cycles,
  * out-of-range cadences, unknown outcomes, and non-objects are caller
  * wiring mistakes (the §13 adapter translating `CollectionRunRecord`s, or a
- * test) and fail loudly with the offending index.
+ * test) and fail loudly with the offending index. Database-reality
+ * exception: the §13 composition pre-projects inverted cycles through the
+ * D-185 gate (`history-skew.ts`) — the schema deliberately admits them
+ * (D-034: a rejected INSERT would lose the run record), so a
+ * clock-corrupted `ended_at` is collapsed to a zero-duration cycle at the
+ * trusted `startedAt` before it reaches this validation, never a 500.
  */
 function requireRuns(runs: readonly CollectionRunInput[], caller: string): void {
   if (!Array.isArray(runs)) {

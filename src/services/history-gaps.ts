@@ -280,7 +280,11 @@ function normalizeTimeline(
  * point is resolved once, up front — a point older than the timeline's
  * first change has no interval in effect, which is a caller wiring mistake
  * (the history and the interval timeline must cover the same span) and
- * fails loudly instead of silently skipping pairs.
+ * fails loudly instead of silently skipping pairs. Database-reality
+ * exception: the §13 composition pre-drops such points through the D-185
+ * gate (`history-skew.ts`) — a clock-skewed snapshot can legitimately be
+ * stamped before its own run's start, which is unjudgeable evidence, not a
+ * wiring mistake, and is skipped there with a sanitized diagnostic.
  */
 function intervalSecondsAt(timeline: NormalizedTimeline, collectedAt: number): number {
   let resolved: IntervalChange | undefined;

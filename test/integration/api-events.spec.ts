@@ -20,7 +20,7 @@ import {
   type RunOutcome,
 } from '../../src/storage/repository';
 import { createLogger } from '../../src/util/logger';
-import { createMemoryLogSink } from '../helpers/logSink';
+import { createMemoryLogSink, type MemoryLogSink } from '../helpers/logSink';
 import { withTempDir } from '../helpers/isolation';
 
 /**
@@ -122,6 +122,8 @@ interface Harness {
   readonly repository: QuotaRepository;
   /** The §11.3 retention window in days — §6.4-live, read per request. */
   retentionDays: number;
+  /** The app's log sink — the §16 diagnostics of the D-185 gate land here. */
+  readonly sink: MemoryLogSink;
 }
 
 interface HarnessOptions {
@@ -144,12 +146,13 @@ async function withEventsApi(
       label: 'work account',
       createdAt: NOW,
     });
+    const sink = createMemoryLogSink();
     const harness: Harness = {
       app: undefined as unknown as Harness['app'],
       repository,
       retentionDays: 3650,
+      sink,
     };
-    const sink = createMemoryLogSink();
     const app = Fastify({
       loggerInstance: createLogger({ level: 'warn', destination: sink }).pino as FastifyBaseLogger,
     });
@@ -818,5 +821,241 @@ describe('GET /api/events — error classes and the §15.1 seam', () => {
       },
       { wired: false },
     );
+  });
+});
+
+describe('GET /api/events — clock-skewed rows are tolerated (D-185)', () => {
+  /**
+   * The same mixed clean/skewed world as the history suite's D-185 block
+   * (all rows through the real facade write path — the D-034 schema
+   * deliberately admits the skew), exercising the events-only halves:
+   * the INVERTED failed run R4 (`ended_at` 60 s before `started_at`) must
+   * be PROJECTED to a zero-duration marker at its trusted start (the
+   * record still bounds stopped silence — the review round's P1 proved
+   * dropping it can merge two legal neighbor silences into a fabricated
+   * outage), the normal failure R7 must still mark, the pre-coverage
+   * point p1 must leave the p1→p2 silence unjudged, and the real
+   * gap/stopped pair around R5→R6 must survive. Interval 300 s ⇒ the
+   * §12.2 threshold is 990 000 ms.
+   */
+  const T0 = NOW - 3_600_000;
+
+  /** Seeds the skewed first success: a snapshot stamped before its run. */
+  function seedSkewedSuccess(repository: QuotaRepository): void {
+    persistCollectionCycle(repository, {
+      accountId: 'work',
+      startedAt: T0 + 300_000,
+      endedAt: T0 + 301_200,
+      intervalSeconds: 300,
+      attempts: 1,
+      httpStatus: 200,
+      outcome: 'success',
+      snapshot: {
+        collectedAt: T0,
+        planName: 'Pro',
+        metrics: [metricRowInput(metric())],
+        events: [],
+      },
+    });
+  }
+
+  it('answers 200 with the inverted run skipped, the normal failure kept, and both diagnostics logged', async () => {
+    await withEventsApi(async ({ app, repository, sink }) => {
+      seedSkewedSuccess(repository);
+      seedSuccessCycle(repository, T0 + 1_200_000, [metric()]);
+      seedSuccessCycle(repository, T0 + 1_260_000, [metric()]);
+      // The inverted failed run: `persistCollectionCycle` writes it as-is
+      // (no CHECK rejects the ordering — D-034's deliberate leniency).
+      persistCollectionCycle(repository, {
+        accountId: 'work',
+        startedAt: T0 + 1_500_000,
+        endedAt: T0 + 1_440_000,
+        intervalSeconds: 300,
+        attempts: 1,
+        outcome: 'network_error',
+        httpStatus: null,
+        errorMessage: 'connection reset',
+        retryAfterSeconds: null,
+      });
+      seedSuccessCycle(repository, T0 + 1_560_000, [metric()]);
+      seedSuccessCycle(repository, T0 + 3_000_000, [metric()]);
+      seedFailedRun(repository, T0 + 3_060_000, 'network_error', {
+        durationMs: 2_500,
+        errorMessage: 'connection timed out',
+      });
+
+      const { statusCode, body } = await getEvents(app, eventsUrl());
+      expect(statusCode).toBe(200);
+
+      // The unjudgeable p1→p2 silence (20 min, beyond the 990 s threshold)
+      // mints nothing; the real p5→p6 gap (24 min) is detected exactly.
+      expect(ofKind(body, 'gap')).toEqual([
+        {
+          kind: 'gap',
+          metricKey: 'mcp-monthly',
+          fromEpochMs: T0 + 1_560_000,
+          toEpochMs: T0 + 3_000_000,
+          elapsedMs: 1_440_000,
+          intervalSeconds: 300,
+          thresholdMs: 990_000,
+        },
+      ]);
+
+      // Both failures mark: the inverted run as a zero-duration cycle at
+      // its trusted start (the record is real evidence — hiding a failed
+      // cycle would under-report an outage the operator lived through),
+      // the normal one with its true span.
+      const errors = ofKind(body, 'collection_error');
+      expect(errors).toHaveLength(2);
+      expect(errors[0]).toMatchObject({
+        outcome: 'network_error',
+        fromEpochMs: T0 + 1_500_000,
+        toEpochMs: T0 + 1_500_000,
+        durationMs: 0,
+        message: 'connection reset',
+      });
+      expect(errors[1]).toMatchObject({
+        outcome: 'network_error',
+        fromEpochMs: T0 + 3_060_000,
+        toEpochMs: T0 + 3_062_500,
+        durationMs: 2_500,
+        message: 'connection timed out',
+      });
+
+      // Stopped regions: the leading silence up to the first run, and the
+      // interior R5→R6 record silence — the inverted run's skip mints
+      // nothing extra (its neighbors sit 5 min apart, under the threshold).
+      expect(ofKind(body, 'stopped_service')).toEqual([
+        {
+          kind: 'stopped_service',
+          fromEpochMs: NOW - 7 * DAY_MS,
+          toEpochMs: T0 + 300_000,
+          elapsedMs: T0 + 300_000 - (NOW - 7 * DAY_MS),
+          intervalSeconds: 300,
+          thresholdMs: 990_000,
+        },
+        {
+          kind: 'stopped_service',
+          fromEpochMs: T0 + 1_560_000,
+          toEpochMs: T0 + 2_998_800,
+          elapsedMs: 1_438_800,
+          intervalSeconds: 300,
+          thresholdMs: 990_000,
+        },
+      ]);
+
+      // Both skips are §16-visible as sanitized warn diagnostics.
+      const warns = sink
+        .records()
+        .filter((record) => record.msg === 'clock-skewed history evidence tolerated');
+      expect(warns).toEqual([
+        expect.objectContaining({
+          level: 40,
+          kind: 'inverted_run',
+          accountId: 'work',
+          count: 1,
+          earliestStartedAt: T0 + 1_500_000,
+          latestStartedAt: T0 + 1_500_000,
+        }),
+        expect.objectContaining({
+          level: 40,
+          kind: 'unjudgeable_point',
+          accountId: 'work',
+          count: 1,
+          earliestCollectedAt: T0,
+          latestCollectedAt: T0,
+          coverageFromEpochMs: T0 + 300_000,
+        }),
+      ]);
+    });
+  });
+
+  it('keeps a projected inverted run bounding silence: two legal legs must not merge into a stopped region (the review P1)', async () => {
+    await withEventsApi(async ({ app, repository, sink }) => {
+      // Three records at the 300 s cadence: the neighbor silences around
+      // the inverted run are 798 800 ms each — legal inter-poll cadence
+      // under the 990 000 ms threshold — while their MERGED span
+      // (1 597 600 ms) exceeds it. Dropping the inverted row from the walk
+      // would fabricate a hatched outage across a cycle that ran; the
+      // projection keeps the record bounding silence at its trusted start.
+      seedSuccessCycle(repository, NOW - 3_598_800, [metric()]);
+      persistCollectionCycle(repository, {
+        accountId: 'work',
+        startedAt: NOW - 2_800_000,
+        endedAt: NOW - 2_801_000,
+        intervalSeconds: 300,
+        attempts: 1,
+        outcome: 'network_error',
+        httpStatus: null,
+        errorMessage: 'connection reset',
+        retryAfterSeconds: null,
+      });
+      seedSuccessCycle(repository, NOW - 2_000_000, [metric()]);
+
+      const { statusCode, body } = await getEvents(app, eventsUrl());
+      expect(statusCode).toBe(200);
+
+      // Exactly two stopped regions — the leading silence up to the first
+      // run and the trailing one after the last — and NOTHING between the
+      // neighbors of the inverted run: the would-be fabricated region is
+      // the merged 1 597 600 ms span.
+      expect(ofKind(body, 'stopped_service')).toEqual([
+        {
+          kind: 'stopped_service',
+          fromEpochMs: NOW - 7 * DAY_MS,
+          toEpochMs: NOW - 3_600_000,
+          elapsedMs: NOW - 3_600_000 - (NOW - 7 * DAY_MS),
+          intervalSeconds: 300,
+          thresholdMs: 990_000,
+        },
+        {
+          kind: 'stopped_service',
+          fromEpochMs: NOW - 2_000_000,
+          toEpochMs: NOW,
+          elapsedMs: 2_000_000,
+          intervalSeconds: 300,
+          thresholdMs: 990_000,
+        },
+      ]);
+
+      // The failed inverted cycle still marks — at its trusted start, with
+      // the honest zero-duration projection of an unreliable span.
+      const errors = ofKind(body, 'collection_error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        outcome: 'network_error',
+        fromEpochMs: NOW - 2_800_000,
+        toEpochMs: NOW - 2_800_000,
+        durationMs: 0,
+      });
+
+      // The point silence across the failed cycle is real (no snapshot was
+      // produced) and still gaps: 1 598 800 ms > 990 000 ms.
+      expect(ofKind(body, 'gap')).toEqual([
+        {
+          kind: 'gap',
+          metricKey: 'mcp-monthly',
+          fromEpochMs: NOW - 3_598_800,
+          toEpochMs: NOW - 2_000_000,
+          elapsedMs: 1_598_800,
+          intervalSeconds: 300,
+          thresholdMs: 990_000,
+        },
+      ]);
+
+      const warns = sink
+        .records()
+        .filter((record) => record.msg === 'clock-skewed history evidence tolerated');
+      expect(warns).toEqual([
+        expect.objectContaining({
+          level: 40,
+          kind: 'inverted_run',
+          accountId: 'work',
+          count: 1,
+          earliestStartedAt: NOW - 2_800_000,
+          latestStartedAt: NOW - 2_800_000,
+        }),
+      ]);
+    });
   });
 });

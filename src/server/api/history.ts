@@ -47,9 +47,26 @@
  * account's retained history stays readable, §8.2); an unknown `metric` key
  * is an honest empty series, never an error (the metric vocabulary is
  * adapter-owned and served through `GET /api/providers`).
+ *
+ * Clock-skew tolerance (D-185): the schema deliberately permits skewed rows
+ * (D-034 rejected an `ended_at >= started_at` CHECK — a rejected INSERT
+ * would lose the run record), so these routes must not assume ordering the
+ * database never promised. Both routes pass their raw evidence through
+ * `history-skew.ts`'s rules before the fail-fast services see it: inverted
+ * runs are projected to zero duration at their trusted `startedAt` for the
+ * timeline-indicator walk (the record still bounds §12.2's record-based
+ * stopped silence — dropping it could merge two legal neighbor silences
+ * into a fabricated outage — and a failed cycle still marks), points
+ * preceding the interval timeline's coverage are left unjudgeable by the
+ * gap detector, and a skewed interval change is anchored at
+ * `min(startedAt, endedAt)` inside `intervalTimelineFromRuns` so a
+ * late-biased start stamp cannot tighten a straddling pair's judgment into
+ * a false gap. The tolerances surface as one aggregated sanitized §16
+ * `warn` per rule per account — never in the response body (the wire
+ * contracts are unchanged).
  */
 
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
 import type { AccountConfigStore, ManagedAccountConfig } from './accounts';
 import { strictValidatorCompiler } from './validation';
 import { ApiError } from './error';
@@ -69,6 +86,12 @@ import {
 } from '../../storage/history-retention';
 import type { CollectionGap, IntervalChange } from '../../services/history-gaps';
 import { detectCollectionGaps } from '../../services/history-gaps';
+import type { SkewDiagnostic } from '../../services/history-skew';
+import {
+  dropUnjudgeablePoints,
+  mergeSkewDiagnostics,
+  projectInvertedRuns,
+} from '../../services/history-skew';
 import type {
   CollectionErrorIndicator,
   CollectionRunInput,
@@ -230,6 +253,23 @@ function evidenceRuns(
  * makes the function order-independent. Equal start stamps keep the first
  * run's cadence — §7.1 never overlaps one account's cycles, and the guard
  * upholds the detector's unique-stamp contract on degenerate data.
+ *
+ * Clock-skewed change stamps (D-185): an inverted run's `startedAt` is the
+ * pre-correction read and can sit later than the first snapshot collected
+ * under the new cadence — trusting it would judge the straddling pairs by
+ * the old, tighter cadence and mint false gaps (a 60→3600 grow with a
+ * late-biased start is the mirror of the seeding case the gate rejects). A
+ * change entry is therefore stamped at `min(startedAt, endedAt)`: for a
+ * sound run that is exactly its start, and for an inverted one the
+ * post-correction end read, which anchors the change no later than the
+ * first new-cadence snapshot — the fail-safe direction of D-075's
+ * span-widening (an earlier stamp only widens more pairs, never tightens).
+ * The first entry keeps the raw `startedAt` even when inverted: it doubles
+ * as the coverage bound Rule 2 drops pre-coverage points by, and moving it
+ * earlier would seed judgment for points the evidence does not cover. The
+ * output is sorted ascending — an extreme step-back can stamp a change
+ * below an earlier entry's stamp — keeping the ascending-timeline contract
+ * the gate and the detector rely on.
  */
 export function intervalTimelineFromRuns(
   runs: ReadonlyArray<CollectionRunRecord>,
@@ -242,11 +282,13 @@ export function intervalTimelineFromRuns(
       changes.push({ effectiveFromEpochMs: run.startedAt, intervalSeconds: run.intervalSeconds });
       continue;
     }
-    if (previous.effectiveFromEpochMs === run.startedAt) continue;
+    // The change's effective stamp: the fail-safe earlier bound (D-185).
+    const effectiveFromEpochMs = Math.min(run.startedAt, run.endedAt);
+    if (previous.effectiveFromEpochMs === effectiveFromEpochMs) continue;
     if (previous.intervalSeconds === run.intervalSeconds) continue;
-    changes.push({ effectiveFromEpochMs: run.startedAt, intervalSeconds: run.intervalSeconds });
+    changes.push({ effectiveFromEpochMs, intervalSeconds: run.intervalSeconds });
   }
-  return changes;
+  return changes.sort((a, b) => a.effectiveFromEpochMs - b.effectiveFromEpochMs);
 }
 
 /** One `collection_runs` row as task 120's timeline input (§11.2 vocabulary). */
@@ -262,6 +304,24 @@ function timelineRunInput(run: CollectionRunRecord): CollectionRunInput {
     errorMessage: run.errorMessage ?? undefined,
     retryAfterSeconds: run.retryAfterSeconds ?? undefined,
   };
+}
+
+/** The stable §16 message of every skew-tolerance diagnostic (D-185). */
+const SKEW_TOLERATED_MESSAGE = 'clock-skewed history evidence tolerated';
+
+/**
+ * Emits the gate's §16 diagnostics as one aggregated `warn` per rule per
+ * account — the level the default configuration surfaces (a skewed row is
+ * a data-quality anomaly the operator should see; §16's request-logging
+ * debug carve-out is about access logging, not data-quality reports). The
+ * diagnostic objects are sanitized by construction (kind, account, count,
+ * epoch-ms bounds), and the merge keeps a multi-metric skew from logging
+ * one report per metric.
+ */
+function warnSkewDiagnostics(log: FastifyBaseLogger, diagnostics: readonly SkewDiagnostic[]): void {
+  for (const diagnostic of mergeSkewDiagnostics(diagnostics)) {
+    log.warn(diagnostic, SKEW_TOLERATED_MESSAGE);
+  }
 }
 
 /* ── History wire views (§13 series, §12.2 empty points, D-081 buckets) ─── */
@@ -634,15 +694,21 @@ export const historyRoutes: FastifyPluginAsync<HistoryRouteOptions> = async (fas
       );
       const timeline = intervalTimelineFromRuns(runs);
       // §12.2 gaps live between adjacent successful snapshots' VALID points
-      // (D-075's caller contract); a pointless detector call on an empty
-      // series would trip its empty-timeline tripwire for nothing.
+      // (D-075's caller contract). D-185 first leaves pre-coverage points
+      // unjudgeable — a skewed snapshot stamped before its own run's start
+      // has no cadence in effect to be judged by, and a pointless detector
+      // call on an empty judgeable set (no points, all unjudgeable, or an
+      // empty interval timeline) would trip the detector's tripwires for
+      // nothing.
       const validRows = read.rows.filter((row) => row.isValid);
       const validPoints = validRows.map((row) => ({
         accountId: row.accountId,
         metricKey: row.metricKey,
         collectedAt: row.collectedAt,
       }));
-      const gaps = validPoints.length === 0 ? [] : detectCollectionGaps(validPoints, timeline);
+      const judged = dropUnjudgeablePoints(validPoints, timeline, query.accountId);
+      warnSkewDiagnostics(request.log, judged.diagnostics);
+      const gaps = judged.points.length === 0 ? [] : detectCollectionGaps(judged.points, timeline);
 
       // The reset boundaries ride as data (D-081's contract — never
       // recomputed): the stored §12.1 events of this series in range.
@@ -735,7 +801,13 @@ export const historyRoutes: FastifyPluginAsync<HistoryRouteOptions> = async (fas
 
       // One margin-widened runs read feeds both §12.2 halves: the timeline
       // indicators (edge silences anchored by the bounding records) and the
-      // interval timeline the gap detector judges by.
+      // interval timeline the gap detector judges by. D-185: the interval
+      // timeline keeps every run (an inverted row's cadence stamp is
+      // evidence, its change anchored at the fail-safe earlier bound), while
+      // the indicator walk projects inverted runs to zero duration at their
+      // trusted start — the record still bounds §12.2's record-based
+      // stopped silence and a failed cycle still marks, but the unreliable
+      // `endedAt` read never positions anything.
       const runs = evidenceRuns(
         repository,
         query.accountId,
@@ -743,8 +815,9 @@ export const historyRoutes: FastifyPluginAsync<HistoryRouteOptions> = async (fas
         eventsRead.range.effectiveTo,
       );
       const timeline = intervalTimelineFromRuns(runs);
+      const tolerated = projectInvertedRuns(runs, query.accountId);
       const indicators: ReadonlyArray<TimelineIndicator> = buildTimelineIndicators(
-        runs.map(timelineRunInput),
+        tolerated.runs.map(timelineRunInput),
         { from: eventsRead.range.effectiveFrom, to: eventsRead.range.effectiveTo },
       );
 
@@ -755,7 +828,11 @@ export const historyRoutes: FastifyPluginAsync<HistoryRouteOptions> = async (fas
       // The per-metric gap half: without a `metric` filter, the metric keys
       // with any valid reading (the last-valid query's key set — a metric
       // with valid points in range necessarily has one) enumerate exactly
-      // the series that can hold gaps.
+      // the series that can hold gaps. The D-185 diagnostics of every
+      // metric accumulate into ONE merged §16 warn per rule per account
+      // after the loop (a skewed snapshot under a three-metric account logs
+      // one report, not three).
+      const skewDiagnostics: SkewDiagnostic[] = [...tolerated.diagnostics];
       const metricKeys =
         query.metric !== undefined
           ? [query.metric]
@@ -779,11 +856,17 @@ export const historyRoutes: FastifyPluginAsync<HistoryRouteOptions> = async (fas
             metricKey: row.metricKey,
             collectedAt: row.collectedAt,
           }));
-        if (validPoints.length === 0) continue;
-        for (const gap of detectCollectionGaps(validPoints, timeline)) {
+        // D-185: pre-coverage points are unjudgeable (no cadence in effect
+        // to judge by) — dropped from detection with a diagnostic, never a
+        // throw; the judgeable rest is exactly what the detector sees.
+        const judged = dropUnjudgeablePoints(validPoints, timeline, query.accountId);
+        skewDiagnostics.push(...judged.diagnostics);
+        if (judged.points.length === 0) continue;
+        for (const gap of detectCollectionGaps(judged.points, timeline)) {
           items.push(gapEventItemView(gap));
         }
       }
+      warnSkewDiagnostics(request.log, skewDiagnostics);
 
       // The failed-cycle messages get the status surface's §7.4 redaction
       // (D-130): the resolved secret feeds the comparison, never the wire.

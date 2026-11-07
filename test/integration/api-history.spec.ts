@@ -11,6 +11,7 @@ import type { NormalizedMetric, ProviderSnapshot } from '../../src/schemas/metri
 import { persistCollectionCycle, type CycleMetricInput } from '../../src/storage/collection-cycles';
 import { createMigrationRunner, MIGRATIONS } from '../../src/storage/migrations';
 import { createQuotaRepository, type QuotaRepository } from '../../src/storage/repository';
+import type { MemoryLogSink } from '../helpers/logSink';
 import { createLogger } from '../../src/util/logger';
 import { createMemoryLogSink } from '../helpers/logSink';
 import { withTempDir } from '../helpers/isolation';
@@ -113,6 +114,8 @@ interface Harness {
   readonly repository: QuotaRepository;
   /** The §11.3 retention window in days — §6.4-live, read per request. */
   retentionDays: number;
+  /** The app's log sink — the §16 diagnostics of the D-185 gate land here. */
+  readonly sink: MemoryLogSink;
 }
 
 interface HarnessOptions {
@@ -136,12 +139,13 @@ async function withHistoryApi(
       label: 'work account',
       createdAt: NOW,
     });
+    const sink = createMemoryLogSink();
     const harness: Harness = {
       app: undefined as unknown as Harness['app'],
       repository,
       retentionDays: 3650,
+      sink,
     };
-    const sink = createMemoryLogSink();
     const app = Fastify({
       loggerInstance: createLogger({ level: 'warn', destination: sink }).pino as FastifyBaseLogger,
     });
@@ -917,5 +921,160 @@ describe('GET /api/history — the no-half-wired rule (D-128)', () => {
       },
       { wired: false },
     );
+  });
+});
+
+describe('GET /api/history — clock-skewed rows are tolerated (D-185)', () => {
+  /**
+   * The D-034 schema deliberately admits clock-skewed rows (a rejected
+   * `ended_at >= started_at` CHECK would have turned skew into data loss),
+   * so one NTP step-back must not 500 the read. The world mixes clean and
+   * skewed evidence, all seeded through the real facade write path
+   * (`persistCollectionCycle` — no CHECK rejects the skew; that is the
+   * point):
+   *
+   * - R1 success SKEWED: run `[T0+300s, T0+301.2s]` around a snapshot
+   *   stamped `T0` — the point precedes its own run's start, so it falls
+   *   before the interval timeline's coverage (the first evidence run's
+   *   start) and is unjudgeable;
+   * - R2/R3 success clean at `T0+1200s`/`T0+1260s` (the p1→p2 silence is
+   *   20 min > the 990 s threshold — a gap ONLY if judged; the unjudgeable
+   *   p1 must mint nothing);
+   * - R4 failed INVERTED (`ended 60 s before its start`) — skipped by the
+   *   /events indicators; here it only proves the interval timeline (which
+   *   keeps every run) is undisturbed;
+   * - R5/R6 success clean, 24 min apart — the REAL gap (1 440 000 ms >
+   *   990 000 ms), the proof that detection still works in the mixed world.
+   */
+  const T0 = NOW - 3_600_000;
+
+  /** Seeds the skewed first success: a snapshot stamped before its run. */
+  function seedSkewedSuccess(repository: QuotaRepository): void {
+    persistCollectionCycle(repository, {
+      accountId: 'work',
+      startedAt: T0 + 300_000,
+      endedAt: T0 + 301_200,
+      intervalSeconds: 300,
+      attempts: 1,
+      httpStatus: 200,
+      outcome: 'success',
+      snapshot: {
+        collectedAt: T0,
+        planName: 'Pro',
+        metrics: [metricRowInput(metric())],
+        events: [],
+      },
+    });
+  }
+
+  /** Seeds one inverted failed run — `ended_at < started_at`, facade-legal. */
+  function seedInvertedRun(repository: QuotaRepository): void {
+    persistCollectionCycle(repository, {
+      accountId: 'work',
+      startedAt: T0 + 1_500_000,
+      endedAt: T0 + 1_440_000,
+      intervalSeconds: 300,
+      attempts: 1,
+      outcome: 'network_error',
+      httpStatus: null,
+      errorMessage: 'connection reset',
+      retryAfterSeconds: null,
+    });
+  }
+
+  it('answers 200 with the skewed point as data, no gap from the unjudgeable silence, the real gap intact, and a warn diagnostic', async () => {
+    await withHistoryApi(async ({ app, repository, sink }) => {
+      seedSkewedSuccess(repository);
+      seedSuccessCycle(repository, T0 + 1_200_000, [metric()]);
+      seedSuccessCycle(repository, T0 + 1_260_000, [metric()]);
+      seedInvertedRun(repository);
+      seedSuccessCycle(repository, T0 + 1_560_000, [metric()]);
+      seedSuccessCycle(repository, T0 + 3_000_000, [metric()]);
+
+      const { statusCode, body } = await getHistory(app, historyUrl());
+      expect(statusCode).toBe(200);
+
+      // The skewed point is real series data and renders (only the gap
+      // judgment skips it); every seeded row is served.
+      expect(body.sourcePointCount).toBe(5);
+      expect(body.downsampled).toBe(false);
+      const stamps = body.points
+        .filter((point) => point.kind === 'point')
+        .map((point) => (point as PointWire).collectedAt);
+      expect(stamps).toEqual([T0, T0 + 1_200_000, T0 + 1_260_000, T0 + 1_560_000, T0 + 3_000_000]);
+
+      // Exactly one empty point — the REAL gap's midpoint (p5→p6). The
+      // 20-minute unjudgeable silence (p1→p2, also beyond the 990 s
+      // threshold) mints nothing: the fail-safe direction.
+      const empties = body.points.filter((point) => point.kind === 'empty');
+      expect(empties).toEqual([{ kind: 'empty', collectedAt: T0 + 2_280_000 }]);
+
+      // The skip is §16-visible: one sanitized warn diagnostic with the
+      // coverage bound, never a row payload.
+      const warns = sink
+        .records()
+        .filter((record) => record.msg === 'clock-skewed history evidence tolerated');
+      expect(warns).toEqual([
+        expect.objectContaining({
+          level: 40,
+          kind: 'unjudgeable_point',
+          accountId: 'work',
+          count: 1,
+          earliestCollectedAt: T0,
+          latestCollectedAt: T0,
+          coverageFromEpochMs: T0 + 300_000,
+        }),
+      ]);
+    });
+  });
+
+  it('anchors a skewed interval change at its earlier stamp: a late-biased start must not mint a false gap (the review P2)', async () => {
+    await withHistoryApi(async ({ app, repository, sink }) => {
+      // A 60 s → 3600 s cadence grow whose change-run is inverted: the
+      // pre-correction `startedAt` (T0+500 000) sits 100 s after the
+      // post-correction end read (T0+400 000) that stamps the run's own
+      // snapshot. Trusting the late start would judge the p2→p3 pair
+      // (338 000 ms apart) by the old 60 s cadence — threshold 198 000 ms —
+      // and fabricate a gap; the truth (3600 s cadence, threshold
+      // 11 880 000 ms) says none. The change is anchored at
+      // min(startedAt, endedAt) = T0+400 000, so the straddling pair
+      // widens (D-075) and no gap is minted.
+      seedSuccessCycle(repository, T0 + 1_000, [metric()], { intervalSeconds: 60 });
+      seedSuccessCycle(repository, T0 + 62_000, [metric()], { intervalSeconds: 60 });
+      persistCollectionCycle(repository, {
+        accountId: 'work',
+        startedAt: T0 + 500_000,
+        endedAt: T0 + 400_000,
+        intervalSeconds: 3600,
+        attempts: 1,
+        httpStatus: 200,
+        outcome: 'success',
+        snapshot: {
+          collectedAt: T0 + 400_000,
+          planName: 'Pro',
+          metrics: [metricRowInput(metric())],
+          events: [],
+        },
+      });
+      seedSuccessCycle(repository, T0 + 762_000, [metric()], { intervalSeconds: 3600 });
+
+      const { statusCode, body } = await getHistory(app, historyUrl());
+      expect(statusCode).toBe(200);
+      expect(body.sourcePointCount).toBe(4);
+      expect(body.downsampled).toBe(false);
+      // Every point is judgeable (coverage starts at the first run's
+      // start) and every silence is legitimate: no empty points at all —
+      // the pre-fix behavior was exactly one, at the fabricated gap's
+      // midpoint.
+      expect(
+        body.points.filter((point) => point.kind === 'point').map((point) => point.collectedAt),
+      ).toEqual([T0 + 1_000, T0 + 62_000, T0 + 400_000, T0 + 762_000]);
+      expect(body.points.filter((point) => point.kind === 'empty')).toEqual([]);
+      // The history surface's only tolerance is the point gate: this world
+      // has no pre-coverage points, so nothing is logged.
+      expect(
+        sink.records().filter((record) => record.msg === 'clock-skewed history evidence tolerated'),
+      ).toEqual([]);
+    });
   });
 });

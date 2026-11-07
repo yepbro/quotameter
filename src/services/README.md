@@ -549,3 +549,30 @@ through identically with `resolutionMs: null`. Property suites prove the
 preservation rules — budget bounds, no-loss/no-reorder coverage, per-field
 extrema equality, boundary cleanliness — and §17.3 names downsampling for
 mutation testing when task 125 configures critical-module thresholds.
+
+Landed: [`history-skew.ts`](./history-skew.ts) — the clock-skew tolerance
+gate for the §12.2/§13 history reads (task U-057, decision D-185): the
+schema deliberately admits skewed rows (D-034 rejected an
+`ended_at >= started_at` CHECK — a rejected INSERT would lose the run
+record), so the API composition passes its raw evidence through explicit
+rules before the fail-fast services see it. `projectInvertedRuns` skips
+an inverted run's contradictory span while keeping its record: projected
+to a zero-duration cycle at the trusted `startedAt`, it still bounds
+§12.2's record-based stopped silence (dropping it could merge two legal
+neighbor silences into a fabricated outage) and a failed cycle still
+marks at its start stamp. `dropUnjudgeablePoints` leaves a point
+preceding the interval timeline's coverage unjudgeable by the gap
+detector — seeding the timeline instead would fabricate cadence coverage
+and can mint false gaps, so the fail-safe direction mints none; the point
+itself still renders as series data. `mergeSkewDiagnostics` aggregates
+the diagnostics into one sanitized §16 report per rule per account (kind,
+account, count, epoch-ms bounds — never a row payload), which the routes
+log at `warn`; the services' D-075/D-080 fail-fast contracts stay intact
+for wiring mistakes. A deterministic table and a property suite pin the
+projection/partition shapes; the view suite pins the companion rule — a
+skewed interval change anchored at `min(startedAt, endedAt)` inside
+`intervalTimelineFromRuns` (the API adapter), so a late-biased start
+stamp cannot tighten a straddling pair into a false gap; the API
+integration suites seed the mixed clean/skewed world through the real
+facade write path and assert the 200s, the honest indicators, the
+fabrication regressions, and the diagnostics.

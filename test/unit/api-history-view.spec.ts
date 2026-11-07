@@ -114,6 +114,16 @@ function run(at: number, intervalSeconds: number, id = at): CollectionRunRecord 
   };
 }
 
+/** One run with an explicit (possibly inverted) end stamp — the D-185 cells. */
+function skewedRun(
+  at: number,
+  endedAt: number,
+  intervalSeconds: number,
+  id = at,
+): CollectionRunRecord {
+  return { ...run(at, intervalSeconds, id), endedAt };
+}
+
 describe('intervalTimelineFromRuns (§12.2 interval_s stamps)', () => {
   it('collapses a constant cadence to the first run’s entry', () => {
     expect(intervalTimelineFromRuns([run(NOW, 300), run(NOW + 300_000, 300)])).toEqual([
@@ -145,6 +155,42 @@ describe('intervalTimelineFromRuns (§12.2 interval_s stamps)', () => {
       { effectiveFromEpochMs: NOW, intervalSeconds: 300 },
     ]);
     expect(intervalTimelineFromRuns([])).toEqual([]);
+  });
+
+  it('anchors a skewed change at min(startedAt, endedAt), never at the late-biased start (D-185)', () => {
+    // An inverted change-run: `startedAt` is the pre-correction (late-biased)
+    // read; trusting it would judge the straddling pairs by the old, tighter
+    // cadence and mint false gaps. The post-correction end read anchors the
+    // change no later than the first new-cadence snapshot.
+    expect(
+      intervalTimelineFromRuns([
+        run(NOW, 60),
+        skewedRun(NOW + 500_000, NOW + 400_000, 3600),
+        run(NOW + 760_000, 3600),
+      ]),
+    ).toEqual([
+      { effectiveFromEpochMs: NOW, intervalSeconds: 60 },
+      { effectiveFromEpochMs: NOW + 400_000, intervalSeconds: 3600 },
+    ]);
+  });
+
+  it('keeps the output ascending under an extreme step-back (D-185)', () => {
+    // The skewed change stamp can land below an earlier entry's stamp; the
+    // ascending-timeline contract (Rule 2's coverage read) must hold.
+    const changes = intervalTimelineFromRuns([
+      run(NOW + 2_000_000, 300),
+      skewedRun(NOW + 2_500_000, NOW + 1_000_000, 3600),
+    ]);
+    expect(changes).toEqual([
+      { effectiveFromEpochMs: NOW + 1_000_000, intervalSeconds: 3600 },
+      { effectiveFromEpochMs: NOW + 2_000_000, intervalSeconds: 300 },
+    ]);
+    for (const [index, change] of changes.entries()) {
+      if (index > 0)
+        expect(change.effectiveFromEpochMs).toBeGreaterThan(
+          changes[index - 1]!.effectiveFromEpochMs,
+        );
+    }
   });
 });
 
