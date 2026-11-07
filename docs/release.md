@@ -8,11 +8,13 @@ The package follows [Semantic Versioning](https://semver.org/) strictly:
 - **MINOR** — new backwards-compatible functionality (new provider adapters, new API endpoints, new CLI commands).
 - **PATCH** — backwards-compatible fixes and internal changes.
 
-Until the first public release the version stays `0.0.0`; the first tagged release will be `1.0.0` and must satisfy the MVP acceptance criteria in the specification (§19).
+Until the first public release the version stays `0.0.0`. The first published release is **`v0.1.0`** — a full-cycle rehearsal of the release process (version commit, tag, release workflow, trusted publishing, npm publication, clean-container install) with no §19 completeness requirement, leaving room for iteration while the product stabilizes. **`1.0.0` is a distinct milestone**: the release that closes every MVP acceptance criterion in the specification (§19).
+
+While the version is `0.x`, breaking changes and new functionality bump MINOR (`0.Y+1.0`); PATCH is backwards-compatible fixes. The MAJOR/MINOR/PATCH rules above apply unchanged from `1.0.0` on.
 
 ## Tagging
 
-- Release tags are named exactly `vX.Y.Z` (for example `v1.0.0`), created on a commit that has passed CI on `master`. The release workflow verifies this mechanically: it refuses to publish unless the tagged commit is on `master` and its `CI` check run completed successfully.
+- Release tags are named exactly `vX.Y.Z` (for example `v0.1.0`), created on a commit that has passed CI on `master`. The release workflow verifies this mechanically: it refuses to publish unless the tagged commit is on `master` and its `CI` check run completed successfully.
 - Tags are immutable: a bad release is fixed by a new version, never by moving a tag.
 
 ## Changelog

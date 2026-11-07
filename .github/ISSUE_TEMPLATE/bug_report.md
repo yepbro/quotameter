@@ -46,7 +46,7 @@ body:
   attributes:
   label: Environment
   description: OS and version, Node.js version (`node -v`), quotameter version, installation method (npm/systemd/user service/Docker), provider and account count.
-  placeholder: Ubuntu 24.04, Node 22.13.0, quotameter 1.0.0, npm + system service, Z.ai Coding Plan × 2
+  placeholder: Ubuntu 24.04, Node 22.13.0, quotameter 0.1.0, npm + system service, Z.ai Coding Plan × 2
   validations:
   required: true
 - type: textarea
