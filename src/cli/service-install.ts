@@ -35,8 +35,14 @@
  *
  * Exit codes: install exits 0 exactly when the unit was written, systemd
  * was reloaded, and the service was enabled/started — on the system route
- * additionally confirmed by `systemctl is-active`; every lesser outcome
- * exits 1 with the failure on stderr and actionable steps on stdout.
+ * additionally confirmed by `systemctl is-active` and, when a readable
+ * configuration names the endpoint, by the bounded loopback
+ * `GET /api/health` verification (§5.3 step 7's privileged leg, U-059,
+ * D-187; no readable configuration skips the probe honestly instead of
+ * failing — D-108's no-configuration-required independence); every lesser
+ * outcome exits 1 with the failure on stderr and actionable steps on
+ * stdout. The user route keeps §5.3's user-unit bullet scope — enable
+ * without a prescribed verification (recorded in D-187).
  * Uninstall exits 0 exactly when the unit file is gone (or was absent) and
  * every executed manager command succeeded; a failed manager command is
  * reported even though the file removal went ahead, because the manager
@@ -47,9 +53,11 @@
 
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { configFilePath } from '../config/load';
 import { resolvePaths, type PathEnv } from '../config/paths';
 import type { CliContext, CliHandler } from './commands';
 import type { CliOutput } from './output';
+import { readExistingConfig } from './init-persist';
 import {
   probeUserLinger,
   renderLingerGuidance,
@@ -64,16 +72,23 @@ import {
 } from './service-owner';
 import {
   failureLine,
+  HEALTH_CHECK_DEADLINE_MS,
+  healthProbeTarget,
   INIT_RESTART_SEC_SECONDS,
   probeServiceCapabilities,
+  renderHealthCheckGuidance,
+  renderHealthCheckSkipped,
+  renderHealthVerificationPassed,
   resolveServiceSetupRoute,
   serviceExecPaths,
   spawnServiceCommand,
   thrownMessage,
   unsafeOwnerNameProblem,
+  verifyServiceHealth,
   writeUnitFileToDisk,
   type CapabilityProbe,
   type ServiceCommandRunner,
+  type ServiceHealthCheck,
   type ServiceSetupRoute,
   type ServiceUnitWriter,
   type ServiceExecPaths,
@@ -118,6 +133,12 @@ export interface ServiceCommandDeps {
   readonly execPaths?: () => ServiceExecPaths;
   /** The §5.3 linger probe (task 138, D-107); production `probeUserLinger`. */
   readonly probeLinger?: UserLingerProbe;
+  /**
+   * The §5.3 step-7 health verification of the system route (U-059,
+   * D-187); production `verifyServiceHealth` — a bounded loopback
+   * `GET /api/health` poll over the owner's configured endpoint.
+   */
+  readonly checkServiceHealth?: ServiceHealthCheck;
   /**
    * The environment the system unit's §6.1 `ReadWritePaths` directories
    * resolve from; production `process.env`. `HOME` is always overridden to
@@ -583,6 +604,20 @@ async function installSystemUnit(
     ctx.output.out(renderNotActiveSteps());
     return 1;
   }
+  // §5.3 step 7's privileged verification, second half (U-059, D-187):
+  // after `is-active`, `GET /api/health`. The probe target comes from the
+  // owner's configuration — the same §6.1 resolution whose directories are
+  // pinned into the unit, read best-effort through init's detection
+  // pipeline (one validator, no drift): install's structural independence
+  // (D-108 — no configuration is required anywhere here) survives, because
+  // a missing or unusable configuration skips the probe with one honest
+  // line instead of failing the command — the `is-active` gate above
+  // already proved the start. A probe that runs and does not pass within
+  // its bound IS a failure of this command's own contract (§5.3's verify).
+  const health = await verifyInstalledServiceHealth(ctx, deps, owner, errorPrefix);
+  if (health.outcome === 'failed') {
+    return 1;
+  }
   // The cross-unit check runs after success so a warning never masks a
   // failure. owner.user.home is valid here by construction: the preparation
   // block above validated it through ownerUnitDirectories.
@@ -590,7 +625,99 @@ async function installSystemUnit(
     ctx.output.err(`${errorPrefix}: ${otherUnitWarning('user')}`);
   }
   ctx.output.out(renderSystemUnitInstalled(owner.user.name, SYSTEM_UNIT_INSTALL_PATH, regenerated));
+  if (health.outcome === 'passed') {
+    const { url } = healthProbeTarget(health.server.host, health.server.port);
+    ctx.output.out(renderHealthVerificationPassed(url));
+  }
   return 0;
+}
+
+/**
+ * The system route's §5.3 step-7 health verification (U-059, D-187):
+ * resolves the owner's configured endpoint best-effort and probes it.
+ * `'skipped'` — no usable configuration — is an honest outcome line, not
+ * a failure (D-108's independence: the command never required a
+ * configuration, and `is-active` already passed), naming which of absent
+ * and invalid it was (review round P3 — the invalid arm carries the
+ * detection's own first problem); `'failed'` is the command's failure
+ * (stderr + guidance, rendered here); `'passed'` carries the resolved
+ * endpoint so the caller can render the URL without a second read.
+ */
+async function verifyInstalledServiceHealth(
+  ctx: CliContext,
+  deps: ServiceCommandDeps,
+  owner: ServiceOwnerContext,
+  errorPrefix: string,
+): Promise<
+  | { readonly outcome: 'passed'; readonly server: ServerEndpoint }
+  | { readonly outcome: 'skipped' }
+  | { readonly outcome: 'failed' }
+> {
+  const read = await ownerConfiguration(deps.pathEnv ?? process.env, owner);
+  if (read.server === null) {
+    ctx.output.out(renderHealthCheckSkipped(read.skipReason));
+    return { outcome: 'skipped' };
+  }
+  const { url } = healthProbeTarget(read.server.host, read.server.port);
+  const outcome = await (deps.checkServiceHealth ?? verifyServiceHealth)(
+    read.server.host,
+    read.server.port,
+  );
+  if (outcome.state === 'healthy') {
+    return { outcome: 'passed', server: read.server };
+  }
+  ctx.output.err(
+    failureLine(
+      errorPrefix,
+      'the installed service did not pass the /api/health verification',
+      outcome.detail,
+    ),
+  );
+  ctx.output.out(renderHealthCheckGuidance(url, HEALTH_CHECK_DEADLINE_MS));
+  return { outcome: 'failed' };
+}
+
+/** A configured server endpoint (§6.2's `server` section). */
+interface ServerEndpoint {
+  readonly host: string;
+  readonly port: number;
+}
+
+/**
+ * The owner's configuration, best-effort, for the system route's health
+ * probe (the unit runs as the owner, so the owner's §6.1 paths and
+ * configuration are the effective ones; `readExistingConfig` is the same
+ * loader pipeline the service and init use — one validator, no drift).
+ * `server` is null when no usable configuration exists, with
+ * `skipReason` naming which of absent and invalid it was.
+ */
+async function ownerConfiguration(
+  env: PathEnv,
+  owner: ServiceOwnerContext,
+): Promise<
+  | { readonly server: ServerEndpoint; readonly skipReason?: undefined }
+  | { readonly server: null; readonly skipReason: string }
+> {
+  const directories = ownerUnitDirectories(owner.user, env);
+  const configFile = configFilePath(directories.configDir);
+  const existing = await readExistingConfig(configFile);
+  if (existing.state === 'existing') {
+    return {
+      server: { host: existing.config.server.host, port: existing.config.server.port },
+    };
+  }
+  if (existing.state === 'none') {
+    return {
+      server: null,
+      skipReason: `no configuration exists at ${configFile}, so the endpoint is unknown`,
+    };
+  }
+  return {
+    server: null,
+    skipReason:
+      `the configuration at ${configFile} is not readable as a valid configuration ` +
+      `(${existing.problems[0] ?? 'invalid'}), so the endpoint is unknown`,
+  };
 }
 
 /**

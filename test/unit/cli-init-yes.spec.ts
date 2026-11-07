@@ -98,6 +98,16 @@ function yesDeps(
       probeCapabilities: () => ({ systemd: false, userManager: false }),
       runServiceCommand: forbiddenServiceCommand(),
       writeServiceUnitFile: forbiddenUnitWriter(),
+      // The §5.3 step-5 database seam (U-059): recorded and ready — the
+      // real migrations run in the integration suites; the health probe
+      // throws because the manual route starts nothing.
+      createDatabase: async (dataDir) => ({
+        state: 'ready' as const,
+        databasePath: `${dataDir}/quotameter.sqlite`,
+      }),
+      checkServiceHealth: () => {
+        throw new Error('the health probe must not run in the init --yes unit tests');
+      },
     },
     writes: () => writes,
   };
@@ -751,6 +761,36 @@ describe('runInitCommand (--yes mode)', () => {
     expect(writes()).toHaveLength(1);
   });
 
+  it('a password-pending --yes start is not health-probed — §15.1 refuses that start (U-059)', async () => {
+    // The D-101 pending journey on a machine whose user-unit route really
+    // installs and starts: §15.1 refuses the start by design, so waiting
+    // out the probe budget for it cannot help — the throwing probe seam
+    // makes an incorrect probe a visible test failure.
+    const h = context({ yes: true, timezone: 'UTC', host: '0.0.0.0' });
+    const deps: InitDeps = {
+      createPrompter: forbiddenPrompter(),
+      env: ENV_WITH_KEY,
+      readExisting: async () => ({ state: 'none' }),
+      provider: acceptingProvider(),
+      persistConfig: async () => {},
+      probeCapabilities: () => ({ systemd: true, userManager: true }),
+      runServiceCommand: async () => ({ ok: true, detail: '' }),
+      writeServiceUnitFile: async () => {},
+      createDatabase: async (dataDir) => ({
+        state: 'ready' as const,
+        databasePath: `${dataDir}/quotameter.sqlite`,
+      }),
+      checkServiceHealth: () => {
+        throw new Error('a password-pending configuration must not be health-probed');
+      },
+    };
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(h.out()).toContain('A password is required before the service starts');
+    expect(h.out()).toContain('installed the user service');
+    expect(h.out()).not.toContain('Health check');
+  });
+
   it('--password-env hashes and stores the password — never the plaintext (U-042)', async () => {
     const h = context({ yes: true, timezone: 'UTC', 'password-env': 'QM_TEST_PASSWORD' });
     const writes: Array<{ config: { auth?: { passwordHash?: string } } }> = [];
@@ -771,6 +811,14 @@ describe('runInitCommand (--yes mode)', () => {
       },
       persistConfig: async (options) => {
         writes.push(options as { config: { auth?: { passwordHash?: string } } });
+      },
+      probeCapabilities: () => ({ systemd: false, userManager: false }),
+      createDatabase: async (dataDir) => ({
+        state: 'ready' as const,
+        databasePath: `${dataDir}/quotameter.sqlite`,
+      }),
+      checkServiceHealth: () => {
+        throw new Error('the health probe must not run in the init --yes unit tests');
       },
     };
     const code = await runInitCommand(deps)(h.ctx);

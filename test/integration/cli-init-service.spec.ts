@@ -68,9 +68,21 @@ function collect(child: ChildProcess): Promise<RunResult> {
   });
 }
 
-/** The per-run environment: configuration and home both inside the temp dir. */
+/**
+ * The per-run environment: configuration, data directory, and home all
+ * inside the temp dir. The explicit `QUOTAMETER_DATA_DIR` redirect is the
+ * D-141 discipline every init suite follows (the development container
+ * pins a shared default data directory): since U-059 a fresh run really
+ * creates a database through the storage seam, so the run must stay off
+ * any shared location — the `HOME` redirect alone does not guarantee it.
+ */
 function childEnv(dir: TempDir): NodeJS.ProcessEnv {
-  return { ...process.env, QUOTAMETER_CONFIG_DIR: dir.path, HOME: dir.path };
+  return {
+    ...process.env,
+    QUOTAMETER_CONFIG_DIR: dir.path,
+    QUOTAMETER_DATA_DIR: join(dir.path, 'test-data'),
+    HOME: dir.path,
+  };
 }
 
 /**
@@ -106,7 +118,18 @@ describe('quotameter init service setup (real launcher, systemd-less machine)', 
         unknown
       >;
       expect(config.server).toEqual({ host: '127.0.0.1', port: 8787 });
-      expect(result.stderr).toBe('');
+      // §5.3 step 5's database half landed (U-059): even the systemd-less
+      // manual route leaves a migrated database behind, inside the
+      // redirected hermetic data directory.
+      expect(existsSync(join(dir.path, 'test-data/quotameter.sqlite'))).toBe(true);
+      expect(result.stdout).toContain(
+        `Database ready at ${join(dir.path, 'test-data/quotameter.sqlite')}.`,
+      );
+      // Since U-059 a fresh run really opens a database, so its stderr
+      // carries node:sqlite's ExperimentalWarning (the D-116 discipline:
+      // the warning belongs to invocations that actually open one). Beyond
+      // that warning the stream must be empty.
+      expect(withoutSqliteWarning(result.stderr)).toBe('');
     } finally {
       await dir.remove();
     }
@@ -125,6 +148,12 @@ describe('quotameter init service setup (real launcher, systemd-less machine)', 
       expect(result.stdout).toContain('Service setup: systemd is not available on this machine');
       expect(result.stdout).toContain('\n  quotameter run\n');
       expect(existsSync(join(dir.path, '.config/systemd'))).toBe(false);
+      // The step-8 block closes even the manual route (U-059): the URL,
+      // the loopback tunnel hint, the commands, and the paths.
+      expect(result.stdout).toContain('URL:               http://127.0.0.1:8787');
+      expect(result.stdout).toContain('ssh -N -L 8787:127.0.0.1:8787 user@<this-host>');
+      expect(result.stdout).toContain('Status:           quotameter status');
+      expect(result.stdout).toContain('Data directory:');
     } finally {
       await dir.remove();
     }
@@ -197,6 +226,13 @@ describe('quotameter init service setup (real PTY, manual steps on a terminal)',
       expect(transcript).toContain('  quotameter run');
       expect(transcript).toContain('This runs in the foreground and stops when its session ends.');
       expect(existsSync(join(dir.path, '.config/systemd'))).toBe(false);
+      // The PTY run leaves the same step-5/step-8 artifacts as the piped
+      // one (U-059): the migrated database and the closing access block.
+      expect(existsSync(join(dir.path, 'test-data/quotameter.sqlite'))).toBe(true);
+      expect(transcript).toContain('Database ready at');
+      expect(transcript).toContain('Service access:');
+      expect(transcript).toContain('URL:               http://127.0.0.1:8787');
+      expect(transcript).toContain('ssh -N -L 8787:127.0.0.1:8787 user@<this-host>');
     } finally {
       await dir.remove();
     }
@@ -215,4 +251,22 @@ function waitFor(read: () => string, marker: string, timeoutMs: number): Promise
     };
     tick();
   });
+}
+
+/**
+ * Strips the dynamic `node:sqlite` import's ExperimentalWarning lines from
+ * a child's stderr: since U-059 a fresh `init` run really opens a database,
+ * so the warning is the expected, documented noise of exactly those
+ * invocations (the D-116 discipline) — everything left after it must be
+ * empty.
+ */
+function withoutSqliteWarning(stderr: string): string {
+  return stderr
+    .split('\n')
+    .filter(
+      (line) =>
+        !/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature/.test(line) &&
+        !line.startsWith('(Use `node --trace-warnings'),
+    )
+    .join('\n');
 }

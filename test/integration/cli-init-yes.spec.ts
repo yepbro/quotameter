@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -184,6 +186,34 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
         },
       ]);
       expect(JSON.stringify(config)).not.toContain(SECRET);
+      // §5.3 step 5's database half (U-059): the run created the database
+      // through the real storage seam — the file exists at the redirected
+      // data directory and carries the migration journal, and the §5.3
+      // step-8 block closes the run with the wildcard bind's direct URL
+      // (no tunnel hint — the service is reachable on the network).
+      const databasePath = join(dir.path, 'test-data', 'quotameter.sqlite');
+      expect(existsSync(databasePath)).toBe(true);
+      const database = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        const journal = database
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+          )
+          .get();
+        expect(journal).toBeDefined();
+      } finally {
+        database.close();
+      }
+      expect(result.stdout).toContain(`Database ready at ${databasePath}.`);
+      expect(result.stdout).toContain('Service access:');
+      expect(result.stdout).toContain(
+        "URL:               http://<this-machine's-address>:9000 (the service listens on every interface)",
+      );
+      expect(result.stdout).toContain('Status:           quotameter status');
+      expect(result.stdout).toContain('Logs:             quotameter logs');
+      expect(result.stdout).toContain(`Configuration:    ${configFilePath(dir.path)}`);
+      expect(result.stdout).toContain(`Data directory:   ${join(dir.path, 'test-data')}`);
+      expect(result.stdout).not.toContain('ssh -N -L');
     } finally {
       await dir.remove();
     }
@@ -199,11 +229,41 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
       expect(result.stdout).toContain('Port:              8787');
       expect(result.stdout).toContain('Polling interval:  300 seconds');
       expect(result.stdout).toContain('Account:           none (add one later in the UI)');
+      // The loopback default renders §15.5's recommended remote access:
+      // the SSH tunnel to the loopback bind (U-059, D-187).
+      expect(result.stdout).toContain('URL:               http://127.0.0.1:8787');
+      expect(result.stdout).toContain(
+        'Remote access:    on another machine, reach the loopback bind through an SSH tunnel:',
+      );
+      expect(result.stdout).toContain('ssh -N -L 8787:127.0.0.1:8787 user@<this-host>');
       const config = JSON.parse(await readFile(configFilePath(dir.path), 'utf8')) as Record<
         string,
         unknown
       >;
       expect(config.server).toEqual({ host: '127.0.0.1', port: 8787 });
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
+
+  it('a database that cannot be created aborts after the write, honestly (U-059)', async () => {
+    const dir = await freshConfigDir();
+    try {
+      // A regular file squatting on the data-directory path: the §5.3
+      // step-5 mkdir fails, the run aborts, and the configuration file
+      // that was already written stays.
+      const squatter = join(dir.path, 'occupied');
+      await writeFile(squatter, 'not a directory');
+      const env = { ...inDir(dir, NO_KEY_ENV), QUOTAMETER_DATA_DIR: squatter };
+      const result = await runInitYes(['--yes', '--timezone', 'UTC'], env);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('quotameter init: creating the database failed');
+      expect(result.stdout).toContain('The configuration file was written and stays.');
+      expect(result.stdout).toContain('quotameter run — it creates the database at startup');
+      // The write happened; the service step and the access block did not.
+      expect(existsSync(configFilePath(dir.path))).toBe(true);
+      expect(result.stdout).not.toContain('Service setup:');
+      expect(result.stdout).not.toContain('Service access:');
     } finally {
       await dir.remove();
     }
@@ -225,8 +285,16 @@ describe('quotameter init --yes (real launcher, stdin closed)', () => {
       const second = await runInitYes(FULL_ARGS, inDir(secondDir));
       expect(first.code).toBe(0);
       expect(second.code).toBe(0);
+      // The normalize function erases two kinds of inherent run state: the
+      // temp-directory paths, and — since U-059, whose database step makes
+      // the child load `node:sqlite` — the ExperimentalWarning's embedded
+      // process id (the warning itself is pinned: both runs must emit it,
+      // the invocation-reaches-database fact D-116 documents).
       const normalize = (text: string, dir: TempDir): string =>
-        text.split(dir.path).join('<config-dir>');
+        text
+          .split(dir.path)
+          .join('<config-dir>')
+          .replace(/\(node:\d+\) ExperimentalWarning/g, '(node:<pid>) ExperimentalWarning');
       const firstOut = normalize(first.stdout, firstDir);
       const secondOut = normalize(second.stdout, secondDir);
       const firstErr = normalize(first.stderr, firstDir);

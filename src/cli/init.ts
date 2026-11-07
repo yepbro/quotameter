@@ -1,6 +1,6 @@
 /**
- * The `init` command handler (tasks 130–133, spec §5.3; decisions D-099,
- * D-100, D-101, D-102).
+ * The `init` command handler (tasks 130–133 + U-059, spec §5.3; decisions
+ * D-099, D-100, D-101, D-102, D-187).
  *
  * Two modes share this handler: the interactive question flow (task 130)
  * and the non-interactive `--yes` layer (task 131, `init-yes.ts`), which
@@ -12,8 +12,8 @@
  * Idempotency (task 132, `init-persist.ts`): the resolved configuration
  * file is classified first. Absent → the fresh flows above, and this run
  * writes the configuration (directory `0700`, file `0600`, atomic write —
- * §5.3 step 5's configuration half; the database half lands with the
- * storage-consuming steps). Present and valid → §5.3's subsequent-run
+ * §5.3 step 5's configuration half; the database half is `init-database.ts`
+ * since U-059, D-187). Present and valid → §5.3's subsequent-run
  * flow: current settings are displayed (masked), every question offers its
  * current value (Enter keeps it; an absent `--yes` option keeps it), and
  * **nothing is written unless a setting actually changes** — change
@@ -62,6 +62,26 @@
  * <owner>` command with the logout/reboot consequence unless linger is
  * already on — unknown never silently counts as enabled.
  *
+ * The remaining §5.3 step-5/7/8 halves landed with U-059 (D-187), making a
+ * fresh run's finalization an explicit lifecycle —
+ * `write-config → database → service-setup → health-check → summary`, in
+ * that order, with exactly one abort rule: the database step. A failed
+ * configuration write aborts as before (nothing was written); a failed
+ * database creation aborts **after** the write (the configuration file is
+ * a valid artifact and explicitly kept, but the environment cannot start
+ * a service, so installing one would be harmful — the §5.3 step-6
+ * connection-test tolerance does not extend here: a bad key harms one
+ * account, a bad data directory harms the whole service). The service
+ * setup and health check are contained failures (§5.3's manual steps are
+ * the designed fallback, and a still-booting service is legitimate): the
+ * step reports which of its outcomes happened, and only a service this
+ * run actually started (and a non-pending configuration — §15.1 refuses
+ * that start by design) is health-probed by the bounded loopback
+ * `GET /api/health`; a failed probe never fails the run. The lifecycle
+ * closes with §5.3 step 8's block: the effective URL, the SSH-tunnel
+ * access for a loopback bind, the `status`/`logs` commands, and the
+ * configuration and data paths.
+ *
  * Cancellation (interactive mode only): input closing before the questions
  * or the failure offer complete (EOF, Ctrl-C, a closed pipe) throws out of
  * the handler and is rendered by the dispatcher's standard failure path
@@ -74,6 +94,7 @@ import { resolvePaths, type PathEnv } from '../config/paths';
 import type { QuotaProvider } from '../providers/registry';
 import { createInitialAccountProvider } from '../server/providers';
 import { hashPassword } from '../services/password-hash';
+import { isLoopbackHost } from '../schemas/config';
 import type { CliContext, CliHandler } from './commands';
 import {
   runInitialAccountSetup,
@@ -81,6 +102,7 @@ import {
   type InitialAccountSetup,
   type PreparedAccount,
 } from './init-account';
+import { createInitDatabase, type InitDatabaseStep } from './init-database';
 import { askInitPassword } from './init-password';
 import {
   assembleInitConfig,
@@ -104,14 +126,21 @@ import {
   type ServiceOwnerResolution,
 } from './service-owner';
 import {
+  bracketHostForUrl,
   failureLine,
+  healthProbeTarget,
+  HEALTH_CHECK_DEADLINE_MS,
   probeServiceCapabilities,
+  renderHealthCheckGuidance,
+  renderHealthVerificationPassed,
   runServiceSetupStep,
   thrownMessage,
+  verifyServiceHealth,
   type CapabilityProbe,
   type ServiceCapabilities,
   type ServiceCommandRunner,
   type ServiceExecPaths,
+  type ServiceHealthCheck,
   type ServiceUnitWriter,
 } from './service-setup';
 import type { UserLingerProbe } from './service-linger';
@@ -175,6 +204,23 @@ export interface InitDeps {
    * failure fails the run before anything is stored).
    */
   readonly revokeSessions?: (dataDir: string) => Promise<SessionRevocation>;
+  /**
+   * The §5.3 step-5 database half of a fresh run (U-059, D-187): creates
+   * the data directory (`0700`) and brings the database to the current
+   * schema through the storage composition's own open/migrate pair;
+   * production `createInitDatabase` (`init-database.ts`). Runs after the
+   * consented configuration write; a failure aborts the run.
+   */
+  readonly createDatabase?: InitDatabaseStep;
+  /**
+   * The §5.3 step-7 health verification a started service owes (U-059,
+   * D-187): production `verifyServiceHealth` (`service-setup.ts`) — a
+   * bounded loopback `GET /api/health` poll. Consulted only when this
+   * run's service-setup step actually started a service and the written
+   * configuration is not password-pending (§15.1 refuses that start by
+   * design); a failure is reported honestly but never fails the run.
+   */
+  readonly checkServiceHealth?: ServiceHealthCheck;
 }
 
 /**
@@ -513,18 +559,69 @@ async function finishInit(
         `All ${revocation.count} stored ${noun} of the previous installation ${verb} revoked.`,
       );
     }
+    // §5.3 step 5's database half (U-059, D-187): with the configuration
+    // written, the run creates the data directory and brings the database
+    // to the current schema — the one step-5 artifact whose failure is an
+    // environment the service cannot start in (an unwritable data
+    // directory, a corrupt file at the path, a newer schema), so the run
+    // aborts here: installing an auto-restarting unit over a database that
+    // cannot open would be the harmful alternative. The written file stays
+    // — re-running init does not retry this step (it is fresh-run-only),
+    // the service's own start does.
+    const database = await (deps.createDatabase ?? createInitDatabase)(dataDir);
+    if (database.state === 'failed') {
+      ctx.output.err(
+        failureLine('quotameter init', 'creating the database failed', database.detail),
+      );
+      ctx.output.out(
+        'The configuration file was written and stays. Fix the reported problem, then start ' +
+          'the service with quotameter run — it creates the database at startup.',
+      );
+      return 1;
+    }
+    ctx.output.out(`Database ready at ${database.databasePath}.`);
     // §5.3 step 7 (task 137): with the configuration written, set the
     // service up along the routed path — user unit without sudo, manual
     // steps when installation is unavailable, or the system-unit plan.
     // Fresh runs only: re-runs keep their update trailers, and
     // re-installation belongs to `quotameter service install` (task 139).
     // The user-unit outcomes carry task 138's detected linger guidance.
-    await runServiceSetupStep(ctx.output, owner, capabilities, {
+    const setupOutcome = await runServiceSetupStep(ctx.output, owner, capabilities, {
       runCommand: deps.runServiceCommand,
       writeUnitFile: deps.writeServiceUnitFile,
       execPaths: deps.serviceExecPaths,
       probeLinger: deps.probeUserLinger,
     });
+    // §5.3 step 7's verification half (U-059, D-187): a service this run
+    // actually started gets the bounded loopback health probe — skipped
+    // for a password-pending configuration, which §15.1 by design refuses
+    // to start (the pending remedy line above already says so; waiting out
+    // the probe budget for a start that cannot happen helps nobody). A
+    // failed probe is reported honestly but never fails the run: the
+    // configuration is written and the unit installed, and the service may
+    // legitimately still be starting.
+    if (setupOutcome.serviceStarted && !assembled.passwordPending) {
+      const { url } = healthProbeTarget(answers.host, answers.port);
+      const health = await (deps.checkServiceHealth ?? verifyServiceHealth)(
+        answers.host,
+        answers.port,
+      );
+      if (health.state === 'healthy') {
+        ctx.output.out(renderHealthVerificationPassed(url));
+      } else {
+        ctx.output.err(
+          failureLine(
+            'quotameter init',
+            'the installed service did not pass the health check',
+            health.detail,
+          ),
+        );
+        ctx.output.out(renderHealthCheckGuidance(url, HEALTH_CHECK_DEADLINE_MS));
+      }
+    }
+    // §5.3 step 8 (U-059, D-187): the closing block — URL, tunnel access
+    // for a loopback bind, the status/logs commands, and the paths.
+    ctx.output.out(renderInitNextSteps(answers, { configFile, dataDir }));
   } else {
     ctx.output.out(renderUpdateSummary(assembled.config));
     ctx.output.out(`Configuration updated at ${configFile}.`);
@@ -585,5 +682,52 @@ export function renderInitSummary(
     const note = passwordRequirementNote(answers.host);
     if (note !== undefined) lines.push(note);
   }
+  return lines.join('\n');
+}
+
+/**
+ * Renders §5.3 step 8's closing summary of a fresh run (U-059, D-187):
+ * the effective URL, the SSH-tunnel access, the `status`/`logs` commands,
+ * and the configuration and data paths. The scheme is always `http` —
+ * §15.1's service itself never terminates TLS (a reverse proxy in front
+ * of it may), and an IPv6-literal bind host is bracketed for the URL
+ * grammar. A **wildcard** bind (`0.0.0.0`, `::`) has no client-usable URL
+ * of its own — the placeholder names the machine's address, with the
+ * every-interface fact stated (review round P3).
+ *
+ * The tunnel access renders **exactly for a loopback bind**: only a
+ * loopback URL is unreachable from another machine, and the SSH tunnel is
+ * §15.5's recommended remote-access method for exactly that world — on a
+ * local machine the URL works as printed and the line is conditional
+ * noise at worst, on a remote one it is the only way in. A non-loopback
+ * bind is directly reachable on the network (its password requirement
+ * note has already rendered; publishing guidance for that world is
+ * §15.5's documentation job, not a fresh-run summary's).
+ */
+export function renderInitNextSteps(
+  answers: InitAnswers,
+  options: { readonly configFile: string; readonly dataDir: string },
+): string {
+  const configured = answers.host.trim().toLowerCase();
+  const urlHost = bracketHostForUrl(configured);
+  const wildcard = configured === '0.0.0.0' || configured === '::';
+  const lines = [
+    'Service access:',
+    wildcard
+      ? `  URL:               http://<this-machine's-address>:${answers.port} (the service listens on every interface)`
+      : `  URL:               http://${urlHost}:${answers.port}`,
+  ];
+  if (isLoopbackHost(configured)) {
+    lines.push(
+      '  Remote access:    on another machine, reach the loopback bind through an SSH tunnel:',
+      `    ssh -N -L ${answers.port}:${urlHost}:${answers.port} user@<this-host>`,
+    );
+  }
+  lines.push(
+    '  Status:           quotameter status',
+    '  Logs:             quotameter logs',
+    `  Configuration:    ${options.configFile}`,
+    `  Data directory:   ${options.dataDir}`,
+  );
   return lines.join('\n');
 }

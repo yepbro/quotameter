@@ -1,11 +1,15 @@
-import { readFile, stat } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { isAbsolute } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { CliOutput } from '../../src/cli/output';
 import type { PasswdEntry, ServiceOwnerContext } from '../../src/cli/service-owner';
 import {
+  healthProbeTarget,
   INIT_RESTART_SEC_SECONDS,
   probeServiceCapabilities,
   renderHeldManualSetup,
@@ -19,6 +23,7 @@ import {
   spawnServiceCommand,
   SYSTEMD_RUN_MARKER_PATH,
   unsafeOwnerNameProblem,
+  verifyServiceHealth,
   writeUnitFileToDisk,
   type CommandOutcome,
   type ServiceCapabilities,
@@ -56,10 +61,20 @@ import type { QuotaProvider } from '../../src/providers/registry';
  * done-condition: the exact enable-linger command with the logout/reboot
  * consequence unless linger is detected enabled; the probe itself is pinned
  * separately in `test/unit/cli-service-linger.spec.ts`.
+ *
+ * Since U-059 (D-187) the suite also pins §5.3 step 7's verification half:
+ * `healthProbeTarget`'s loopback host resolution, and `verifyServiceHealth`'s
+ * bounded poll — the healthy/wrong-status/wrong-body cells run against a
+ * real loopback server the suite owns (the production fetcher is real
+ * `fetch` on 127.0.0.1, the no-network guard's sanctioned host), while the
+ * retry/deadline mechanics run over injected fetch/sleep/now seams.
  */
 
 /** Representative owner; a regular account, never root (D-105 guarantees it). */
 const OWNER: PasswdEntry = { name: 'alice', uid: 1001, gid: 1001, home: '/home/alice' };
+
+/** The repository root, for the child-process cell that imports the real module. */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** A regular-user invocation (the no-sudo side of the matrix). */
 const REGULAR: ServiceOwnerContext = { kind: 'regular-user', privileges: 'none', user: OWNER };
@@ -661,7 +676,7 @@ describe('runServiceSetupStep — the no-sudo user-unit installation', () => {
 describe('runServiceSetupStep — the detected linger guidance (task 138, D-107)', () => {
   it('the installed outcome renders per the probed state: enabled confirms, unknown commands', async () => {
     const enabled = recorder();
-    await runServiceSetupStep(enabled.output, REGULAR, caps(true, true), {
+    const installed = await runServiceSetupStep(enabled.output, REGULAR, caps(true, true), {
       ...EXEC_PATHS,
       runCommand: enabled.runCommand,
       writeUnitFile: enabled.writeUnitFile,
@@ -676,6 +691,9 @@ describe('runServiceSetupStep — the detected linger guidance (task 138, D-107)
       ['systemctl', '--user', 'enable', '--now', 'quotameter.service'],
     ]);
     expect(enabled.err()).toBe('');
+    // U-059: the one leg that starts a service reports it — the
+    // precondition of §5.3 step 7's health verification.
+    expect(installed.serviceStarted).toBe(true);
 
     // Unknown is never silently treated as enabled: the exact command
     // prints, led by the could-not-determine sentence.
@@ -761,7 +779,7 @@ describe('runServiceSetupStep — the detected linger guidance (task 138, D-107)
 describe('runServiceSetupStep — the manual and system-unit branches', () => {
   it('no systemd, no sudo: manual-run steps only, zero side effects', async () => {
     const rec = recorder();
-    await runServiceSetupStep(rec.output, REGULAR, caps(false, false), {
+    const result = await runServiceSetupStep(rec.output, REGULAR, caps(false, false), {
       ...EXEC_PATHS,
       runCommand: rec.runCommand,
       writeUnitFile: rec.writeUnitFile,
@@ -771,6 +789,8 @@ describe('runServiceSetupStep — the manual and system-unit branches', () => {
     expect(rec.out()).toContain('systemd is not available on this machine');
     expect(rec.out()).toContain('\n  quotameter run\n');
     expect(rec.err()).toBe('');
+    // U-059: nothing was started — no service exists to health-probe.
+    expect(result.serviceStarted).toBe(false);
   });
 
   it('no systemd, privileges held: the owner re-initializes and runs — never a root run (review round)', async () => {
@@ -792,7 +812,7 @@ describe('runServiceSetupStep — the manual and system-unit branches', () => {
 
   it('privileges held on systemd: the plan renders and nothing executes (139 owns the machinery)', async () => {
     const rec = recorder();
-    await runServiceSetupStep(rec.output, HELD, caps(true, true), {
+    const result = await runServiceSetupStep(rec.output, HELD, caps(true, true), {
       ...EXEC_PATHS,
       runCommand: rec.runCommand,
       writeUnitFile: rec.writeUnitFile,
@@ -808,7 +828,332 @@ describe('runServiceSetupStep — the manual and system-unit branches', () => {
     // System units do not linger — no enable-linger guidance on this route.
     expect(rec.out()).not.toContain('loginctl');
     expect(rec.err()).toBe('');
+    // The plan starts nothing (the machinery is `service install`'s).
+    expect(result.serviceStarted).toBe(false);
   });
+});
+
+describe("healthProbeTarget — §5.3 step 7's loopback probe host (U-059, D-187)", () => {
+  it('a loopback bind probes itself; everything else probes the loopback interface', () => {
+    expect(healthProbeTarget('127.0.0.1', 8787)).toEqual({
+      host: '127.0.0.1',
+      url: 'http://127.0.0.1:8787/api/health',
+    });
+    expect(healthProbeTarget('localhost', 9000).url).toBe('http://localhost:9000/api/health');
+    // IPv6 literals are bracketed for the URL grammar, bare or pre-bracketed.
+    expect(healthProbeTarget('::1', 8787)).toEqual({
+      host: '[::1]',
+      url: 'http://[::1]:8787/api/health',
+    });
+    expect(healthProbeTarget('[::1]', 8787).url).toBe('http://[::1]:8787/api/health');
+    // A wildcard or specific non-loopback bind is probed through the
+    // loopback interface — the probe never leaves the machine.
+    expect(healthProbeTarget('0.0.0.0', 8787).url).toBe('http://127.0.0.1:8787/api/health');
+    expect(healthProbeTarget('192.168.1.10', 8787).url).toBe('http://127.0.0.1:8787/api/health');
+    // Whitespace and case never leak into the URL.
+    expect(healthProbeTarget('  LocalHost  ', 8787).url).toBe('http://localhost:8787/api/health');
+  });
+});
+
+describe('verifyServiceHealth — the bounded loopback poll (U-059, D-187)', () => {
+  /**
+   * A real loopback server the test owns: the production fetcher is real
+   * `fetch`, so these cells exercise the genuine request path (headers,
+   * body parsing, redirect policy) without any network — 127.0.0.1 is the
+   * no-network guard's sanctioned host.
+   */
+  function ownedServer(handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<{
+    port: number;
+    close(): Promise<void>;
+  }> {
+    const server = createServer(handler);
+    return new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address();
+        if (address === null || typeof address === 'string') {
+          throw new Error('the test server must listen on a loopback port');
+        }
+        resolve({
+          port: address.port,
+          close: () =>
+            new Promise<void>((done) => {
+              server.close(() => done());
+            }),
+        });
+      });
+    });
+  }
+
+  it('a healthy endpoint resolves healthy on the first attempt', async () => {
+    const server = await ownedServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"status":"ok"}');
+    });
+    try {
+      expect(await verifyServiceHealth('127.0.0.1', server.port)).toEqual({ state: 'healthy' });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('a non-200 status is a failed probe naming the status', async () => {
+    const server = await ownedServer((_req, res) => {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end('{"status":"ok"}');
+    });
+    try {
+      // deadlineMs 0 stops after the one mandatory attempt.
+      const outcome = await verifyServiceHealth('127.0.0.1', server.port, { deadlineMs: 0 });
+      expect(outcome).toEqual({
+        state: 'failed',
+        detail: 'the endpoint answered HTTP 503',
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('a 200 with a wrong or unparseable body is a failed probe, not health', async () => {
+    const wrongPayload = await ownedServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"status":"starting"}');
+    });
+    try {
+      expect(await verifyServiceHealth('127.0.0.1', wrongPayload.port, { deadlineMs: 0 })).toEqual({
+        state: 'failed',
+        detail: 'the endpoint answered a body that is not the health payload',
+      });
+    } finally {
+      await wrongPayload.close();
+    }
+    const plainText = await ownedServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('ok');
+    });
+    try {
+      expect(await verifyServiceHealth('127.0.0.1', plainText.port, { deadlineMs: 0 })).toEqual({
+        state: 'failed',
+        detail: 'the endpoint answered a body that is not the health payload',
+      });
+    } finally {
+      await plainText.close();
+    }
+  });
+
+  it('a redirect is refused, never followed off the probed origin (D-154)', async () => {
+    // redirect: 'error' turns the redirect into a request failure — a
+    // loopback answer can never carry the probe to another origin.
+    const server = await ownedServer((_req, res) => {
+      res.writeHead(302, { location: 'http://127.0.0.1:1/elsewhere' });
+      res.end();
+    });
+    try {
+      const outcome = await verifyServiceHealth('127.0.0.1', server.port, { deadlineMs: 0 });
+      expect(outcome.state).toBe('failed');
+      if (outcome.state === 'failed') {
+        expect(outcome.detail).toContain('redirect');
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('a refused connection is unwrapped to the errno in the bounded detail line', async () => {
+    // The deterministic pin of the cause-chain unwrapping: the production
+    // fetcher fails with exactly this undici shape (TypeError "fetch
+    // failed" wrapping the connect errno), so the fetcher throws the real
+    // shape instead of racing a just-freed port for a real refusal
+    // (review round P2 — a parallel listener could reclaim it).
+    const fetcher = async (): Promise<Response> => {
+      throw new TypeError('fetch failed', {
+        cause: new Error('connect ECONNREFUSED 127.0.0.1:8787'),
+      });
+    };
+    const outcome = await verifyServiceHealth('127.0.0.1', 8787, { fetcher, deadlineMs: 0 });
+    expect(outcome).toEqual({
+      state: 'failed',
+      detail: 'fetch failed: connect ECONNREFUSED 127.0.0.1:8787',
+    });
+  });
+
+  it('the poll retries inside the deadline and resolves healthy once the endpoint answers', async () => {
+    // Two refused attempts, then the endpoint answers: the sleeps between
+    // attempts are recorded — the retry cadence is the pinned behavior.
+    const attempts: Array<{ url: string; signal: AbortSignal }> = [];
+    const sleeps: number[] = [];
+    const fetcher = async (url: string, signal: AbortSignal): Promise<Response> => {
+      attempts.push({ url, signal });
+      if (attempts.length >= 2) {
+        return new Response('{"status":"ok"}', { status: 200 });
+      }
+      throw new TypeError('fetch failed');
+    };
+    const outcome = await verifyServiceHealth('127.0.0.1', 8787, {
+      fetcher,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      pollIntervalMs: 500,
+      deadlineMs: 30_000,
+    });
+    expect(outcome).toEqual({ state: 'healthy' });
+    expect(attempts.map((attempt) => attempt.url)).toEqual([
+      'http://127.0.0.1:8787/api/health',
+      'http://127.0.0.1:8787/api/health',
+    ]);
+    expect(sleeps).toEqual([500]);
+  });
+
+  it('the deadline bounds the poll: one attempt always runs, no sleep past the bound', async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    // A modeled clock the sleep advances: attempts land at 0, 400, 800 ms;
+    // the fourth (at 1200) no longer fits inside the 1000 ms budget.
+    let clock = 0;
+    const neverHealthy = async (): Promise<Response> => {
+      calls += 1;
+      return new Response('{"status":"nope"}', { status: 200 });
+    };
+    const outcome = await verifyServiceHealth('127.0.0.1', 8787, {
+      fetcher: neverHealthy,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      now: () => clock,
+      deadlineMs: 1000,
+      pollIntervalMs: 400,
+    });
+    expect(outcome).toEqual({
+      state: 'failed',
+      detail: 'the endpoint answered a body that is not the health payload',
+    });
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([400, 400]);
+  });
+
+  it('the per-attempt abort signal is armed from the configured budget', async () => {
+    // The fetcher receives a live signal that aborts at the budget: the
+    // pin is the mechanism (every attempt carries one), not the timing.
+    const seen: AbortSignal[] = [];
+    const fetcher = async (_url: string, signal: AbortSignal): Promise<Response> => {
+      seen.push(signal);
+      return new Response('{"status":"ok"}', { status: 200 });
+    };
+    await verifyServiceHealth('127.0.0.1', 8787, { fetcher, requestTimeoutMs: 2_000 });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.aborted).toBe(false);
+  });
+
+  it('a timeout firing mid-body is a failed attempt with the timeout diagnostic, never a wrong-payload verdict (review P2)', async () => {
+    // Headers arrived, the body never does: the attempt's own abort signal
+    // fires during `json()`, and the failure must carry the timeout's
+    // diagnostic — not the payload wording (the retry loop treats both the
+    // same, but the final report must name what actually happened).
+    const fetcher = async (_url: string, signal: AbortSignal): Promise<Response> => {
+      const stalled = {
+        status: 200,
+        body: null,
+        json: () =>
+          new Promise<never>((_, reject) => {
+            signal.addEventListener('abort', () =>
+              reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+            );
+          }),
+      };
+      return stalled as unknown as Response;
+    };
+    const outcome = await verifyServiceHealth('127.0.0.1', 8787, {
+      fetcher,
+      requestTimeoutMs: 100,
+      deadlineMs: 0,
+    });
+    expect(outcome.state).toBe('failed');
+    if (outcome.state === 'failed') {
+      expect(outcome.detail).toContain('aborted');
+      expect(outcome.detail).not.toContain('health payload');
+    }
+  });
+
+  it('a non-200 answer cancels its body before reporting the status (review P2)', async () => {
+    let cancelled = false;
+    const fetcher = async (): Promise<Response> => {
+      const body = {
+        cancel: async () => {
+          cancelled = true;
+        },
+      };
+      return { status: 503, body } as unknown as Response;
+    };
+    const outcome = await verifyServiceHealth('127.0.0.1', 8787, { fetcher, deadlineMs: 0 });
+    expect(outcome).toEqual({ state: 'failed', detail: 'the endpoint answered HTTP 503' });
+    expect(cancelled).toBe(true);
+  });
+
+  it('the production retry sleep keeps the process alive between attempts (review P1)', async () => {
+    // The regression the round found: an unref'd sleep timer lets a CLI
+    // process whose only pending work is the poll drain and exit 0 mid-
+    // verification. The pin runs the real module (production sleep and
+    // fetcher) in a child whose ONLY handles are the probe's: the owned
+    // server answers 503 once (the attempt fails, the loop sleeps 300 ms
+    // with nothing else pending), then healthy. An unref'd timer exits the
+    // child during that sleep with no outcome line; the ref'd timer holds
+    // it to the healthy verdict.
+    const dir = await createTempDir('qm-health-sleep-');
+    try {
+      let requests = 0;
+      const server = await ownedServer((_req, res) => {
+        requests += 1;
+        if (requests === 1) {
+          res.writeHead(503, { 'content-type': 'application/json' });
+          res.end('{"status":"ok"}');
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"status":"ok"}');
+      });
+      try {
+        const runner = join(dir.path, 'probe.mjs');
+        await writeFile(
+          runner,
+          [
+            'const loaded = await import(process.argv[2]);',
+            // jiti mounts the TypeScript module as CommonJS during tests —
+            // the BIN launcher's own `mod.x ?? mod.default?.x` interop.
+            'const mod = loaded.verifyServiceHealth !== undefined ? loaded : loaded.default;',
+            'const outcome = await mod.verifyServiceHealth("127.0.0.1", Number(process.argv[3]), {',
+            '  deadlineMs: 8000,',
+            '  pollIntervalMs: 300,',
+            '});',
+            'process.stdout.write("OUTCOME:" + outcome.state + "\\n");',
+          ].join('\n'),
+        );
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            'jiti/register',
+            runner,
+            pathToFileURL(join(REPO_ROOT, 'src/cli/service-setup.ts')).href,
+            String(server.port),
+          ],
+          { stdio: ['ignore', 'pipe', 'pipe'], cwd: REPO_ROOT },
+        );
+        const stdout: Buffer[] = [];
+        child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
+        const code = await new Promise<number | null>((resolve, reject) => {
+          child.once('close', resolve);
+          child.once('error', reject);
+        });
+        expect(code).toBe(0);
+        expect(stdout.join('')).toContain('OUTCOME:healthy');
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await dir.remove();
+    }
+  }, 20_000);
 });
 
 describe('production seams', () => {
@@ -991,6 +1336,13 @@ describe('runInitCommand wiring — §5.3 step 1 fail-fast, step 7 output', () =
       runServiceCommand: rec.runCommand,
       writeServiceUnitFile: rec.writeUnitFile,
       serviceExecPaths: EXEC_PATHS.execPaths,
+      createDatabase: async () => ({
+        state: 'ready' as const,
+        databasePath: '/qm/test/data/quotameter.sqlite',
+      }),
+      checkServiceHealth: () => {
+        throw new Error('the health probe must not run on the fallback route');
+      },
     })(h.ctx);
     // The configuration is written; the failed unit preparation is a
     // rendered fallback, never a crash out of the handler (D-106).
@@ -1004,6 +1356,7 @@ describe('runInitCommand wiring — §5.3 step 1 fail-fast, step 7 output', () =
     const h = context();
     const rec = recorder();
     const writes: unknown[] = [];
+    const probed: Array<{ host: string; port: number }> = [];
     const code = await runInitCommand({
       createPrompter: () => prompterWith(['UTC', '', '', '', '', '']),
       readExisting: async () => ({ state: 'none' }),
@@ -1017,6 +1370,14 @@ describe('runInitCommand wiring — §5.3 step 1 fail-fast, step 7 output', () =
       runServiceCommand: rec.runCommand,
       writeServiceUnitFile: rec.writeUnitFile,
       serviceExecPaths: EXEC_PATHS.execPaths,
+      createDatabase: async () => ({
+        state: 'ready' as const,
+        databasePath: '/qm/test/data/quotameter.sqlite',
+      }),
+      checkServiceHealth: async (host, port) => {
+        probed.push({ host, port });
+        return { state: 'healthy' as const };
+      },
     })(h.ctx);
     expect(code).toBe(0);
     expect(writes).toHaveLength(1);
@@ -1032,6 +1393,13 @@ describe('runInitCommand wiring — §5.3 step 1 fail-fast, step 7 output', () =
     expect(out.indexOf('Configuration written to')).toBeLessThan(
       out.indexOf('installed the user service'),
     );
+    // U-059: the started service is health-probed against the answers'
+    // endpoint (the loopback default here), and the run closes with the
+    // §5.3 step-8 block.
+    expect(probed).toEqual([{ host: '127.0.0.1', port: 8787 }]);
+    expect(out).toContain('Health check passed: GET http://127.0.0.1:8787/api/health');
+    expect(out).toContain('Service access:');
+    expect(out).toContain('URL:               http://127.0.0.1:8787');
   });
 
   it('a fresh run renders the detected linger guidance through the init seam', async () => {
@@ -1049,11 +1417,85 @@ describe('runInitCommand wiring — §5.3 step 1 fail-fast, step 7 output', () =
       writeServiceUnitFile: rec.writeUnitFile,
       serviceExecPaths: EXEC_PATHS.execPaths,
       probeUserLinger: () => 'enabled',
+      createDatabase: async () => ({
+        state: 'ready' as const,
+        databasePath: '/qm/test/data/quotameter.sqlite',
+      }),
+      checkServiceHealth: async () => ({ state: 'healthy' as const }),
     })(h.ctx);
     expect(code).toBe(0);
     expect(rec.writes()).toHaveLength(1);
     // The injected state reaches the rendered step: confirmation, no command.
     expect(h.out()).toContain('Linger is already enabled for alice');
     expect(h.out()).not.toContain('sudo loginctl enable-linger');
+  });
+
+  it('a failed database creation aborts the run after the write, before the service step (U-059)', async () => {
+    const h = context();
+    const rec = recorder();
+    const code = await runInitCommand({
+      createPrompter: () => prompterWith(['UTC', '', '', '', '', '']),
+      readExisting: async () => ({ state: 'none' }),
+      persistConfig: async () => {},
+      provider,
+      env: {},
+      resolveOwner: () => ({ state: 'ok', context: REGULAR }),
+      probeCapabilities: () => caps(true, true),
+      runServiceCommand: rec.runCommand,
+      writeServiceUnitFile: rec.writeUnitFile,
+      serviceExecPaths: EXEC_PATHS.execPaths,
+      createDatabase: async () => ({
+        state: 'failed' as const,
+        detail: "EACCES: permission denied, mkdir '/qm/test/data'",
+      }),
+    })(h.ctx);
+    expect(code).toBe(1);
+    // The honest failure and the kept-file remedy — and nothing that
+    // claims a service was set up or summarizes access to one.
+    expect(h.err()).toContain(
+      "quotameter init: creating the database failed (EACCES: permission denied, mkdir '/qm/test/data')",
+    );
+    expect(h.out()).toContain('The configuration file was written and stays.');
+    expect(h.out()).toContain('quotameter run');
+    expect(h.out()).not.toContain('Service setup:');
+    expect(h.out()).not.toContain('Service access:');
+    expect(rec.writes()).toEqual([]);
+    expect(rec.commands()).toEqual([]);
+  });
+
+  it('a failed health check is reported honestly and never fails the run (U-059)', async () => {
+    const h = context();
+    const rec = recorder();
+    const code = await runInitCommand({
+      createPrompter: () => prompterWith(['UTC', '', '', '', '', '']),
+      readExisting: async () => ({ state: 'none' }),
+      persistConfig: async () => {},
+      provider,
+      env: {},
+      resolveOwner: () => ({ state: 'ok', context: REGULAR }),
+      probeCapabilities: () => caps(true, true),
+      runServiceCommand: rec.runCommand,
+      writeServiceUnitFile: rec.writeUnitFile,
+      serviceExecPaths: EXEC_PATHS.execPaths,
+      createDatabase: async () => ({
+        state: 'ready' as const,
+        databasePath: '/qm/test/data/quotameter.sqlite',
+      }),
+      checkServiceHealth: async () => ({
+        state: 'failed' as const,
+        detail: 'fetch failed: connect ECONNREFUSED 127.0.0.1:8787',
+      }),
+    })(h.ctx);
+    expect(code).toBe(0);
+    expect(h.err()).toContain(
+      'quotameter init: the installed service did not pass the health check ' +
+        '(fetch failed: connect ECONNREFUSED 127.0.0.1:8787)',
+    );
+    expect(h.out()).toContain(
+      'The health check GET http://127.0.0.1:8787/api/health did not pass within 30 seconds',
+    );
+    expect(h.out()).toContain('the service may still be starting');
+    expect(h.out()).toContain('\n  quotameter status\n');
+    expect(h.out()).toContain('\n  quotameter logs\n');
   });
 });

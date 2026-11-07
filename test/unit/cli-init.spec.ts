@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { parseConfig, type CanonicalConfig } from '../../src/config/load';
 import type { CliContext } from '../../src/cli/commands';
-import { renderInitSummary, runInitCommand, type InitDeps } from '../../src/cli/init';
+import {
+  renderInitNextSteps,
+  renderInitSummary,
+  runInitCommand,
+  type InitDeps,
+} from '../../src/cli/init';
 import type { WriteInitConfigOptions } from '../../src/cli/init-persist';
 import type { InitAnswers } from '../../src/cli/init-questions';
 import type { SessionRevocation } from '../../src/cli/passwd';
@@ -105,7 +110,12 @@ const EXISTING: CanonicalConfig = canonical({
  * handler's hand-off stays asserted without ever hashing for real. The
  * §15.2 revocation is a recording seam answering absence by default (the
  * real probe runs in the integration suites); the fixed pathEnv keeps the
- * data-dir argument hermetic.
+ * data-dir argument hermetic. The §5.3 step-5 database seam (U-059,
+ * D-187) records its argument and answers ready unless `options.database`
+ * scripts a failure — the real migrations run in the integration suites;
+ * the health probe throws by default: this suite's fixed systemd-less
+ * capability answer keeps the service step on its manual route, which
+ * starts nothing (a regressed route becomes a visible test failure).
  */
 function freshDeps(
   prompterAnswers: readonly string[],
@@ -113,16 +123,19 @@ function freshDeps(
   options?: {
     readonly revocation?: SessionRevocation;
     readonly hashFails?: Error;
+    readonly database?: { readonly state: 'failed'; readonly detail: string };
   },
 ): {
   deps: InitDeps;
   writes(): readonly WriteInitConfigOptions[];
   hashedPasswords(): readonly string[];
   revokedDirs(): readonly string[];
+  createdDatabases(): readonly string[];
 } {
   const writes: WriteInitConfigOptions[] = [];
   const hashed: string[] = [];
   const revokedDirs: string[] = [];
+  const createdDatabases: string[] = [];
   return {
     deps: {
       createPrompter: () => prompterWith(prompterAnswers),
@@ -140,6 +153,14 @@ function freshDeps(
       revokeSessions: async (dataDir) => {
         revokedDirs.push(dataDir);
         return options?.revocation ?? { state: 'none' };
+      },
+      createDatabase: async (dataDir) => {
+        createdDatabases.push(dataDir);
+        if (options?.database !== undefined) return options.database;
+        return { state: 'ready', databasePath: `${dataDir}/quotameter.sqlite` };
+      },
+      checkServiceHealth: () => {
+        throw new Error('the health probe must not run in the cli-init unit tests');
       },
       // The service-setup seams (D-160 hermeticity): the fresh runs this
       // suite scripts must deterministically take the manual service route
@@ -159,6 +180,7 @@ function freshDeps(
     writes: () => writes,
     hashedPasswords: () => hashed,
     revokedDirs: () => revokedDirs,
+    createdDatabases: () => createdDatabases,
   };
 }
 
@@ -679,6 +701,11 @@ describe('runInitCommand (existing configuration, task 132, decision D-101)', ()
       persistConfig: async (options) => {
         writes.push(options);
       },
+      createDatabase: async (dataDir) => ({
+        state: 'ready' as const,
+        databasePath: `${dataDir}/quotameter.sqlite`,
+      }),
+      probeCapabilities: () => ({ systemd: false, userManager: false }),
     })(h.ctx);
     expect(code).toBe(0);
     expect(writes).toHaveLength(1);
@@ -843,6 +870,142 @@ describe('runInitCommand (stale-detection guard, review round P1)', () => {
     expect(code).toBe(0);
     expect(writes).toHaveLength(1);
     expect(h.out()).toContain('Configuration updated at');
+  });
+});
+
+describe('runInitCommand (fresh-run finalization: steps 5/7/8, U-059, D-187)', () => {
+  it('creates the database after the write and before the service step, and says so', async () => {
+    const h = context();
+    const { deps, createdDatabases } = freshDeps(['UTC', '', '', '', '', '']);
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(0);
+    expect(createdDatabases()).toEqual(['/qm/test/data']);
+    // The lifecycle order the decision pins: write → database → service →
+    // the step-8 block.
+    const out = h.out();
+    const writtenAt = out.indexOf('Configuration written to');
+    const databaseAt = out.indexOf('Database ready at /qm/test/data/quotameter.sqlite.');
+    const serviceAt = out.indexOf('Service setup:');
+    const accessAt = out.indexOf('Service access:');
+    for (const at of [writtenAt, databaseAt, serviceAt, accessAt]) {
+      expect(at).toBeGreaterThanOrEqual(0);
+    }
+    expect(writtenAt).toBeLessThan(databaseAt);
+    expect(databaseAt).toBeLessThan(serviceAt);
+    expect(serviceAt).toBeLessThan(accessAt);
+  });
+
+  it('a failed database creation aborts after the write — no service setup, no access summary', async () => {
+    const h = context();
+    const { deps, writes } = freshDeps(['UTC', '', '', '', '', ''], undefined, {
+      database: { state: 'failed', detail: "EACCES: permission denied, mkdir '/qm/test/data'" },
+    });
+    const code = await runInitCommand(deps)(h.ctx);
+    expect(code).toBe(1);
+    // The configuration write happened and is stated as kept.
+    expect(writes()).toHaveLength(1);
+    expect(h.out()).toContain('Configuration written to');
+    expect(h.err()).toContain(
+      "quotameter init: creating the database failed (EACCES: permission denied, mkdir '/qm/test/data')",
+    );
+    expect(h.out()).toContain('The configuration file was written and stays.');
+    expect(h.out()).toContain('quotameter run — it creates the database at startup');
+    // Nothing beyond the abort: no service step, no §5.3 step-8 block.
+    expect(h.out()).not.toContain('Service setup:');
+    expect(h.out()).not.toContain('Service access:');
+  });
+
+  it('the step-8 block closes a loopback run with URL, tunnel, commands, and paths', async () => {
+    const h = context();
+    const { deps } = freshDeps(['UTC', '', '', '', '', '']);
+    await runInitCommand(deps)(h.ctx);
+    const out = h.out();
+    expect(out).toContain('Service access:');
+    expect(out).toContain('URL:               http://127.0.0.1:8787');
+    expect(out).toContain(
+      'Remote access:    on another machine, reach the loopback bind through an SSH tunnel:',
+    );
+    expect(out).toContain('ssh -N -L 8787:127.0.0.1:8787 user@<this-host>');
+    expect(out).toContain('Status:           quotameter status');
+    expect(out).toContain('Logs:             quotameter logs');
+    expect(out).toContain('Configuration:    /qm/test/config/config.json');
+    expect(out).toContain('Data directory:   /qm/test/data');
+  });
+
+  it('a specific non-loopback run keeps its direct URL and renders no tunnel hint', async () => {
+    const h = context();
+    const { deps } = freshDeps(['UTC', '192.168.1.10', '9000', '', '', PASSWORD, PASSWORD]);
+    await runInitCommand(deps)(h.ctx);
+    const out = h.out();
+    expect(out).toContain('URL:               http://192.168.1.10:9000');
+    expect(out).not.toContain('SSH tunnel');
+    expect(out).not.toContain('ssh -N -L');
+  });
+
+  it('a wildcard bind renders the machine-address placeholder, not 0.0.0.0 as a URL (review P3)', async () => {
+    const h = context();
+    const { deps } = freshDeps(['UTC', '0.0.0.0', '9000', '', '', PASSWORD, PASSWORD]);
+    await runInitCommand(deps)(h.ctx);
+    const out = h.out();
+    expect(out).toContain(
+      "URL:               http://<this-machine's-address>:9000 (the service listens on every interface)",
+    );
+    expect(out).not.toContain('http://0.0.0.0');
+    expect(out).not.toContain('ssh -N -L');
+  });
+
+  it('re-runs create no database and render no access block', async () => {
+    const h = context();
+    const code = await runInitCommand({
+      ...existingDeps(['', '', '9001', '']),
+      persistConfig: async () => {},
+    })(h.ctx);
+    expect(code).toBe(0);
+    expect(h.out()).not.toContain('Database ready at');
+    expect(h.out()).not.toContain('Service access:');
+  });
+});
+
+describe('renderInitNextSteps (§5.3 step 8, U-059, D-187)', () => {
+  const base: InitAnswers = {
+    timezone: 'UTC',
+    host: '127.0.0.1',
+    port: 8787,
+    pollingIntervalSeconds: 300,
+  };
+  const paths = {
+    configFile: '/home/alice/.config/quotameter/config.json',
+    dataDir: '/home/alice/.local/share/quotameter',
+  };
+
+  it("a loopback bind renders the tunnel — §15.5's recommended remote access", () => {
+    const text = renderInitNextSteps(base, paths);
+    expect(text).toContain('URL:               http://127.0.0.1:8787');
+    expect(text).toContain('ssh -N -L 8787:127.0.0.1:8787 user@<this-host>');
+    expect(text).toContain(`Configuration:    ${paths.configFile}`);
+    expect(text).toContain(`Data directory:   ${paths.dataDir}`);
+  });
+
+  it('a specific non-loopback bind renders the direct URL only; a wildcard renders the placeholder', () => {
+    const specific = renderInitNextSteps({ ...base, host: '192.168.1.10', port: 9000 }, paths);
+    expect(specific).toContain('URL:               http://192.168.1.10:9000');
+    expect(specific).not.toContain('ssh -N -L');
+    expect(specific).not.toContain('Remote access:');
+    for (const wildcard of ['0.0.0.0', '::']) {
+      const text = renderInitNextSteps({ ...base, host: wildcard, port: 9000 }, paths);
+      expect(text).toContain(
+        "URL:               http://<this-machine's-address>:9000 (the service listens on every interface)",
+      );
+      // A wildcard bind is remotely reachable — no tunnel hint there.
+      expect(text).not.toContain('ssh -N -L');
+      expect(text).not.toContain('Remote access:');
+    }
+  });
+
+  it('an IPv6 loopback bind renders a bracketed URL and tunnels to it', () => {
+    const text = renderInitNextSteps({ ...base, host: '::1' }, paths);
+    expect(text).toContain('URL:               http://[::1]:8787');
+    expect(text).toContain('ssh -N -L 8787:[::1]:8787 user@<this-host>');
   });
 });
 

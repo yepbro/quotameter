@@ -25,11 +25,10 @@
  *   then written through the landed permission enforcement (directory
  *   `0700`) and atomic write path (file `0600`, temp file + fsync + rename).
  *
- * §5.3 step 5's database half lands with the storage-consuming init steps
- * (task 133+): this task writes the configuration artifact init is
- * idempotent about, and creating a database nothing in init consumes yet
- * would couple the CLI to the storage composition ahead of its task
- * (decision D-101).
+ * §5.3 step 5's database half landed with U-059 (`init-database.ts`,
+ * D-187): the fresh run creates the data directory and the migrated
+ * database right after this module's configuration write, through the
+ * storage composition's own open/migrate pair.
  */
 
 import { readFile } from 'node:fs/promises';

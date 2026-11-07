@@ -491,6 +491,130 @@ describe('install — the system-unit route (privileged, §5.3 step 7 / §5.4)',
     expect(result.err).toContain('quotameter service install: note: a user unit is installed');
     expect(result.err).toContain('only one should be installed');
   });
+
+  it('without a configuration the health verification is skipped honestly, exit 0 (U-059)', async () => {
+    const rec = recorder();
+    const result = await install(HELD, caps(true, true), rec, {}, { pathEnv: {} });
+    expect(result.code).toBe(0);
+    expect(result.out).toContain(
+      'Health check skipped: no configuration exists at /home/alice/.config/quotameter/config.json, ' +
+        'so the endpoint is unknown',
+    );
+  });
+
+  it('an invalid configuration skips with its own reason — the detection problems are not dropped (review P3)', async () => {
+    const dir = await createTempDir('qm-install-health-');
+    try {
+      await writeFile(join(dir.path, 'config.json'), JSON.stringify({ server: 'not-an-object' }));
+      const rec = recorder();
+      const result = await install(
+        HELD,
+        caps(true, true),
+        rec,
+        {},
+        {
+          pathEnv: { QUOTAMETER_CONFIG_DIR: dir.path },
+          checkServiceHealth: () => {
+            throw new Error('an invalid configuration must not be probed');
+          },
+        },
+      );
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('Health check skipped: the configuration at');
+      expect(result.out).toContain('is not readable as a valid configuration');
+      expect(result.out).toContain('so the endpoint is unknown');
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('a readable configuration gets the /api/health verification after is-active (U-059, D-187)', async () => {
+    const dir = await createTempDir('qm-install-health-');
+    try {
+      await writeFile(
+        join(dir.path, 'config.json'),
+        JSON.stringify({
+          server: { host: '127.0.0.1', port: 9123 },
+          app: {
+            timezone: 'Europe/Berlin',
+            pollingIntervalSeconds: 120,
+            historyRetentionDays: 90,
+          },
+          accounts: [],
+        }),
+      );
+      const rec = recorder();
+      const probed: Array<{ host: string; port: number }> = [];
+      const result = await install(
+        HELD,
+        caps(true, true),
+        rec,
+        {},
+        {
+          pathEnv: { QUOTAMETER_CONFIG_DIR: dir.path },
+          checkServiceHealth: async (host, port) => {
+            probed.push({ host, port });
+            return { state: 'healthy' };
+          },
+        },
+      );
+      expect(result.code).toBe(0);
+      // The probe targets the owner's configured endpoint, resolved through
+      // the same §6.1 precedence as the unit's ReadWritePaths.
+      expect(probed).toEqual([{ host: '127.0.0.1', port: 9123 }]);
+      expect(result.out).toContain('Health check passed: GET http://127.0.0.1:9123/api/health');
+      expect(result.out).not.toContain('Health check skipped');
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('a failed /api/health verification fails the install with the honest guidance (U-059)', async () => {
+    const dir = await createTempDir('qm-install-health-');
+    try {
+      await writeFile(
+        join(dir.path, 'config.json'),
+        JSON.stringify({
+          server: { host: '127.0.0.1', port: 9123 },
+          app: {
+            timezone: 'Europe/Berlin',
+            pollingIntervalSeconds: 120,
+            historyRetentionDays: 90,
+          },
+          accounts: [],
+        }),
+      );
+      const rec = recorder();
+      const result = await install(
+        HELD,
+        caps(true, true),
+        rec,
+        {},
+        {
+          pathEnv: { QUOTAMETER_CONFIG_DIR: dir.path },
+          checkServiceHealth: async () => ({
+            state: 'failed',
+            detail: 'the endpoint answered HTTP 503',
+          }),
+        },
+      );
+      expect(result.code).toBe(1);
+      expect(result.err).toContain(
+        'quotameter service install: the installed service did not pass the /api/health ' +
+          'verification (the endpoint answered HTTP 503)',
+      );
+      expect(result.out).toContain(
+        'The health check GET http://127.0.0.1:9123/api/health did not pass within 30 seconds',
+      );
+      expect(result.out).toContain('\n  quotameter status\n');
+      expect(result.out).toContain('\n  quotameter logs\n');
+      // The full manager sequence ran — the failure is verification's, not
+      // installation's.
+      expect(rec.commands()).toEqual(SYSTEM_INSTALL_SEQUENCE);
+    } finally {
+      await dir.remove();
+    }
+  });
 });
 
 describe('install — the user-unit route (unprivileged, §5.3 step 7)', () => {
@@ -524,6 +648,24 @@ describe('install — the user-unit route (unprivileged, §5.3 step 7)', () => {
     expect(rec.writes()).toHaveLength(1);
     expect(result.out).toContain(`Unit file: ${USER_UNIT_PATH} (regenerated)`);
     expect(result.out).toContain('systemctl --user restart quotameter.service');
+  });
+
+  it('the user route never probes health — §5.3 prescribes verification for the privileged leg (U-059, D-187)', async () => {
+    // A throwing probe makes a would-be call a visible test failure.
+    const rec = recorder();
+    const result = await install(
+      REGULAR,
+      caps(true, true),
+      rec,
+      {},
+      {
+        checkServiceHealth: () => {
+          throw new Error('the user route must not run the health verification');
+        },
+      },
+    );
+    expect(result.code).toBe(0);
+    expect(result.out).not.toContain('Health check');
   });
 
   it('--restart-sec reaches the generated user unit too', async () => {

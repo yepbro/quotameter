@@ -23,6 +23,7 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `init-yes.ts`          | the §5.3 non-interactive layer: `--yes` flags → answers through the same parsers, env key and password channels                                  |
 | `init-account.ts`      | the §5.3 step-6 account leg: id/secret-source assembly, the connection test, the failure offer                                                   |
 | `init-password.ts`     | the §5.3 step-4 password leg: the loopback-optional/non-loopback-required question pair over passwd's shared flow (U-042)                        |
+| `init-database.ts`     | the §5.3 step-5 database leg: data directory `0700` + migrations through the storage open/migrate pair, fresh runs only (U-059)                  |
 | `init-persist.ts`      | the §5.3 idempotent layer: existing-config detection, masked display, merge, consented atomic write                                              |
 | `init.ts`              | the `init` handler: mode branch, detection outcomes, the account step, cancellation, masked summaries                                            |
 | `raw-diagnostics.ts`   | the §7.4 diagnostic read path behind `doctor --raw <account>` (task 103)                                                                         |
@@ -194,11 +195,13 @@ the resolved configuration path (`resolvePaths` → `config.json`):
 - **No file** — the fresh flows of tasks 130/131 unchanged, and the run
   writes the configuration: `enforceConfigPermissions` creates the
   directory at `0700` (or corrects/refuses), `writeConfigFile` writes the
-  canonical file at `0600` atomically (§5.3 step 5's configuration half;
-  the database lands with the storage-consuming steps, task 133+). Since
-  task 133 a fresh run with a key source also stores the initial account
+  canonical file at `0600` atomically (§5.3 step 5's configuration half).
+  Since task 133 a fresh run with a key source also stores the initial account
   (see the account-setup section above) — tested, offered on failure, and
-  persisted with its secret inside the `0600` file.
+  persisted with its secret inside the `0600` file. Since U-059 (D-187)
+  the fresh run then creates the **database** (`init-database.ts`, below)
+  right after the write — the §5.3 step-5 database half the task-132
+  deferral waited on.
 - **Valid file** — the §5.3 subsequent-run flow: current settings are
   displayed (accounts masked to their secret state — a stored key never
   appears, an environment-sourced key names only its variable), every
@@ -283,6 +286,88 @@ The handler's detection and persistence are injectable seams
 (`InitDeps.readExisting`/`persistConfig`) for unit tests; the real wiring —
 including the double-init done-condition evidence through the actual
 launcher — is pinned by `test/integration/cli-init-idempotent.spec.ts`.
+
+## The fresh-run finalization: database, verification, summary (task U-059, spec §5.3 steps 5/7/8, decision D-187)
+
+With the collection layers landed, a fresh run's ending is an explicit
+lifecycle — `write-config → database → service-setup → health-check →
+summary`, in that order, with exactly one abort rule beyond the write
+itself:
+
+- **The database step (`init-database.ts`) aborts the run on failure.**
+  After the consented configuration write, the run reads the data
+  directory's §5.6 single-instance lock and **refuses under a live
+  holder** (naming the pid — init must never run backup or DDL under a
+  running service; an unreadable or invalid lock refuses fail-closed, a
+  dead holder's stale lock proceeds, §5.6's next start clears it), then
+  creates the data directory (`0700` — an explicit `chmod` after the
+  recursive mkdir, because `mkdir`'s mode is masked by the invoking
+  shell's umask, the configuration path's own umask-exempt step) and
+  brings the database to the current schema through the storage
+  composition's own open/migrate pair (`openStorageConnection` +
+  `runStartupMigrations` over `MIGRATIONS`), consumed through dynamic
+  imports so `node:sqlite` stays out of every dispatch graph (D-116; the
+  child's only new stderr noise is the module's ExperimentalWarning — the
+  documented property of invocations that actually open a database). The
+  sequence is idempotent: a surviving database (the D-141 world)
+  classifies up-to-date or behind and migrates exactly as the service
+  would at start. Failure policy: §5.3 step 5 is a must, not best-effort
+  — every reachable failure (unwritable data directory, corrupt file at
+  the path, WAL-incapable filesystem, §11.4's newer schema) leaves an
+  environment no service can start in, so the run exits 1 with the
+  configuration file explicitly kept (re-running init does not retry the
+  step — it is fresh-run-only; the service's own start creates the
+  database, and the remedy line says so). The §5.3 step-6
+  connection-test tolerance is the deliberate contrast: a bad key harms
+  one account, a bad data directory harms the whole service — installing
+  an auto-restarting unit over it would be the harmful alternative.
+- **The service step reports whether it started a service.**
+  `runServiceSetupStep` returns `{ serviceStarted }` — `true` only on the
+  user-unit route's successful `enable --now`, the one leg where init's
+  own run put a service on the machine. That return value is the
+  precondition of the step's verification half: a service that was
+  installed and started gets the bounded loopback `GET /api/health` probe
+  (`verifyServiceHealth`, `service-setup.ts`): 30 s total deadline, 2 s
+  per request, 500 ms between attempts — a freshly enabled unit still
+  boots Node and opens its database, so a first refusal is startup
+  latency, not a verdict; healthy means HTTP 200 with §13's
+  `{"status":"ok"}` body, everything else retries inside the bound (a
+  timeout firing mid-body is a failed attempt with the timeout's own
+  diagnostic, never a "wrong payload" verdict; the retry sleep is
+  deliberately ref'd — mid-poll it is often the only pending work of the
+  CLI process). The probe host is loopback by construction (the
+  configured host when it is itself loopback, otherwise `127.0.0.1` — a
+  wildcard bind accepts loopback connections; a service bound to one
+  specific non-loopback address may refuse the probe while healthy on its
+  own interface, the recorded residual). A password-pending
+  configuration is **not** probed — §15.1 refuses that start by design,
+  the pending remedy line already said so, and waiting out the budget for
+  a start that cannot happen helps nobody (recorded residual: the
+  user-unit leg still enables the pending unit, which `Restart=on-failure`
+  cycles until `quotameter passwd` completes it — tightening that is
+  task 137's design, not this step's). A failed probe is honest stderr
+  plus the `status`/`logs` guidance and **never fails the run**: the
+  configuration is written and the unit installed; the manual fallbacks
+  remain §5.3's designed outcome.
+- **The step-8 block closes the run** (`renderInitNextSteps`): the
+  effective URL (`http://<host>:<port>` — §15.1's service never terminates
+  TLS itself; IPv6 literals bracketed; a **wildcard** bind has no
+  client-usable URL and renders the machine-address placeholder with the
+  every-interface fact), the SSH-tunnel access **exactly for a loopback
+  bind** — only a loopback URL is unreachable from another machine, and
+  the tunnel is §15.5's recommended remote-access method for exactly that
+  world (a non-loopback bind is directly reachable; its password note
+  already rendered), the `status`/`logs` command names, and the
+  configuration and data paths. Fresh runs only; re-runs keep their
+  update trailers.
+
+The seams: `InitDeps.createDatabase` (production `createInitDatabase`) and
+`InitDeps.checkServiceHealth` (production `verifyServiceHealth`); both are
+recorded or forbidden in the unit suites, real in the integration suites —
+a real launcher run leaves a genuinely migrated `quotameter.sqlite` inside
+the redirected data directory (pinned by reading the migration journal
+back), and a squatter file on the data-directory path aborts the run
+honestly with the configuration kept.
 
 ## The `init --yes` layer (task 131, spec §5.3, decision D-100)
 
@@ -626,6 +711,16 @@ capabilities, and owns the two fallback paths:
   `/api/health`) belong to task 139's `quotameter service install`
   machinery; the plan names them and directs to that §5.2 command from the
   regular account.
+- **The verification half (U-059, D-187)** — `verifyServiceHealth` is the
+  bounded loopback `GET /api/health` poll both consumers run after a
+  service was actually started (see the fresh-run finalization section):
+  `runServiceSetupStep`'s `{ serviceStarted }` return is init's
+  precondition for probing, `service install`'s system route probes after
+  its `is-active` gate. Injectable at every seam (fetcher, sleep, clock,
+  all three budgets); the healthy/wrong-status/wrong-body arms are pinned
+  against a real loopback server the suite owns — the production fetcher
+  is real `fetch` on 127.0.0.1 with `redirect: 'error'` (D-154's
+  documented guard gap closed by policy at every fetch site).
 
 The step runs on fresh runs after the configuration write (re-runs keep
 their update trailers; re-installation is `service install`'s job) and asks
@@ -675,7 +770,9 @@ route from task 137's matrix, and the linger guidance from task 138.
   guidance. Uninstall on manager-less machines removes the file without manager commands
   and says so.
 - **Exit codes** — install exits 0 exactly when the unit was written, reloaded, and
-  enabled/started (plus `is-active` on the system route); uninstall exits 0 exactly when
+  enabled/started (plus `is-active` and — since U-059, D-187 — the `/api/health`
+  verification on the system route when a readable configuration names the endpoint);
+  uninstall exits 0 exactly when
   the file is gone (or was absent) and every executed manager command succeeded — a
   failed `disable`/`daemon-reload` is reported but does not block the file removal, since
   the manager self-heals on its next reload while a half-removed unit would not; the
@@ -686,6 +783,21 @@ route from task 137's matrix, and the linger guidance from task 138.
   broken-system throw of an unreadable user database, rendered as the standard failure
   line) and the POSIX owner-name guard (D-106) fail fast like init's; neither handler
   throws.
+- **The §5.3 step-7 privileged verification (U-059, D-187)** — after `is-active`
+  passes, the system route probes `GET /api/health` through the shared
+  `verifyServiceHealth` seam. The endpoint comes from the **owner's**
+  configuration, resolved through the same `ownerUnitDirectories` §6.1
+  precedence the unit's `ReadWritePaths` use and read best-effort through
+  init's detection pipeline (one validator, no drift): D-108's structural
+  independence survives — no readable configuration skips the probe with one
+  honest `Health check skipped: …` line instead of failing, because the
+  command still requires no configuration and `is-active` already proved the
+  start. A probe that runs and does not pass within its bound fails the
+  install (exit 1, stderr detail, `status`/`logs` guidance) — §5.3's verify
+  is this command's own contract. The user route keeps §5.3's user-unit
+  bullet scope (enable, no prescribed verification; init's own user-unit leg
+  does probe, contained — the asymmetry is spec-anchored and recorded in
+  D-187).
 
 Branch coverage: every route and failure path is seam-driven in
 `test/unit/cli-service-install.spec.ts` (the systemd-less test environments:

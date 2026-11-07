@@ -1,6 +1,9 @@
 /**
  * The `init` service-setup branch layer (task 137, spec §5.3 step 7; decision
- * D-106) — the routing between §5.3 step 7's three install outcomes.
+ * D-106) — the routing between §5.3 step 7's three install outcomes, plus
+ * (U-059, D-187) the step's verification half: the bounded loopback
+ * `GET /api/health` probe both consumers run after a service was actually
+ * started.
  *
  * §5.3 step 7: "Install and enable a service when possible": with privileges
  * the system unit is installed for the owner; **without sudo** a user unit is
@@ -70,6 +73,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { isLoopbackHost } from '../schemas/config';
 import type { CliOutput } from './output';
 import type { EnvSnapshot, ServiceOwnerContext } from './service-owner';
 import { probeUserLinger, renderLingerGuidance, type LingerState } from './service-linger';
@@ -571,6 +575,209 @@ export function thrownMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/* ── §5.3 step 7's verification half: the /api/health probe (U-059, D-187) */
+
+/**
+ * The total wall-clock budget of one health verification: a freshly
+ * enabled unit still boots Node, opens its database, and arms its
+ * listener, so the probe retries within this bound instead of failing on
+ * the first refusal — anything still not answering after it is a real
+ * "not serving" verdict, not startup latency.
+ */
+export const HEALTH_CHECK_DEADLINE_MS = 30_000;
+
+/**
+ * The per-attempt budget: one request may not hold the verification
+ * hostage past this (a wedged connect or a stalled body resolves through
+ * its abort signal, and the poll loop retries inside the total bound).
+ */
+export const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 2_000;
+
+/** The pause between two probe attempts inside the total bound. */
+export const HEALTH_CHECK_POLL_INTERVAL_MS = 500;
+
+/** One health verification's outcome, in the step's callers' vocabulary. */
+export type ServiceHealth =
+  { readonly state: 'healthy' } | { readonly state: 'failed'; readonly detail: string };
+
+/**
+ * The health probe the init and `service install` callers inject
+ * (`InitDeps.checkServiceHealth`, `ServiceCommandDeps.checkServiceHealth`);
+ * production is {@link verifyServiceHealth}.
+ */
+export type ServiceHealthCheck = (host: string, port: number) => Promise<ServiceHealth>;
+
+/** Fetches one health URL under a per-attempt abort signal; production: global `fetch`. */
+export type HealthFetcher = (url: string, signal: AbortSignal) => Promise<Response>;
+
+/** Injectable collaborators of {@link verifyServiceHealth}. */
+export interface ServiceHealthSeams {
+  readonly fetcher?: HealthFetcher;
+  readonly sleep?: (ms: number) => Promise<void>;
+  /** The clock the deadline is measured against; production `Date.now`. */
+  readonly now?: () => number;
+  readonly deadlineMs?: number;
+  readonly requestTimeoutMs?: number;
+  readonly pollIntervalMs?: number;
+}
+
+/**
+ * Brackets a bare IPv6 literal for URL interpolation (`::1` → `[::1]`);
+ * already-bracketed literals and every other host spelling pass through
+ * unchanged.
+ */
+export function bracketHostForUrl(host: string): string {
+  if (host.includes(':') && !host.startsWith('[')) return `[${host}]`;
+  return host;
+}
+
+/**
+ * The loopback probe target of a configured bind — §5.3 step 7's
+ * verification is a **loopback** `GET /api/health`: the configured host
+ * itself when it is loopback, otherwise the loopback interface
+ * `127.0.0.1` (a wildcard bind accepts loopback connections on the same
+ * port). Recorded residual (D-187): a service bound to one specific
+ * non-loopback address may refuse the loopback probe while healthy on its
+ * own interface — the failure message names the probed URL, and
+ * `quotameter status` is the follow-up.
+ */
+export function healthProbeTarget(
+  host: string,
+  port: number,
+): {
+  readonly host: string;
+  readonly url: string;
+} {
+  const configured = host.trim().toLowerCase();
+  const probeHost = isLoopbackHost(configured) ? bracketHostForUrl(configured) : '127.0.0.1';
+  return { host: probeHost, url: `http://${probeHost}:${port}/api/health` };
+}
+
+/**
+ * Runs §5.3 step 7's health verification as a bounded poll — the retry is
+ * an explicit two-state machine: one attempt resolves `healthy` (HTTP 200
+ * with §13's `{"status":"ok"}` body) and ends the loop; anything else
+ * (another status, a network error, a per-attempt timeout — a still
+ * booting service refuses connections) is one bounded detail and a retry,
+ * until an attempt plus a full poll interval no longer fits inside the
+ * deadline, which resolves `failed` with the last observable. At least one
+ * attempt always runs.
+ */
+export async function verifyServiceHealth(
+  host: string,
+  port: number,
+  seams: ServiceHealthSeams = {},
+): Promise<ServiceHealth> {
+  const fetcher = seams.fetcher ?? defaultHealthFetcher;
+  const sleep = seams.sleep ?? defaultHealthSleep;
+  const now = seams.now ?? Date.now;
+  const deadlineMs = seams.deadlineMs ?? HEALTH_CHECK_DEADLINE_MS;
+  const requestTimeoutMs = seams.requestTimeoutMs ?? HEALTH_CHECK_REQUEST_TIMEOUT_MS;
+  const pollIntervalMs = seams.pollIntervalMs ?? HEALTH_CHECK_POLL_INTERVAL_MS;
+  const { url } = healthProbeTarget(host, port);
+  const deadline = now() + deadlineMs;
+  while (true) {
+    const attempt = await probeHealthOnce(fetcher, url, requestTimeoutMs);
+    if (attempt.ok) return { state: 'healthy' };
+    if (now() + pollIntervalMs > deadline) return { state: 'failed', detail: attempt.detail };
+    await sleep(pollIntervalMs);
+  }
+}
+
+/** The production fetcher: `redirect: 'error'` keeps a redirect from carrying the probe off-loopback (D-154). */
+const defaultHealthFetcher: HealthFetcher = (url, signal) =>
+  fetch(url, { signal, redirect: 'error' });
+
+/** The production sleep. Deliberately ref'd: this timer is often the only pending work of a CLI run mid-poll (the sockets of a refused attempt are gone), so an unref'd timer would let the process drain and exit 0 before the deadline, the failure report, or the step-8 summary — the capability probe's timer may unref only because its spawn keeps the loop alive (review round P1). */
+const defaultHealthSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/** One attempt's result: healthy, or one bounded detail for the retry/report. */
+type ProbeAttempt = { readonly ok: true } | { readonly ok: false; readonly detail: string };
+
+/**
+ * One attempt: healthy is HTTP 200 with §13's `{"status":"ok"}` body. A
+ * non-200 cancels the body (releasing the connection) and reports the
+ * status; a body that fails to read is classified by the attempt's abort
+ * state — a timeout firing mid-body is a failed attempt with the timeout's
+ * own diagnostic, never a "wrong payload" verdict (review round P2); a
+ * body that parses to anything else is the wrong-payload verdict.
+ */
+async function probeHealthOnce(
+  fetcher: HealthFetcher,
+  url: string,
+  requestTimeoutMs: number,
+): Promise<ProbeAttempt> {
+  const signal = AbortSignal.timeout(requestTimeoutMs);
+  let response: Response;
+  try {
+    response = await fetcher(url, signal);
+  } catch (error) {
+    return { ok: false, detail: describeHealthError(error) };
+  }
+  if (response.status !== 200) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      // a body that cannot cancel changes nothing about the status verdict
+    }
+    return { ok: false, detail: `the endpoint answered HTTP ${response.status}` };
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    if (signal.aborted) return { ok: false, detail: describeHealthError(error) };
+    return { ok: false, detail: 'the endpoint answered a body that is not the health payload' };
+  }
+  if (typeof body !== 'object' || body === null || (body as { status?: unknown }).status !== 'ok') {
+    return { ok: false, detail: 'the endpoint answered a body that is not the health payload' };
+  }
+  return { ok: true };
+}
+
+/** One bounded, secret-free diagnostic line for a failed probe attempt (the cause chain included — undici wraps the errno there). */
+function describeHealthError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = (error as Error & { cause?: unknown }).cause;
+  const suffix = cause instanceof Error ? `: ${cause.message}` : '';
+  return `${error.message}${suffix}`.slice(0, 200);
+}
+
+/** The passed-verification line both callers print on success. */
+export function renderHealthVerificationPassed(url: string): string {
+  return `Health check passed: GET ${url} answered {"status":"ok"}.`;
+}
+
+/** The honest guidance block both callers print when the probe did not pass. */
+export function renderHealthCheckGuidance(url: string, deadlineMs: number): string {
+  return [
+    `The health check GET ${url} did not pass within ${Math.round(deadlineMs / 1000)} seconds — the service may still be starting.`,
+    'Check what is happening with:',
+    '  quotameter status',
+    '  quotameter logs',
+  ].join('\n');
+}
+
+/** The honest one-liner when the probe could not even be targeted. */
+export function renderHealthCheckSkipped(reason: string): string {
+  return `Health check skipped: ${reason}.`;
+}
+
+/** What the §5.3 step 7 run established for the steps that follow it (U-059, D-187). */
+export interface ServiceSetupStepResult {
+  /**
+   * True exactly when this step itself started the service — the user-unit
+   * route's successful `enable --now`, the one leg where init's own run
+   * put a service on the machine — which is the precondition of §5.3
+   * step 7's `/api/health` verification. Every other outcome (the
+   * system-unit plan, the manual fallbacks, the refusals) started nothing.
+   */
+  readonly serviceStarted: boolean;
+}
+
 /**
  * Runs the §5.3 step 7 service-setup branch for a resolved owner context:
  * routes, then installs the user unit without sudo (falling back to the
@@ -579,7 +786,8 @@ export function thrownMessage(error: unknown): string {
  * validation included) and the installation itself are one failure domain:
  * any throw or failed command is a rendered fallback, not a failed init
  * (the configuration is already written; §5.3 treats the manual
- * instructions as the designed outcome).
+ * instructions as the designed outcome). The return value states whether
+ * a service was actually started ({@link ServiceSetupStepResult}).
  *
  * Owner-context problems never reach this function: `init` resolves the
  * owner first and reports problems itself (D-105's contract). An owner
@@ -592,20 +800,20 @@ export async function runServiceSetupStep(
   context: ServiceOwnerContext,
   capabilities: ServiceCapabilities,
   seams: ServiceSetupSeams = {},
-): Promise<void> {
+): Promise<ServiceSetupStepResult> {
   const runCommand = seams.runCommand ?? spawnServiceCommand;
   const writeUnitFile = seams.writeUnitFile ?? writeUnitFileToDisk;
   const errorPrefix = seams.errorPrefix ?? 'quotameter init';
   const nameProblem = unsafeOwnerNameProblem(context.user.name);
   if (nameProblem !== null) {
     output.err(`${errorPrefix}: ${nameProblem}`);
-    return;
+    return { serviceStarted: false };
   }
   const route = resolveServiceSetupRoute(context, capabilities);
 
   if (route.path === 'system-unit') {
     output.out(renderSystemUnitPlan(context.user.name));
-    return;
+    return { serviceStarted: false };
   }
   if (route.path === 'manual' && route.reason === 'systemd-absent') {
     output.out(
@@ -615,7 +823,7 @@ export async function runServiceSetupStep(
             'systemd is not available on this machine, so the service cannot be installed here',
           ),
     );
-    return;
+    return { serviceStarted: false };
   }
 
   // The remaining routes both write the user unit under the owner's home
@@ -644,7 +852,7 @@ export async function runServiceSetupStep(
       ),
     );
     output.out(renderManualRunSteps('the user unit could not be installed on this machine'));
-    return;
+    return { serviceStarted: false };
   }
   // §5.3 step 7's linger clause (task 138, D-107): every branch that
   // remains renders the state-driven linger guidance — the unit file is on
@@ -666,7 +874,7 @@ export async function runServiceSetupStep(
         linger,
       ),
     );
-    return;
+    return { serviceStarted: false };
   }
   for (const command of [
     ['systemctl', '--user', 'daemon-reload'],
@@ -689,8 +897,9 @@ export async function runServiceSetupStep(
           linger,
         ),
       );
-      return;
+      return { serviceStarted: false };
     }
   }
   output.out(renderUserUnitInstalled(context.user.name, installPath, linger));
+  return { serviceStarted: true };
 }
