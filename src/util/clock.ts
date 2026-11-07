@@ -26,6 +26,14 @@
  *   Luxon bridge that peak-hours intervals (114) and DST handling (115)
  *   build on. Rolling ranges (116) needed neither — pure duration
  *   arithmetic in the sibling `rolling-ranges.ts` (decision D-068).
+ * - The zone-validation memo is **bounded**, not caller-bounded (decision
+ *   D-171): `isValidTimeZone` caches at most `ZONE_CHECK_MEMO_CAPACITY`
+ *   distinct names, computing any further name per call. The earlier
+ *   premise — "cache keys are zone names from validated configuration, so
+ *   the map stays small in practice" — was a property of today's callers,
+ *   not of the module: the gate is exported, and V8's `Intl` accepts
+ *   case-mangled spellings of valid names, so even the success-key space
+ *   has no finite bound a contract could honestly state.
  */
 
 import { performance } from 'node:perf_hooks';
@@ -122,17 +130,35 @@ function requireFinite(value: number, what: string): number {
 /* ── IANA zone validation ──────────────────────────────────────────────── */
 
 /**
+ * The growth contract of `isValidTimeZone`'s memo (decision D-171): at most
+ * this many distinct zone names stay cached; any further name is computed
+ * per call and answered uncached — memoization stays transparent. Sized
+ * over every name a legitimate workload could validate through this gate:
+ * the tzdb's ≈600 names including backward links (≈350 primaries plus
+ * ≈250 links; the engine's own list carries only ≈420 of them — its
+ * canonical set plus listed aliases), with headroom. The bound is a
+ * memory contract (a kilobyte-scale map at worst), not a security
+ * control. Both sizing floors are test-pinned — against the engine's own
+ * zone list and against the tzdb-with-links count — so a tzdb growth past
+ * the capacity fails `make check` and forces a revisit instead of
+ * silently uncaching legitimate traffic.
+ */
+export const ZONE_CHECK_MEMO_CAPACITY = 1024;
+
+/**
  * True when `name` is a valid IANA time-zone identifier, following the same
  * resolver as the configuration contract (D-014 item 8): whatever
  * `Intl.DateTimeFormat` accepts — canonical names, links/aliases such as
  * `Asia/Calcutta`, `UTC`, V8's case-insensitive lookup — minus ECMA-402
  * offset identifiers such as `+03:00`, which are not IANA names.
  *
- * Results are memoized: `zonedDateTime` re-validates every zone it receives
- * (Luxon accepts pseudo-zones like `local`/`utc+4` that this gate rejects),
- * and formatting loops must not pay an `Intl.DateTimeFormat` construction
- * per call. Cache keys are zone names from validated configuration, so the
- * map stays small in practice.
+ * Results are memoized up to {@link ZONE_CHECK_MEMO_CAPACITY} distinct
+ * names (decision D-171): `zonedDateTime` re-validates every zone it
+ * receives (Luxon accepts pseudo-zones like `local`/`utc+4` that this gate
+ * rejects), and formatting loops must not pay an `Intl.DateTimeFormat`
+ * construction per call. Beyond the capacity a name is computed per call —
+ * the map's growth is bounded by this module, never by its callers' habits
+ * (see the scope note above).
  */
 export function isValidTimeZone(name: string): boolean {
   const cached = zoneChecks.get(name);
@@ -141,8 +167,11 @@ export function isValidTimeZone(name: string): boolean {
     return cached;
   }
   const valid = !name.startsWith('+') && !name.startsWith('-') && resolvableByIntl(name);
-  // Stryker disable next-line CallExpression: populating the transparent memoization cache changes no observable result
-  zoneChecks.set(name, valid);
+  // Stryker disable next-line ConditionalExpression: the capacity guard's always-cache and never-cache mutants are killed by the construction-counting test; what stays transparent is the exact boundary comparison at size === capacity (cached or not, the answer is identical)
+  if (zoneChecks.size < ZONE_CHECK_MEMO_CAPACITY) {
+    // Stryker disable next-line CallExpression: populating the transparent memoization cache changes no observable result
+    zoneChecks.set(name, valid);
+  }
   return valid;
 }
 

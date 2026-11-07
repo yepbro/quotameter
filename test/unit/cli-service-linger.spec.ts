@@ -71,8 +71,9 @@ describe('statLingerFlagPresence — the production classifier against the real 
     await mkdir(locked);
     try {
       await chmod(locked, 0o000);
-      // The test process is unprivileged (container uid 1000), so mode
-      // bits apply: statting inside yields EACCES → unknown downstream.
+      // The test process is unprivileged (the container's non-root
+      // user), so mode bits apply: statting inside yields EACCES →
+      // unknown downstream.
       expect(statLingerFlagPresence(join(locked, 'alice'))).toBe('stat-error');
     } finally {
       await chmod(locked, 0o755);

@@ -172,13 +172,20 @@ task-099 specifics decision D-053.
   (soft; the body is never parsed — endpoint 3 maps nothing in v1,
   D-047.6). The default `apiBaseUrl` is `https://api.z.ai`: the quota
   surface lives on the monitor/biz paths, _not_ under the coding base
-  (spec §8.3's warning). Failures surface exactly two ways: an endpoint-1
+  (spec §8.3's warning). A successful cycle stamps the snapshot with
+  endpoint 1's delivered status as `ProviderSnapshot.httpStatus` — the
+  optional transport evidence §11.2's success-path `http_status` retains
+  (D-169); the soft endpoints' statuses are context, never cycle evidence.
+  Failures surface exactly two ways: an endpoint-1
   transport failure re-throws the D-042 `TransportError` unchanged (task
   105 classifies the kind), and an endpoint-1 parse failure throws
   `SnapshotParseError` — `reason` (static English) and `httpStatus` feed
   105's `classifyParseFailure`, `sanitizedPayload` is the §7.4 hand-off
   (task 102's sanitizer run over the raw body with the account secret;
-  storage 086/103 persists it, the adapter only carries it), and
+  storage 086/103 persists it, the adapter only carries it),
+  `contentType` carries the delivered `Content-Type` the same way —
+  §7.4-scrubbed by the caller before construction, the wire for §11.2's
+  raw-response "content type" column (U-035/D-169) — and
   `envelopeMessage` retains a non-success envelope's `msg`, sanitized (A2).
   Every endpoints-2/3 failure — transport, parse violation, or a caller
   abort mid-cycle — is soft: logged through the injected logger and

@@ -14,7 +14,7 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | File                   | Owns                                                                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `main.ts`              | `runCli(argv, deps)` — global flags, dispatch, exit codes; never calls `process.exit`                                                            |
-| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types, the shared `notImplemented` stub                                            |
+| `commands.ts`          | the §5.2 command table (`buildCommandTable`), handler/context types — every command real (the stub helpers retired with U-050's `run`)           |
 | `parser.ts`            | `node:util` `parseArgs` in strict mode; options per command; `UsageError`                                                                        |
 | `help.ts`              | pure help renderers (general, command, group)                                                                                                    |
 | `output.ts`            | the `CliOutput` writer seam (`systemOutput` → `process.stdout`/`stderr`)                                                                         |
@@ -34,6 +34,7 @@ provider adapters. Nothing under `src/` imports this module; only `bin/` does.
 | `service-install.ts`   | the §5.2 `service install`/`uninstall` handlers: idempotent unit lifecycle on both unit kinds, through the 136/137 seams (task 139)              |
 | `passwd.ts`            | the §5.2 `passwd` handler: the §15.2 password pair, scrypt-hash-only persistence, session revocation (task 144)                                  |
 | `doctor.ts`            | the §5.5 `doctor` handler: the check-result contract, the eleven §5.5 checks through the landed seams, `--raw` over the 103 read path (task 145) |
+| `run.ts`               | the §5.2 `run` handler: foreground service start through a lazy `runServer` import, exit-code forwarding (U-050)                                 |
 
 Everything a handler touches is injected: output (writer seam), version
 (supplied by the launcher — `src/` cannot import `package.json`, the layout
@@ -47,16 +48,18 @@ stdout/stderr output is its product and flows through `CliOutput` — direct
 stream writes in production, a recorder in tests. Help and version go to
 stdout; every error line goes to stderr in the form
 `quotameter [<command path>: ]<message>` plus a `Try 'quotameter … --help'`
-hint when the error is a usage error. One documented exception (task 143,
-D-116): the `logs` passthrough runner forwards a child journalctl's stdout
+hint when the error is a usage error. Two documented exceptions: the `logs`
+passthrough runner forwards a child journalctl's stdout
 as **raw bytes** — a live stream cannot be expressed in the seam's
 one-newline lines — with its own EPIPE and backpressure handling for the
-run's duration.
+run's duration (task 143, D-116); and the `run` handler writes nothing at
+all, delegating stream ownership to `runServer` (stdout is §16's JSON log
+stream, refusals are `runServer`'s direct stderr diagnostics — U-050).
 
 ### Exit codes
 
 - `0` success — including help, version, and the no-arguments help;
-- `1` command failure — a handler error or a not-yet-implemented command;
+- `1` command failure — a handler error;
 - `2` usage error — unknown command/subcommand/option, missing subcommand,
   unexpected argument.
 
@@ -65,12 +68,12 @@ Global flags are checked in the order version → help, so `quotameter
 `quotameter status --bogus --help` is still a usage error: flags are
 validated before help is shown.
 
-### Plugging in real commands (tasks 129–145)
+### Plugging in real commands (tasks 129–145 + U-050)
 
-Replace one `stub(...)` row in `buildCommandTable` with a real handler
-(`run: async (ctx) => …` returning the exit code) and declare its options
-(`options: { timezone: { type: 'string', description: 'IANA time zone' }, … }`)
-— the dispatcher, parser, and help renderers pick them up unchanged. The
+Every §5.2 command is real — the tasks 129–145 wave plus U-050's `run` (the
+last stub) completed the surface, and the stub helpers are gone. The table
+still accepts a new command the same way: one row with its options and a
+handler returning the exit code (`run: async (ctx) => …`). The
 option `description` renders in the command's help; undocumented options
 print without trailing padding. The automatic `help` option name is
 reserved: `parseCommandArgs` rejects a table that shadows it (a wiring
@@ -151,7 +154,13 @@ rejected, D-101):
   `createInitialAccountProvider()` factory (`src/server/providers.ts` —
   `src/server/` is the one layer the package layout allows to import
   concrete adapters, and `cli` may import `server`, so the CLI layer stays
-  provider-neutral).
+  provider-neutral). Its D-052 default 15 s deadline is deliberate here
+  (U-054, D-179): D-102 orders the step-6 test before the configuration
+  write (step 5's configuration half, deferred to the run's end) — a
+  fresh run has no file yet, and a re-run keeps the same answer-driven
+  factory — so the running service's
+  registry default (`createConfiguredZaiProvider`) is the one that honors
+  the configured deadline.
 - **The failure contract** — a failed test **never aborts the run**: the
   failure is explained on stderr (the provider-neutral detail plus one
   class-specific guidance line — `credentials-rejected` means the provider
@@ -745,12 +754,27 @@ read-only), and the task 068 pipeline the service itself re-runs on SIGHUP.
 - **Exit codes** — 0 exactly when the configuration validated and SIGHUP was
   delivered; every other outcome exits 1. The handler never throws.
 
+The receiving end is the server runtime since U-052 (D-177): `runServer`
+installs the SIGHUP handler whenever a reload operation exists — the
+production path always, once the application is running, via the
+composition's fault-containing wrapper — so the delivered signal performs
+§6.4's reload through the same wrapped operation the stores flow through
+(config-sync and polling feeds included) instead of terminating the
+process. Residual windows (D-177): during startup — after the §5.6 lock
+exists but before the handler installs, exactly the pid `quotameter
+reload` discovers — and in the post-dispose shutdown tail, a delivered
+SIGHUP still terminates (the OS default; systemd's `Restart=on-failure`
+recovers).
+
 Branch coverage: every outcome is seam-driven in
 `test/unit/cli-service-reload.spec.ts` (beside the payload-parse table and the
 production seams against real directories and real child processes); the three
 real-launcher routes — not-running, rejected with no signal delivered to a live
 signal-holding child, and accepted with the child's SIGHUP marker appearing
-after exit 0 — are pinned in `test/integration/cli-service-reload.spec.ts`.
+after exit 0 — are pinned in `test/integration/cli-service-reload.spec.ts`;
+the server side (a real SIGHUP to a real `quotameter run` child: alive, the
+effective configuration changed, §6.2 keep-last-valid on rejection) is pinned
+in `test/integration/cli-run.spec.ts`.
 
 ## The `status` command (task 142, spec §5.2/§7.3, decision D-114)
 
@@ -1027,7 +1051,11 @@ job. Each check composes the layer that owns its fact, never re-derived:
   yet", a refused open fails with D-114's hot-journal hint, problems
   quote the first rows). The same handle feeds `--raw`.
 - **Accounts** — per-account `validateCredentials` through the §8.1
-  contract (`createInitialAccountProvider` default), classified by
+  contract (`createInitialAccountProvider` default, whose D-052 15 s
+  deadline is deliberate for a diagnostic — U-054/D-179: the probe must
+  behave identically whatever configuration it examines, while the running
+  service's registry adapter re-reads the configured deadline per request),
+  classified by
   init-account's secret-scrubbing `classifyTestFailure`: rejected → fail
   with the replacement remedy, inconclusive → unavailable (D-052's own
   distinction), disabled → skip, an `apiKeyEnv` missing from this shell →
@@ -1094,3 +1122,48 @@ bare machine (exit 1, the init and install/run next steps), the healthy
 machine over a real migrated database with a real §5.6 lock naming a live
 child (exit 0, foreground pid in the report), the env-key residual, the
 seeded `--raw` payload, the invalid configuration, and `--help`.
+
+## The `run` command (task U-050, spec §5.2/§5.6)
+
+`run.ts` holds the §5.2 `quotameter run` handler — "Foreground execution
+for systemd and debugging", the exact invocation the generated unit's
+`ExecStart` pins (`<node> <cli> run`, §5.4). The handler is deliberately the
+thinnest in the layer:
+
+- **Lazy server import** — the handler imports `runServer`
+  (`src/server/main.ts`, task 060's callable) dynamically, inside the
+  handler, because `buildCommandTable()` loads for every CLI invocation: a
+  static import would drag the composition root, Fastify, Pino, and
+  `node:sqlite` (whose ExperimentalWarning would print on every unrelated
+  command) into `--help`. The same discipline keeps doctor's
+  `MINIMUM_NODE_VERSION` and the storage-opening commands' connection
+  imports out of the dispatch graph. A failing dynamic import propagates to
+  the dispatcher and is reported as the standard command failure
+  (`quotameter run: <message>`, exit 1).
+- **Exit-code forwarding, no output** — `runServer` owns the process
+  semantics unchanged: the runtime gate, the §6.2 refuse-to-start (reported
+  through its own `quotameter:` stderr channel), the §5.6 graceful
+  SIGTERM/SIGINT shutdown, since U-052 the SIGHUP configuration reload
+  (D-177), and U-022's best-effort stop on startup failure
+  (D-095). The handler adds nothing: a foreground service's stdout is the
+  §16 structured-log JSON stream journald collects. §5.2 defines no options
+  and no positionals for the command.
+- **Readiness for supervisors** — systemd needs no marker (`Type=exec` +
+  journald); tests and embedders signal only after the service is
+  observable, which for the real launcher is an answered `GET /api/health`
+  — the listener is the last §5.6 component, and `runServer`'s signal
+  handlers are installed in the synchronous microtask continuation right
+  after `app.start()` settles, so an answered HTTP request can never
+  precede them (the D-024 handshake invariant through the public surface;
+  `onSignalsReady` itself stays a test/embedder seam production never
+  passes).
+
+Branch coverage: `test/unit/cli-run.spec.ts` (exit-code forwarding, import
+failure propagation, the production import seam, and the full default path
+hermetically in-process — `runCli(['run'])` over temp directories refuses
+on the missing configuration and exits 1); `test/integration/cli-run.spec.ts`
+runs the real launcher — the clean-SIGTERM proof over a temporary
+configuration with a reserved port (health answered → SIGTERM → exit 0, the
+§5.6 lock released, the fatal channel silent), the §6.2 invalid-configuration
+refusal, and the lazy-graph pin (`--help` loads no `node:sqlite`); the
+launcher-level help route is pinned in `test/integration/cli-bin.spec.ts`.

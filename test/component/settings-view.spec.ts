@@ -79,6 +79,8 @@ interface SettingsOverrides {
   readonly passwordConfigured?: boolean;
   /** Whether the restart trio carries its §6.4 marker (default true). */
   readonly restartTrio?: boolean;
+  /** The applied-retention marker's value (default null — no cleanup yet). */
+  readonly appliedRetentionDays?: number | null;
 }
 
 function settingsResponse(overrides: SettingsOverrides = {}): SettingsResponse {
@@ -126,6 +128,7 @@ function settingsResponse(overrides: SettingsOverrides = {}): SettingsResponse {
       configPath: '/home/op/.config/quotameter/config.json',
       dataDir: '/home/op/.local/share/quotameter',
     },
+    appliedRetentionDays: overrides.appliedRetentionDays ?? null,
   };
 }
 
@@ -581,6 +584,84 @@ describe('settings page: field validation (client guards before requests)', () =
       );
     },
   );
+
+  it('warns per §11.3 while a drafted retention is below the applied window', async () => {
+    // The reduce-retention warning (U-053, D-178): the applied window the
+    // last completed cleanup wrote is 180; a drafted 30 means the records
+    // between the two windows go at the NEXT cleanup. The warning is
+    // advisory — the save still dispatches.
+    const backend = new FakeSettingsBackend(settingsResponse({ appliedRetentionDays: 180 }));
+    const wrapper = await mountView(backend);
+
+    const warning = () => wrapper.find('[data-testid="settings-retention-warning"]');
+    expect(warning().exists(), 'no warning before the draft changes').toBe(false);
+
+    await wrapper.find('[data-testid="settings-retention"]').setValue('30');
+    await settle();
+    expect(warning().exists()).toBe(true);
+    expect(warning().text()).toBe(
+      en.settings.general.retentionReduceWarning.replace('{days}', '30'),
+    );
+
+    // Raising the draft back to the applied window clears the warning.
+    await wrapper.find('[data-testid="settings-retention"]').setValue('180');
+    await settle();
+    expect(warning().exists()).toBe(false);
+
+    // Advisory, not blocking: a save with the reduced window dispatches.
+    await wrapper.find('[data-testid="settings-retention"]').setValue('30');
+    await wrapper.find('[data-testid="settings-save"]').trigger('submit');
+    await settle();
+    expect(putsOf(backend)).toHaveLength(1);
+    expect(JSON.parse(putsOf(backend)[0]!.body ?? '{}')).toEqual({
+      app: { historyRetentionDays: 30 },
+    });
+  });
+
+  it('an already-reduced configuration warns on load, and a completed cleanup clears it', async () => {
+    // The warning is about the PENDING deletion, not the edit action: a
+    // configured window (30) below the applied one (180) warns before any
+    // edit, and once the next cleanup rewrites the marker to the new
+    // window (the post-save reload serving 30), the warning self-clears.
+    const body = settingsResponse({ appliedRetentionDays: 180 });
+    body.settings.app.historyRetentionDays.value = 30;
+    const backend = new FakeSettingsBackend(body);
+    const wrapper = await mountView(backend);
+
+    const warning = () => wrapper.find('[data-testid="settings-retention-warning"]');
+    expect(warning().exists(), 'the unchanged-but-reduced draft warns').toBe(true);
+
+    await wrapper.find('[data-testid="settings-level"]').setValue('info');
+    await wrapper.find('[data-testid="settings-save"]').trigger('submit');
+    // The cleanup ran between the save and the reload: the served marker
+    // is now 30 — the drafts adopt it and the warning is gone.
+    backend.state.appliedRetentionDays = 30;
+    await settle();
+    expect(warning().exists()).toBe(false);
+  });
+
+  it('no applied window yet (null marker) or an invalid draft renders no warning', async () => {
+    // Null is the fresh-database/failed-cleanup arm: nothing to compare
+    // against, so lowering the draft is just an edit.
+    const backend = new FakeSettingsBackend(settingsResponse({ appliedRetentionDays: null }));
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="settings-retention"]').setValue('30');
+    await settle();
+    expect(wrapper.find('[data-testid="settings-retention-warning"]').exists()).toBe(false);
+
+    // An out-of-range draft keeps the range error alone — the warning is
+    // about a deletable window, and an invalid draft names none.
+    const applied = new FakeSettingsBackend(settingsResponse({ appliedRetentionDays: 180 }));
+    const appliedWrapper = await mountView(applied);
+    await appliedWrapper.find('[data-testid="settings-retention"]').setValue('5');
+    await appliedWrapper.find('[data-testid="settings-save"]').trigger('submit');
+    await settle();
+    expect(appliedWrapper.find('[data-testid="settings-retention-warning"]').exists()).toBe(false);
+    expect(
+      appliedWrapper.find('[data-testid="settings-general"]').findAll('.field-error'),
+    ).toHaveLength(1);
+  });
 
   it('a served zone this browser cannot confirm never blocks an unrelated save', async () => {
     // The review round's P2: the guards own the operator's edits alone —

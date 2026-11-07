@@ -1,20 +1,37 @@
 /**
  * Server entry point and process orchestration (task 060, spec §5.6).
  *
- * `runServer` is the callable behind the future `quotameter run` command
- * (spec §5.2): it verifies the runtime, starts the assembled application,
- * turns SIGTERM/SIGINT into a graceful shutdown, and returns the process exit
- * code. It never calls `process.exit` itself — the caller owns the process,
- * which keeps the orchestration testable in-process.
+ * `runServer` is the callable behind the `quotameter run` command
+ * (spec §5.2; wired as its handler by task U-050's `src/cli/run.ts`): it
+ * verifies the runtime, starts the assembled application, turns
+ * SIGTERM/SIGINT into a graceful shutdown and SIGHUP into a
+ * configuration reload (§6.4; task U-052, decision D-177), and returns
+ * the process exit code. It never calls `process.exit` itself — the
+ * caller owns the process, which keeps the orchestration testable
+ * in-process.
  *
- * Startup and shutdown *semantics* live in `src/server/app.ts`; this module
- * only wires the process to them. SIGHUP is deliberately not handled yet:
- * configuration reload (task 068) will plug into this same seam, and silently
- * swallowing SIGHUP before that would change terminal-disconnect behavior.
+ * Startup and shutdown *semantics* live in `src/server/app.ts`; this
+ * module only wires the process to them. The SIGHUP handler is installed
+ * only when a reload operation exists (D-177): the composed default
+ * always provides one, while an embedder injecting bare components keeps
+ * the OS-default disposition — a handler with nothing to reload would
+ * only swallow the signal. The foreground consequence is deliberate and
+ * documented: a `quotameter run` whose terminal disconnects survives the
+ * TTY's SIGHUP (it triggers a usually no-op reload, §16-logged), because
+ * §5.2/§6.4 designate SIGHUP as the reload channel — `quotameter reload`
+ * must not kill the service — while SIGINT/SIGTERM remain the stop
+ * channels. A signal arriving during startup keeps the OS-default
+ * disposition, exactly as for SIGTERM/SIGINT (D-024's recorded window) —
+ * a window `quotameter reload`'s lock-based discovery can reach, because
+ * the §5.6 lock names the holder pid for the whole of `app.start()`
+ * (migrations, listener bind) while the SIGHUP handler installs only
+ * after it settles; the symmetric post-dispose shutdown tail behaves the
+ * same. Both windows terminate the starting/stopping service and are
+ * D-177's recorded residual (systemd's `Restart=on-failure` recovers).
  */
 
 import { type LifecycleComponent, QuotameterApp } from './app';
-import { composeApplication } from './composition';
+import { type ComposedApplication, composeApplication } from './composition';
 import { satisfiesMinimum } from '../util/version';
 
 /** The declared minimum runtime (spec §5.1); mirrors `engines.node`. */
@@ -64,35 +81,35 @@ export function verifyRuntime(facts: RuntimeFacts): void {
 }
 
 /**
- * Assembles the application's components in startup dependency order.
+ * Assembles the application in startup dependency order.
  *
  * Bootstrap stage (task 060): the skeleton ran with no components at all,
  * which is exactly the milestone "starts and stops cleanly without collecting
- * provider data". The composition root (task U-040, decision D-140) now
- * assembles the real service — configuration, storage, the wired API —
- * through `composeApplication`, in the order spec §5.6 shutdown semantics
- * require:
+ * provider data". The composition root (task U-040, decision D-140; the
+ * polling engine since U-051/D-176) assembles the real service —
+ * configuration, storage, the §5.6 graceful drain, the polling engine, the
+ * wired API — through `composeApplication`, in the order spec §5.6 shutdown
+ * semantics require:
  *
  * 1. single-instance lock (074) — before anything touches the data directory;
  * 2. storage connection (078+) — database handle, WAL checkpoint on shutdown;
- * 3. polling service (093+) — first collection right after startup (§7.1);
- * 4. HTTP listener (146) — last, so it serves a fully assembled application.
- *
- * The polling component registers when its construction task lands; until
- * then the composed service serves the API over the landed stores with the
- * §7.2 suspension holder as the polling-side seam.
+ * 3. graceful drain (075) — bounded wait for in-flight polling work;
+ * 4. polling engine (093+, composed by U-051) — first collection right
+ *    after startup (§7.1);
+ * 5. HTTP listener (146) — last, so it serves a fully assembled application.
  *
  * The function is async because the composition loads and validates the
  * configuration before any component exists (§6.2: an invalid startup
  * configuration refuses to start — `runServer` reports the problems and
- * returns exit code 1).
+ * returns exit code 1). Since U-052 (D-177) it returns the whole composed
+ * result, not just the component list: the SIGHUP wiring needs the
+ * composition's reload wrapper beside the components.
  */
-export async function buildComponents(): Promise<readonly LifecycleComponent[]> {
-  const { components } = await composeApplication();
-  return components;
+export async function buildApplication(): Promise<ComposedApplication> {
+  return composeApplication();
 }
 
-/** Handles installed by {@link installShutdownSignals}. */
+/** Handlers installed by {@link installShutdownSignals} and {@link installReloadSignal}. */
 export interface InstalledSignals {
   /** Remove the installed listeners. */
   dispose(): void;
@@ -119,19 +136,52 @@ export function installShutdownSignals(
   };
 }
 
+/**
+ * Turns SIGHUP into a call of `reload` (§6.4; task U-052, decision D-177).
+ * The callback must handle its own errors, like the shutdown trigger — the
+ * composed application's wrapper contains every fault at `error` through
+ * the §16 logger, so a rejected or faulting reload never kills the process
+ * (§6.2 keeps the last valid configuration effective). Returns a disposer
+ * so an embedding process or test can remove the listener again;
+ * disposing restores the OS-default disposition, exactly like the
+ * shutdown pair.
+ */
+export function installReloadSignal(reload: () => void): InstalledSignals {
+  process.on('SIGHUP', reload);
+  return {
+    dispose() {
+      process.removeListener('SIGHUP', reload);
+    },
+  };
+}
+
 export interface RunServerOptions {
-  /** Components to assemble; defaults to {@link buildComponents}. */
+  /**
+   * Components to assemble; defaults to the composed application's list
+   * through {@link buildApplication}.
+   */
   readonly components?: readonly LifecycleComponent[];
+  /**
+   * The operation a SIGHUP triggers (§6.4; decision D-177): defaults to
+   * the composed application's reload wrapper when the default assembly
+   * runs, and to nothing when `components` are injected — embedders and
+   * tests opt into SIGHUP handling by providing this seam, keeping the
+   * OS-default disposition otherwise. The callback must handle its own
+   * errors (a signal handler must never throw).
+   */
+  readonly reload?: () => void;
   /** Runtime facts to verify; defaults to the current process. */
   readonly runtime?: RuntimeFacts;
   /**
-   * Announces that the application started and the shutdown signal handlers
-   * are installed — the process is gracefully stoppable from this moment.
-   * Signal-readiness seam for embedders and the lifecycle tests (the
-   * child-process specs must not signal before the handlers exist, U-001);
-   * omitting it, as normal runs do, changes nothing. A throwing callback
-   * rejects {@link runServer} without stopping the started components —
-   * fail-fast for a broken readiness hook.
+   * Announces that the application started, the shutdown signal handlers
+   * are installed, and — when a reload operation exists (D-177) — the
+   * SIGHUP reload handler is installed too: the process is gracefully
+   * stoppable and reloadable from this moment. Signal-readiness seam for
+   * embedders and the lifecycle tests (the child-process specs must not
+   * signal before the handlers exist, U-001); omitting it, as normal runs
+   * do, changes nothing. A throwing callback rejects {@link runServer}
+   * without stopping the started components — fail-fast for a broken
+   * readiness hook.
    */
   readonly onSignalsReady?: () => void;
 }
@@ -156,6 +206,14 @@ export interface RunServerOptions {
  * arriving during startup keep the OS-default disposition. The graceful
  * shutdown coordinator (task 075) owns this seam: it must move installation
  * ahead of `app.start()` and define stop-during-startup semantics.
+ *
+ * SIGHUP never terminates the process: when a reload operation exists
+ * (D-177) it triggers §6.4's reload through the composition's wrapper,
+ * whose outcome — success, rejection, or fault — leaves the shutdown
+ * promise and the exit code untouched (§6.2 keeps the last valid
+ * configuration effective; a fault is contained at `error` through the
+ * §16 logger). A reload still in flight when shutdown completes dies with
+ * the process.
  */
 export async function runServer(options: RunServerOptions = {}): Promise<number> {
   try {
@@ -166,10 +224,20 @@ export async function runServer(options: RunServerOptions = {}): Promise<number>
   }
 
   let app: QuotameterApp | undefined;
+  let reload: (() => void) | undefined;
   try {
-    app = new QuotameterApp({
-      components: options.components ?? (await buildComponents()),
-    });
+    if (options.components === undefined) {
+      // The production assembly: the composed result carries the SIGHUP
+      // reload operation beside the components (D-177).
+      const composed = await buildApplication();
+      reload = options.reload ?? composed.reloadOnSighup;
+      app = new QuotameterApp({ components: composed.components });
+    } else {
+      // An embedder's or test's components: no reload operation unless one
+      // is injected — the OS-default SIGHUP disposition stays (D-177).
+      reload = options.reload;
+      app = new QuotameterApp({ components: options.components });
+    }
     await app.start();
   } catch (error) {
     // The startup error is reported first — it stays the process's diagnosis
@@ -200,6 +268,11 @@ export async function runServer(options: RunServerOptions = {}): Promise<number>
       })
       .finally(resolveShutdown);
   });
+  // Beside the shutdown pair, and only when there is something to reload:
+  // SIGHUP becomes §6.4's reload (D-177). Disposed before the shutdown
+  // pair below (LIFO), so a SIGHUP after shutdown completion regains the
+  // OS default exactly like SIGTERM/SIGINT.
+  const reloadSignal = reload === undefined ? undefined : installReloadSignal(reload);
 
   try {
     // First statement of the try on purpose: the finally clause releases the
@@ -207,6 +280,7 @@ export async function runServer(options: RunServerOptions = {}): Promise<number>
     options.onSignalsReady?.();
     await shutdownCompleted;
   } finally {
+    reloadSignal?.dispose();
     signals.dispose();
     clearInterval(keepAlive);
   }

@@ -954,7 +954,13 @@ signal-less credential check (endpoint 4), `aborted` cannot occur — it fires o
 caller's §8.1 signal, which `validateCredentials` does not receive. Applicability specifics:
 
 - **Timeout:** §7.2's configured value (default 15 s) is one total deadline per request; a
-  cycle makes up to three sequential requests, each with its own deadline.
+  cycle makes up to three sequential requests, each with its own deadline. The value reaches
+  the transport through the composition root's live-reader factory
+  (`createConfiguredZaiProvider`, `src/server/providers.ts`; U-054/D-179): each request derives
+  the deadline from the effective `providers.zai-coding-plan.requestTimeoutSeconds` — a
+  §6.4-live field (D-026), so a reload applies on the next request with no restart — while the
+  CLI's pre-configuration paths (`init` step 6, `doctor`) use the D-052 default 15 s factory
+  (`createInitialAccountProvider`), recorded in D-179.
 - **Response size:** the transport's 64 KiB cap applies per response. Observed bodies sit far
   below it (the committed sanitized fixtures are 0.3–3.8 KiB); a
   subscription list with many records is the only plausible growth direction, and the cap
@@ -1049,19 +1055,20 @@ Recognized identities (D-047):
 
 #### Field-by-field mapping
 
-| Endpoint-1 source                       | §8.4 target                                                                                                  | Status and evidence                                                                                                                      |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| envelope `code`/`data`                  | success discriminator + unwrap ([envelope rules](#response-envelopes))                                       | verified — 093 envelope, prototype tolerance                                                                                             |
-| `data.level` (`"pro"` observed)         | `ProviderSnapshot.planName`, verbatim; a non-string value counts as absent (the endpoint-2 fallback applies) | verified — capture and `sanitized/zai-quota-limit.json`                                                                                  |
-| recognized `limits[]` entry             | one `NormalizedMetric` per the recognition table above                                                       | verified shapes                                                                                                                          |
-| `limits[].usage`                        | `limit`                                                                                                      | field verified; **assumed reading** (D-047 — [value semantics](#value-semantics-d-0471--the-question-093-posed-and-095-echoed-open))     |
-| `limits[].currentValue`                 | `used`                                                                                                       | field verified; **assumed reading** (D-047)                                                                                              |
-| `limits[].remaining`                    | `remaining`                                                                                                  | field verified; reading assumed with the triple (D-047)                                                                                  |
-| `limits[].percentage`                   | `percentUsed`, verbatim                                                                                      | field verified; scale **pinned percent** (D-047 — [percentage scale](#percentage-scale-d-0472--the-question-095-deliberately-left-open)) |
-| — (derived: `100 − percentUsed`)        | `percentRemaining`, listed in `derivedFields`                                                                | derived from a supplied/derived percentage — allowed; absolutes never derived from percentages (§8.4)                                    |
-| `limits[].nextResetTime` (epoch ms)     | `resetsAt`, verbatim — already UTC epoch milliseconds; the prototype's ÷1000 is rendering only               | verified — 093 timestamps                                                                                                                |
-| `limits[].usageDetails`                 | **unmapped** — §8.4 has no per-tool breakdown field                                                          | shape verified; deliberately dropped, documented here                                                                                    |
-| `limits[].number` on month/week windows | **unmapped** — informational; the window is calendar-bound                                                   | prototype label                                                                                                                          |
+| Endpoint-1 source                       | §8.4 target                                                                                                                                | Status and evidence                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| the delivered response's HTTP status    | `ProviderSnapshot.httpStatus` — endpoint 1's 2xx, the metrics-originating exchange (D-047); §11.2's success-path run `http_status` (D-169) | structural — the transport's delivery gate (2xx only)                                                                                    |
+| envelope `code`/`data`                  | success discriminator + unwrap ([envelope rules](#response-envelopes))                                                                     | verified — 093 envelope, prototype tolerance                                                                                             |
+| `data.level` (`"pro"` observed)         | `ProviderSnapshot.planName`, verbatim; a non-string value counts as absent (the endpoint-2 fallback applies)                               | verified — capture and `sanitized/zai-quota-limit.json`                                                                                  |
+| recognized `limits[]` entry             | one `NormalizedMetric` per the recognition table above                                                                                     | verified shapes                                                                                                                          |
+| `limits[].usage`                        | `limit`                                                                                                                                    | field verified; **assumed reading** (D-047 — [value semantics](#value-semantics-d-0471--the-question-093-posed-and-095-echoed-open))     |
+| `limits[].currentValue`                 | `used`                                                                                                                                     | field verified; **assumed reading** (D-047)                                                                                              |
+| `limits[].remaining`                    | `remaining`                                                                                                                                | field verified; reading assumed with the triple (D-047)                                                                                  |
+| `limits[].percentage`                   | `percentUsed`, verbatim                                                                                                                    | field verified; scale **pinned percent** (D-047 — [percentage scale](#percentage-scale-d-0472--the-question-095-deliberately-left-open)) |
+| — (derived: `100 − percentUsed`)        | `percentRemaining`, listed in `derivedFields`                                                                                              | derived from a supplied/derived percentage — allowed; absolutes never derived from percentages (§8.4)                                    |
+| `limits[].nextResetTime` (epoch ms)     | `resetsAt`, verbatim — already UTC epoch milliseconds; the prototype's ÷1000 is rendering only                                             | verified — 093 timestamps                                                                                                                |
+| `limits[].usageDetails`                 | **unmapped** — §8.4 has no per-tool breakdown field                                                                                        | shape verified; deliberately dropped, documented here                                                                                    |
+| `limits[].number` on month/week windows | **unmapped** — informational; the window is calendar-bound                                                                                 | prototype label                                                                                                                          |
 
 #### Value semantics (D-047.1 — the question 093 posed and 095 echoed open)
 

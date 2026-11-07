@@ -127,6 +127,16 @@ export interface ProviderSnapshot {
   collectedAt: number;
   /** Provider-reported plan name, when available. */
   planName?: string;
+  /**
+   * The HTTP status of the exchange that produced this snapshot (2xx by the
+   * transport's delivery gate), when the adapter knows it — optional
+   * transport evidence beyond §8.4's stated shape, carried so §11.2's
+   * `collection_runs.http_status` can retain "whenever a response arrived"
+   * (D-048) on the success path too (decision D-169, the successor D-069
+   * named). Absent on adapters that do not stamp it; never a failure's
+   * status — failures travel as errors, not snapshots.
+   */
+  httpStatus?: number;
   /** Metrics collected in this cycle; keys are unique within a snapshot. */
   metrics: NormalizedMetric[];
 }
@@ -255,6 +265,18 @@ export function findProviderSnapshotProblems(snapshot: ProviderSnapshot): string
   }
   if (typeof snapshot.collectedAt !== 'number' || !Number.isFinite(snapshot.collectedAt)) {
     problems.push('collectedAt: must be a finite UTC epoch-milliseconds timestamp');
+  }
+  // The optional transport-evidence field (D-169): same 100–599 retention
+  // range §11.2's `collection_runs_http_status_range` CHECK enforces, checked
+  // at the boundary so a wiring bug in an adapter fails here instead of at
+  // the database.
+  if (
+    snapshot.httpStatus !== undefined &&
+    (!Number.isInteger(snapshot.httpStatus) ||
+      snapshot.httpStatus < 100 ||
+      snapshot.httpStatus > 599)
+  ) {
+    problems.push('httpStatus: must be an integer in [100, 599] when present');
   }
   if (!Array.isArray(snapshot.metrics)) {
     problems.push('metrics: must be an array of normalized metrics');

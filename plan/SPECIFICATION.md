@@ -1,13 +1,14 @@
 # Quotameter — Technical Specification
 
-**Document version:** 1.0 (final)  
+**Document version:** 1.1 (supersedes 1.0)  
 **Project/package/CLI name:** `quotameter`  
 **Application type:** Self-hosted personal web service for a Linux VPS  
 **Primary runtime:** Node.js `>=22.13.0` + TypeScript (`strict`)  
 **Repository:** Public GitHub repository  
 **Package distribution:** Public npm package with CLI and bundled web UI  
 **Author attribution for the original prototype:** Den Brooks, `denis@yepbro.pro`  
-**Specification date:** 28 October 2026
+**Specification date:** 28 October 2026  
+**Amendments (1.1, 6 November 2026):** §7.3 archived-status dominance; §13 authenticated health diagnostics naming the polling engine and the live restart-pending settings view; §14.5 restart-marking class/state split — decision [D-180](../DECISIONS.md).
 
 ## 1. Purpose and scope
 
@@ -206,6 +207,8 @@ When choosing the primary displayed status, use this order:
 
 Also support `Disabled` and `Not configured` as separate states.
 
+An account whose storage row is archived (§8.2) never displays a runtime status: the archived lifecycle fact outranks the entire precedence list above, and the accounts surface keeps the archived state and the archive time visible.
+
 ### 7.4 Sanitized raw responses
 
 Store a provider response only when parsing/schema validation fails. Sanitize it before storage, cap each response at 64 KiB, retain no more than 20 responses per account and no more than 30 days, and expose these responses only through `quotameter doctor --raw <account>` (never over HTTP or in the web UI).
@@ -402,24 +405,24 @@ Show separate timeline indicators for (a) failed collection cycles, taken from `
 
 The API is internal to the web interface. Define every request and response through TypeBox/JSON Schema and generate OpenAPI from the same schema. All endpoints require authentication when authentication is enabled, except the public health response as described below.
 
-| Method   | Path                                  | Purpose                                                                                                                      |
-| -------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `GET`    | `/api/health`                         | Unauthenticated response contains only `{ "status": "ok" }`; authenticated response may include process/database diagnostics |
-| `GET`    | `/api/status`                         | Service state and each account's status, last success, and last error                                                        |
-| `GET`    | `/api/providers`                      | Available provider types and read-only peak-hour schedules                                                                   |
-| `GET`    | `/api/accounts`                       | Accounts, with keys masked                                                                                                   |
-| `POST`   | `/api/accounts`                       | Add an account; key is write-only                                                                                            |
-| `PATCH`  | `/api/accounts/:id`                   | Change label, enable state, or key                                                                                           |
-| `DELETE` | `/api/accounts/:id`                   | Archive; `?purgeHistory=true` explicitly purges history                                                                      |
-| `POST`   | `/api/accounts/:id/test`              | Test provider connection                                                                                                     |
-| `GET`    | `/api/quota`                          | Latest successful snapshot for `accountId`                                                                                   |
-| `GET`    | `/api/history`                        | Metric series by `accountId`, `metric`, `from`, `to`, `maxPoints`                                                            |
-| `GET`    | `/api/events`                         | Resets, gaps, and collection failures by account/time/metric                                                                 |
-| `GET`    | `/api/peak-hours`                     | UTC peak/off-peak intervals for `accountId`, `from`, `to`                                                                    |
-| `GET`    | `/api/settings`                       | Safe settings view with secrets omitted/masked                                                                               |
-| `PUT`    | `/api/settings`                       | Update settings allowed for runtime modification                                                                             |
-| `POST`   | `/api/auth/login`, `/api/auth/logout` | Login and logout                                                                                                             |
-| `GET`    | `/api/auth/session`                   | Current session and auth-mode information                                                                                    |
+| Method   | Path                                  | Purpose                                                                                                                                                                           |
+| -------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/health`                         | Unauthenticated response contains only `{ "status": "ok" }`; authenticated response may include process and database diagnostics, including whether the polling engine is running |
+| `GET`    | `/api/status`                         | Service state and each account's status, last success, and last error                                                                                                             |
+| `GET`    | `/api/providers`                      | Available provider types and read-only peak-hour schedules                                                                                                                        |
+| `GET`    | `/api/accounts`                       | Accounts, with keys masked                                                                                                                                                        |
+| `POST`   | `/api/accounts`                       | Add an account; key is write-only                                                                                                                                                 |
+| `PATCH`  | `/api/accounts/:id`                   | Change label, enable state, or key                                                                                                                                                |
+| `DELETE` | `/api/accounts/:id`                   | Archive; `?purgeHistory=true` explicitly purges history                                                                                                                           |
+| `POST`   | `/api/accounts/:id/test`              | Test provider connection                                                                                                                                                          |
+| `GET`    | `/api/quota`                          | Latest successful snapshot for `accountId`                                                                                                                                        |
+| `GET`    | `/api/history`                        | Metric series by `accountId`, `metric`, `from`, `to`, `maxPoints`                                                                                                                 |
+| `GET`    | `/api/events`                         | Resets, gaps, and collection failures by account/time/metric                                                                                                                      |
+| `GET`    | `/api/peak-hours`                     | UTC peak/off-peak intervals for `accountId`, `from`, `to`                                                                                                                         |
+| `GET`    | `/api/settings`                       | Safe settings view with secrets omitted/masked, plus the live list of restart-requiring fields currently pending a restart (the effective-vs-startup diff)                        |
+| `PUT`    | `/api/settings`                       | Update settings allowed for runtime modification                                                                                                                                  |
+| `POST`   | `/api/auth/login`, `/api/auth/logout` | Login and logout                                                                                                                                                                  |
+| `GET`    | `/api/auth/session`                   | Current session and auth-mode information                                                                                                                                         |
 
 API requirements:
 
@@ -464,7 +467,7 @@ ECharts' time axis uses local time or UTC only. Use a numeric axis based on epoc
 
 ### 14.5 Settings
 
-Expose polling interval (60–3600 seconds), display time-zone search over IANA zones, history-retention days, theme, and account management/connection tests. Show the peak-hours schedule read-only with schedule time zone, windows, and multipliers. Allow password changes in modes that use a password. Show configuration/data paths read-only. Clearly mark settings requiring a process restart, environment-overridden fields as read-only, and all secrets as masked.
+Expose polling interval (60–3600 seconds), display time-zone search over IANA zones, history-retention days, theme, and account management/connection tests. Show the peak-hours schedule read-only with schedule time zone, windows, and multipliers. Allow password changes in modes that use a password. Show configuration/data paths read-only. Clearly mark settings requiring a process restart — distinguishing fields whose class requires a restart from values currently pending one (changed and adopted, awaiting a process restart) — treat environment-overridden fields as read-only, and mask all secrets.
 
 ### 14.6 Statuses and authentication screens
 

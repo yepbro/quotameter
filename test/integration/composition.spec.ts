@@ -23,7 +23,7 @@ import { withTempDir } from '../helpers/isolation';
 /**
  * The U-040 done-condition, executable end to end: the production
  * composition — `composeApplication`, the same construction `runServer`
- * assembles through `buildComponents()` — implements the D-128
+ * assembles through `buildApplication()` — implements the D-128
  * `AccountConfigStore` and the D-130 `SettingsStore` over a real temp
  * `config.json`, config-syncs configured accounts into real migrated
  * SQLite rows, holds the D-064 suspension state lifted by a successful

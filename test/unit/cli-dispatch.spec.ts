@@ -247,13 +247,29 @@ describe('command help', () => {
   });
 });
 
-describe('stub dispatch (tasks 129–145 replace these)', () => {
-  it('reports a top-level command as not implemented and exits 1', async () => {
-    const result = await cli(['run']);
-    expect(result.code).toBe(1);
-    expect(result.out).toBe('');
-    expect(result.err).toBe('quotameter run: not implemented yet\n');
+describe('the run command row (real since U-050)', () => {
+  it('declares no options and no positional arguments (§5.2 defines none)', () => {
+    const run = buildCommandTable().find((command) => command.name === 'run');
+    expect(run?.kind).toBe('leaf');
+    if (run?.kind === 'leaf') {
+      expect(run.options).toEqual({});
+      expect(run.maxPositionals).toBe(0);
+    }
   });
+
+  it('shows usage and summary for "run --help"', async () => {
+    const result = await cli(['run', '--help']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('Usage: quotameter run [options]');
+    expect(result.out).toContain('Foreground execution for systemd and debugging');
+    expect(result.out).toContain('-h, --help');
+  });
+
+  // Invoking `run` itself is NOT exercised here: the real handler starts
+  // the real server (a child-process concern). Its unit contract — lazy
+  // import, exit-code forwarding, the §6.2 refusal through the full
+  // dispatch — lives in test/unit/cli-run.spec.ts; the real-launcher
+  // SIGTERM proof in test/integration/cli-run.spec.ts.
 });
 
 describe('injected command table (pluggable dispatch)', () => {
@@ -417,22 +433,17 @@ describe('dispatch-table pinning (U-006 mutation triage)', () => {
     ]);
   });
 
-  it('reports every stubbed command with its exact full command path', async () => {
-    // `init` is real since task 130 (it prompts on stdin — exercising it in
-    // this table would touch the test runner's own stdin); `service
-    // install`/`uninstall` are real since task 139, `start`/`stop`/
-    // `restart` since task 140, `reload` since task 141, `status`
-    // since task 142, `logs` since task 143, `passwd` since task 144,
-    // and `doctor` since task 145 (they probe the machine, read the user
-    // database or the filesystem, prompt, or may query the service
-    // manager, spawn journalctl or timedatectl, or run real sockets —
-    // likewise covered by the dedicated suites, which inject every seam or
-    // run the real launcher). Both behaviors are covered elsewhere.
-    for (const path of [['run']] as const) {
-      const result = await cli([...path]);
-      expect(result.code, `exit 1 for ${path.join(' ')}`).toBe(1);
-      expect(result.err).toBe(`quotameter ${path.join(' ')}: not implemented yet\n`);
-    }
+  it('registers the full §5.2 leaf surface (10 top-level leaves + 2 subcommands)', () => {
+    // A shape pin, deliberately: it fixes the table's breadth, not handler
+    // reality — a handler's aliveness is behavioral and pinned where the
+    // behavior lives (cli-run.spec.ts dispatches `run` through the real
+    // table and asserts the stub message is absent; every other command's
+    // dedicated suite invokes its handler through injected seams).
+    const leaves: LeafCommand[] = buildCommandTable().flatMap((command) =>
+      command.kind === 'group' ? command.subcommands : [command],
+    );
+    expect(leaves.length).toBe(12);
+    expect(leaves.every((leaf) => typeof leaf.run === 'function')).toBe(true);
   });
 });
 

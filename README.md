@@ -22,7 +22,7 @@ Designed to be installed and operated by one person on their own Linux VPS: dist
 
 ## Project status
 
-The project is in the bootstrapping stage: the specification and the task plan are complete, and implementation work follows [plan/tasks.md](plan/tasks.md) in order. A reproducible Docker-based development environment and setup instructions arrive with Stage 1 of the plan; until then, `plan/SPECIFICATION.md` is the single source of truth for every design decision.
+Implementation follows [plan/tasks.md](plan/tasks.md) in order, one task per commit. Stages 0–13 have landed: the Docker development environment and quality gates, the layered server architecture with configuration and SQLite storage, the Z.ai Coding Plan provider with polling and retries, time-zone and peak-hours handling with reset detection and history gaps, the CLI, the secured HTTP API, and the Vue web interface with E2E acceptance tests. Remaining plan work is Stage 14 — packaging, final documentation, MVP validation, and the first npm release — plus ongoing hardening tracked as unplanned tasks; no release has been published yet. [plan/SPECIFICATION.md](plan/SPECIFICATION.md) remains the single source of truth for every design decision.
 
 ## Development environment
 
@@ -116,7 +116,7 @@ The application separates server, CLI, provider adapters, services, database acc
 ```
 bin/            quotameter launcher (plain JS, no build step)
 src/
-  schemas/      TypeBox contracts at every trust boundary (leaf)
+  schemas/      TypeBox contracts (config, API) + the §8.4 model (leaf)
   util/         cross-cutting helpers: clock, logger, version (leaf)
   config/       configuration mechanics: XDG paths, loading, atomic writes
   providers/    provider core (registry, transport) + one <id>/ dir per adapter

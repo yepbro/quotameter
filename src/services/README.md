@@ -299,10 +299,15 @@ key-change release on every configuration observation (idempotent by
 D-064's design), so a successful manual test lifts an `Auth rejected`
 pause, a refused one keeps it, and a key rotation releases it without a
 test. `keyIdentityOfSecret` is the single identity vocabulary (sha256 of
-the resolved secret) both observations share. The polling engine becomes
-the holding side for polled cycles when its composition task lands; this
-holder stays the composition's seam so the two cannot disagree. Unit-pinned
-in `test/unit/account-suspensions.spec.ts`.
+the resolved secret) both observations share. Since the polling engine
+joined the composition (U-051, D-176), `polledCycleOutcome` feeds the
+holder every settled, non-stale cycle classification — the same D-064
+events the engine's own internal machine consumes, so the two pure
+machines stay in lockstep (the engine gates dispatch; this holder is the
+`/api/status` seam) — and `dropAccount` drops an account's episode beside
+the engine's dropped entry when it leaves the polled set (the restart
+equivalence). Unit-pinned in
+`test/unit/account-suspensions.spec.ts`.
 
 Landed: [`polling-status.ts`](./polling-status.ts) — the account status
 derivation (task 111, decision D-070): `deriveAccountStatus(input,
@@ -331,26 +336,37 @@ environment per D-114), and §14.3's overview are the consumers.
 Landed: [`polling-persist.ts`](./polling-persist.ts) — the run writer behind
 the scheduler's settle seam (task 110, decision D-069):
 `createCycleRecorder({ account, provider, repository, clock, intervalSeconds })`
-produces one account's D-066 closure pair: `attempt(signal)` stamps the
+produces one account's D-066 closures: `attempt(signal)` stamps the
 cycle's wall-clock start (§7.1's actual collection timestamps) and makes the
 raw `fetchSnapshot` call D-059's wrapper needs unwrapped;
 `settleCycle(result)` classifies the retried cycle with task 105, persists it
 through `persistCollectionCycle` (D-060's §11.1 transaction — one
 `collection_runs` row per cycle, the snapshot with its metric rows only for a
 successful one, the §7.4 sanitized payload beside a parse-error run), and
-returns the classification the engine gates on. A provider-level success
-whose value fails §8.4 validation (the seam's input is `unknown`) becomes a
-`parse_error` run without a snapshot; a caller abort classifies `'cancelled'`
-and is deliberately unpersisted (service lifecycle — §12.2's no-record
-class); an error outside both taxonomies throws, contained per §7.2. The
-adapter parse failure is recognized structurally (`reason`/
-`sanitizedPayload`/`httpStatus` — the layout forbids importing the adapter
-island), `retry_after_seconds` is `deferNextPoll`'s decision at the settle
+returns the classification the engine gates on; `abandonCycle()` drops the
+start stamp when the wrapper itself threw and no settle can ever come —
+the engine's notification hook (U-035, D-169) without which a thrown
+wrapper's stamp bled into the next run row's `started_at`. A provider-level
+success whose value fails §8.4 validation (the seam's input is `unknown`)
+becomes a `parse_error` run without a snapshot; a caller abort classifies
+`'cancelled'` and is deliberately unpersisted (service lifecycle — §12.2's
+no-record class); an error outside both taxonomies throws, contained per
+§7.2. Since U-035 (D-169) a successful run retains the snapshot's optional
+transport evidence — the delivered 2xx of the exchange that produced it —
+as §11.2's `http_status`, through the same classification the failure
+statuses ride. The adapter parse failure is recognized structurally
+(`reason`/`sanitizedPayload`/`httpStatus`/`contentType` — the layout forbids
+importing the adapter island), its observed `Content-Type` rides the §7.4
+payload as §11.2's raw-response "content type",
+`retry_after_seconds` is `deferNextPoll`'s decision at the settle
 reading (D-062: seconds only for a deferred 429, `NULL` otherwise),
 `intervalSeconds` is read at settle (§11.2's "interval in effect"), and §12.1
 reset-event detection (tasks 117/118) plugs into the success write's empty
 `events` array. The one-file widening of D-067's raw-payload gate for this
-write-side composer is recorded in D-069.
+write-side composer is recorded in D-069. The recorder is composed into
+the running service per pollable account by
+[`../server/polling.ts`](../server/polling.ts) since U-051 (D-176), whose
+settle wrapper adds the D-064 holder feed around it.
 
 Landed: [`polling-scheduler.ts`](./polling-scheduler.ts) — the §7.1 polling
 loop engine (task 109, decision D-066): `createPollingScheduler(options)`
@@ -368,22 +384,34 @@ the wall clock feeds only the epoch-expressed gates — the D-062
 and the D-064 suspension cadence (hourly verification probes through
 `admitVerification`, releases by key change via `setAccounts`, manual test
 via `requestManualTest`, or a successful probe). Each account is an
-injectable closure pair: `attempt(signal)` (the raw fetch, wrapped in
+injectable closure set: `attempt(signal)` (the raw fetch, wrapped in
 D-059's `runCycleWithRetries` by the engine, seams passed through) and
 `settleCycle(result)` — task 110's classify+persist seam, whose returned
 D-048 classification drives every scheduling decision; a throwing seam is
-contained (the account reschedules on the plain interval, §7.2 isolation).
+contained (the account reschedules on the plain interval, §7.2 isolation) —
+plus the optional `abandonCycle()` hook the engine invokes when the wrapper
+itself threw, so a never-settling cycle leaves no per-cycle state behind
+(U-035/D-169).
 `setAccounts`/`setIntervalMs` handle mid-run changes (added accounts poll
 immediately; a key change mid-flight discards the stale cycle's outcome —
 an old key's 401 never suspends a new key; interval changes re-anchor);
 `requestManualTest` owes the account one attempt — a flag consumed at
 dispatch, so it survives an in-flight cycle and an interval change, and
-still respects the `Retry-After` gate. `stop()` is §5.6's stop-scheduling —
+still respects the `Retry-After` gate; `manualTestRejected` (additive,
+D-176) feeds the engine's own D-064 machine an auth-error outcome when a
+manual connection test refuses the key — §7.2's pause holds on the engine
+side of a refused manual test, with any still-owed attempt dropped.
+`stop()` is §5.6's stop-scheduling —
 abort every live flight, resolve promptly — with the optional structural
 in-flight tracker (D-020) for the server's graceful drain; a wiring-level
 loop failure is retained and observable (`running` turns false, `stop()`
 re-surfaces the error), and every wake is sliced to `MAX_WAKE_MS` (one
-hour) so a wall-regressed gate wait can never busy-spin.
+hour) so a wall-regressed gate wait can never busy-spin. The scheduler is
+composed into the running service — the shared clock, the shared tracker,
+and one recorder per pollable account — by
+[`../server/polling.ts`](../server/polling.ts) since U-051 (D-176):
+`src/server/composition.ts` registers it in the documented §5.6 order and
+feeds `setAccounts`/`setIntervalMs` from §6.4 reloads.
 
 Landed: [`peak-hours-intervals.ts`](./peak-hours-intervals.ts) — the §9.3
 peak-hours interval calculation (task 114, decision D-073): a validated

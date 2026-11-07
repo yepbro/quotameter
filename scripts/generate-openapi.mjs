@@ -13,10 +13,10 @@
  * Output directory: `OPENAPI_DIR` when set, otherwise `docs` (repository
  * root — the host-friendly default). The development container sets
  * `OPENAPI_DIR` to a path inside its data volume (see compose.yaml and
- * docs/agents/environment.md): the container runs as uid 1000 and must not
- * write into the bind-mounted repository tree. `make openapi` generates
- * into the volume and streams the file back, so the repository copy is
- * always written by a host-side process — the `make schema` pattern.
+ * docs/agents/environment.md): generated output goes to the data volume,
+ * not the bind-mounted repository tree, and `make openapi` generates into
+ * the volume and streams the file back, so the repository copy changes
+ * through one deliberate host-side step — the `make schema` pattern.
  *
  * The artifact is formatted with the repository's Prettier configuration —
  * the one `npm run format:check` enforces on the committed file — resolved

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isValidTimeZoneName } from '../../src/schemas/config';
 import {
+  ZONE_CHECK_MEMO_CAPACITY,
   createFixedClock,
   createSystemClock,
   epochMsFromIso,
@@ -136,6 +137,89 @@ describe('isValidTimeZone', () => {
     expect(isValidTimeZone('local')).toBe(false);
     expect(isValidTimeZone('system')).toBe(false);
     expect(isValidTimeZone('default')).toBe(false);
+  });
+});
+
+describe('isValidTimeZone memo growth is bounded (decision D-171)', () => {
+  it('answers fresh names correctly once the memo is at capacity', () => {
+    // Fill the memo to ZONE_CHECK_MEMO_CAPACITY distinct names using
+    // synthetic names no other test in this file uses: the guard then
+    // skips caching, and every further answer comes from a fresh
+    // computation — memoization stays transparent at capacity.
+    for (let index = 0; index < ZONE_CHECK_MEMO_CAPACITY; index += 1) {
+      expect(isValidTimeZone(`definitely-not-a-zone-${index}`)).toBe(false);
+    }
+    // Fresh names beyond the cap: correct on the uncached first call…
+    expect(isValidTimeZone('Pacific/Chatham')).toBe(true);
+    expect(isValidTimeZone('also-not-a-zone-past-the-cap')).toBe(false);
+    // …and identical on repeat — cached or recomputed, the verdict is
+    // deterministic per name.
+    expect(isValidTimeZone('Pacific/Chatham')).toBe(true);
+    expect(isValidTimeZone('also-not-a-zone-past-the-cap')).toBe(false);
+  });
+
+  it('observes the bound: cached names skip the Intl construction, beyond-capacity names pay it per call', () => {
+    // The capacity guard's observable face (review P2-1): results are
+    // identical cached or not, so the bound is watched through the one
+    // side effect memoization exists to skip — the `Intl.DateTimeFormat`
+    // construction `resolvableByIntl` performs. A counting subclass
+    // replaces the global for the test's duration (restored in finally;
+    // nothing else runs inside this test's window), so no production
+    // seam is added for tests.
+    //
+    // Saturate first (idempotent: the fill above may already have; an
+    // already-full map stays full).
+    for (let index = 0; index < ZONE_CHECK_MEMO_CAPACITY; index += 1) {
+      isValidTimeZone(`saturation-fill-${index}`);
+    }
+    const realDateTimeFormat = Intl.DateTimeFormat;
+    let constructions = 0;
+    // A delegating constructable stub: `new`-called (what
+    // `resolvableByIntl` does — an explicit `return` from a
+    // `new`-invoked function replaces the fresh `this`), it counts
+    // before delegating, so an invalid zone's throw still counts as a
+    // construction attempt. A plain function expression, not an arrow:
+    // arrows have no [[Construct]] and `new` on one throws. The double
+    // cast bridges onto the interface's callable-constructor type; the
+    // original is restored in `finally`.
+    const countingFormatter = function (
+      ...args: ConstructorParameters<typeof Intl.DateTimeFormat>
+    ): Intl.DateTimeFormat {
+      constructions += 1;
+      return new realDateTimeFormat(...args);
+    };
+    try {
+      Intl.DateTimeFormat = countingFormatter as unknown as typeof Intl.DateTimeFormat;
+      // A name cached before saturation: repeated lookups construct
+      // nothing — the memoization itself, pinned for the first time.
+      const before = constructions;
+      expect(isValidTimeZone('UTC')).toBe(true);
+      expect(isValidTimeZone('UTC')).toBe(true);
+      expect(constructions - before).toBe(0);
+      // A fresh name beyond the cap: computed per call — every lookup
+      // pays the construction, the observable face of the skipped
+      // cache write. (An always-cache or never-cache mutant of the
+      // guard dies here: 0 or 1 instead of 2.)
+      expect(isValidTimeZone('uncached-probe-fresh')).toBe(false);
+      expect(isValidTimeZone('uncached-probe-fresh')).toBe(false);
+      expect(constructions - before).toBe(2);
+    } finally {
+      Intl.DateTimeFormat = realDateTimeFormat;
+    }
+  });
+
+  it('sizes the capacity over the engine’s own canonical zone list', () => {
+    // The sizing rationale made executable, both halves: the capacity
+    // must hold at least the engine's listed IANA names AND at least
+    // the tzdb's ≈600 names including backward links (the engine lists
+    // only ≈420 of those), so a legitimate workload that validates
+    // every tzdb name through this gate stays fully cached. Either
+    // relation failing forces a capacity revisit instead of silently
+    // uncaching legitimate traffic.
+    const engineZones = Intl.supportedValuesOf('timeZone');
+    expect(engineZones.length).toBeGreaterThan(0);
+    expect(ZONE_CHECK_MEMO_CAPACITY).toBeGreaterThanOrEqual(engineZones.length);
+    expect(ZONE_CHECK_MEMO_CAPACITY).toBeGreaterThanOrEqual(600);
   });
 });
 

@@ -1,12 +1,14 @@
 # Daily mutation testing with issue-based triage (spec §17.3, task 055;
-# cadence decided in DECISIONS.md D-045).
+# cadence decided in DECISIONS.md D-045, crash-honesty gating D-172).
 #
 # Runs the full Stryker suite once a day on `master` (also triggerable
 # manually) and upserts a rolling GitHub issue labeled `mutation-report`:
-# the body always shows the latest report, each run appends its summary as
-# a comment so the history stays reviewable. Uses the preinstalled `gh`
-# CLI instead of a third-party action (the repository pins actions by
-# commit SHA and adds none here).
+# the body always shows the latest SCORED report, each run appends its
+# summary as a comment so the history stays reviewable. A run that dies
+# before scoring (no `reports/mutation/mutation.json`) is reported as a
+# crash — never as a below-threshold score — and never replaces the last
+# scored body. Uses the preinstalled `gh` CLI instead of a third-party
+# action (the repository pins actions by commit SHA and adds none here).
 name: mutation
 
 on:
@@ -42,16 +44,32 @@ jobs:
         run: npm ci
 
       # Below-threshold results must still produce the triage issue, so the
-      # step's failure is recorded instead of stopping the job.
+      # step's failure is recorded instead of stopping the job. The output
+      # is teed to a log the crash report extracts the failing initial-run
+      # tests from (D-172); `shell: bash` supplies pipefail so the step's
+      # outcome still reflects Stryker's own exit, not tee's.
       - name: Run mutation tests
         id: stryker
         continue-on-error: true
+        shell: bash
         # Non-root execution — the same §6.3 permission-arm requirement as
         # CI's test job (see ci.yml's note); setpriv avoids PAM.
         run: |
           chown -R node:node "$GITHUB_WORKSPACE"
           setpriv --reuid=node --regid=node --init-groups \
-            env HOME=/home/node npm run test:mutation
+            env HOME=/home/node npm run test:mutation 2>&1 | tee /tmp/stryker-output.log
+
+      # A crashed run leaves `reports/mutation/` empty; without this step
+      # the artifact below would upload nothing and the crash's only
+      # evidence would be the 90-day run log. The guard on mutation.json
+      # keeps the (large) scored-run log OUT of the artifact (D-172).
+      - name: Preserve the Stryker output log when no report was produced
+        if: always()
+        run: |
+          if [ ! -f reports/mutation/mutation.json ] && [ -s /tmp/stryker-output.log ]; then
+            mkdir -p reports/mutation
+            cp /tmp/stryker-output.log reports/mutation/
+          fi
 
       - name: Retain mutation report artifact
         if: always()
@@ -65,11 +83,14 @@ jobs:
       # The renderer is a committed script (scripts/render-mutation-report.mjs),
       # so the exact code that builds the issue body is unit-tested and
       # re-runnable by hand against any downloaded artifact JSON
-      # (docs/mutation-testing.md, decision D-054).
+      # (docs/mutation-testing.md, decision D-054). A missing mutation.json
+      # renders the crash report (D-172) instead of failing with ENOENT —
+      # the redirect below therefore never holds an empty body.
       - name: Render report markdown
         if: always()
         env:
           STRYKER_OUTCOME: ${{ steps.stryker.outcome }}
+          STRYKER_LOG_FILE: /tmp/stryker-output.log
         run: node scripts/render-mutation-report.mjs > /tmp/mutation-report.md
 
       - name: Upsert the triage issue
@@ -81,7 +102,18 @@ jobs:
         run: |
           set -euo pipefail
           date=$(date -u +%F)
-          verdict=$([ "$STRYKER_OUTCOME" = failure ] && echo "below threshold" || echo "pass")
+          report=reports/mutation/mutation.json
+          body=/tmp/mutation-report.md
+          # One discriminator drives every claim below: does a scored report
+          # exist? `steps.stryker.outcome` is `failure` for ANY Stryker-step
+          # failure — a real below-break score and a crash before scoring
+          # alike — so the outcome alone must never supply the verdict
+          # wording (D-172).
+          if [ -f "$report" ]; then
+            verdict=$([ "$STRYKER_OUTCOME" = failure ] && echo "below threshold" || echo "pass")
+          else
+            verdict="crashed (no report produced)"
+          fi
           title="Mutation report — rolling (last run: ${date}, ${verdict})"
           # `gh issue create --label` requires the label to already exist
           # (it cannot create one), so bootstrap it before first use; the
@@ -89,15 +121,51 @@ jobs:
           # resurfaces at the `gh issue create` below anyway.
           gh label create mutation-report --repo "$REPO" --description "Rolling daily mutation-testing triage issue (docs/mutation-testing.md)" --color "5319e7" || true
           number=$(gh issue list --repo "$REPO" --label mutation-report --state open --json number --jq '.[0].number // empty')
-          if [ -n "$number" ]; then
-            gh issue edit "$number" --repo "$REPO" --title "$title" --body-file /tmp/mutation-report.md
+          if [ -f "$report" ] && [ -s "$body" ]; then
+            # Scored run with a rendered body: the rolling body is this
+            # run's report (the only branch that ever writes --body-file).
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --repo "$REPO" --title "$title" --body-file "$body"
+            else
+              number=$(gh issue create --repo "$REPO" --title "$title" --label mutation-report --body-file "$body" | grep -oE '[0-9]+$')
+            fi
+            gh issue comment "$number" --repo "$REPO" --body "Run of ${date}: ${verdict} — full report in the issue body and the run artifact."
+          elif [ -s "$body" ]; then
+            # Crashed run ($body is the renderer's crash report): the last
+            # scored body is never replaced by a non-score — an existing
+            # issue is retitled only, and the crash report rides the
+            # comment thread as this run's history entry (D-172).
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --repo "$REPO" --title "$title"
+              { printf 'Run of %s: %s — no score was measured; the issue body keeps the last scored report.\n\n' "$date" "$verdict"; cat "$body"; } > /tmp/mutation-comment.md
+              gh issue comment "$number" --repo "$REPO" --body-file /tmp/mutation-comment.md
+            else
+              number=$(gh issue create --repo "$REPO" --title "$title" --label mutation-report --body-file "$body" | grep -oE '[0-9]+$')
+              gh issue comment "$number" --repo "$REPO" --body "Run of ${date}: ${verdict} — no score was measured; the issue body is this run's crash report."
+            fi
           else
-            number=$(gh issue create --repo "$REPO" --title "$title" --label mutation-report --body-file /tmp/mutation-report.md | grep -oE '[0-9]+$')
+            # The renderer produced no body at all (it aborted — e.g. an
+            # unknown mutant status): never write an empty body anywhere;
+            # keep any existing body, retitle, and say so honestly.
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --repo "$REPO" --title "$title"
+            else
+              number=$(gh issue create --repo "$REPO" --title "$title" --label mutation-report --body "Run of ${date}: ${verdict} — the report renderer produced no output; see the run log." | grep -oE '[0-9]+$')
+            fi
+            gh issue comment "$number" --repo "$REPO" --body "Run of ${date}: ${verdict} — the report renderer produced no output; see the run log."
           fi
-          gh issue comment "$number" --repo "$REPO" --body "Run of ${date}: ${verdict} — full report in the issue body and the run artifact."
 
-      - name: Fail the job after reporting when below threshold
+      # `steps.stryker.outcome` is failure for any Stryker-step failure, so
+      # the message must branch on the report file, not the outcome: a real
+      # below-break score names the threshold; a crash names the missing
+      # report. Either way the job stays red — a crashed gate is not green
+      # (D-172).
+      - name: Fail the job after reporting when the gate is not green
         if: steps.stryker.outcome == 'failure'
         run: |
-          echo "::error::Mutation score is below the configured break threshold; see the mutation-report issue."
+          if [ -f reports/mutation/mutation.json ]; then
+            echo "::error::Mutation score is below the configured break threshold; see the mutation-report issue."
+          else
+            echo "::error::Stryker exited without producing a mutation report — no score was measured; see the mutation-report issue."
+          fi
           exit 1

@@ -255,6 +255,29 @@ describe('a failed cycle writes exactly one run row and no snapshot', () => {
     });
   });
 
+  it('stores the adapter’s observed Content-Type beside the §7.4 payload (U-035, D-169)', async () => {
+    await withRepository(async (repository, clock) => {
+      const recorder = recorderFor(repository, clock, async () => {
+        throw new SnapshotParseError(
+          'response envelope was not the expected object',
+          200,
+          '{"code":0}',
+          undefined,
+          'application/json; charset=utf-8',
+        );
+      });
+
+      await runCycle(recorder, clock);
+
+      const run = repository.listCollectionRuns('work')[0]!;
+      expect(repository.getRawResponseByRun(run.id)).toMatchObject({
+        httpStatus: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: '{"code":0}',
+      });
+    });
+  });
+
   it('persists a cancelled cycle as nothing at all (D-069)', async () => {
     await withRepository(async (repository, clock) => {
       const recorder = recorderFor(repository, clock, async () => {
@@ -359,6 +382,26 @@ describe('successful cycles', () => {
       expect(run.outcome).toBe('success');
       expect(repository.getSnapshotByRun(run.id)).not.toBeNull();
       expect(repository.getMetricValuesForRun(run.id)).toHaveLength(0);
+    });
+  });
+
+  it('records the delivered 2xx of the exchange that produced the snapshot (U-035, D-169)', async () => {
+    await withRepository(async (repository, clock) => {
+      let collect: () => Promise<ProviderSnapshot> = async () => ({
+        ...snapshotAt(T0 + 1_200),
+        httpStatus: 200,
+      });
+      const recorder = recorderFor(repository, clock, () => collect());
+
+      await runCycle(recorder, clock); // a status-stamping adapter
+      collect = async () => snapshotAt(T0 + INTERVAL_MS + 1_200);
+      await runCycle(recorder, clock); // an adapter that stamps nothing
+
+      const runs = repository.listCollectionRuns('work');
+      expect(runs[0]).toMatchObject({ outcome: 'success', httpStatus: 200 });
+      // Absent evidence stays NULL — D-034's absent-when-no-response rule,
+      // now reachable on the success path from a stamping adapter's absence.
+      expect(runs[1]).toMatchObject({ outcome: 'success', httpStatus: null });
     });
   });
 

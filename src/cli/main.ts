@@ -11,9 +11,9 @@
  * seams without touching this file.
  *
  * Exit codes (decision D-044): 0 success — including help and version
- * output; 1 command failure — a handler error or a not-yet-implemented
- * command; 2 usage error — unknown command, subcommand, or option, a
- * missing subcommand, or an unexpected argument.
+ * output; 1 command failure — a handler error; 2 usage error — unknown
+ * command, subcommand, or option, a missing subcommand, or an unexpected
+ * argument.
  */
 
 import { buildCommandTable, type Command, type LeafCommand } from './commands';

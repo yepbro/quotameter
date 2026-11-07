@@ -78,6 +78,8 @@ interface Harness {
   account: (id: string, keyIdentity?: string) => PollingAccount;
   attempts: (id: string) => number;
   settles: (id: string) => number;
+  /** How often the engine abandoned the account's cycle (U-035 hook). */
+  abandons: (id: string) => number;
   /** Scripts the settle seam per account (default: success). */
   script: (id: string, settle: SettleScript) => void;
   /** Scripts the raw attempt per account (default: an instant value). */
@@ -117,6 +119,7 @@ function harness(options: HarnessOptions = {}): Harness {
   const starts = new Map<string, number[]>(ids.map((id) => [id, []]));
   const settleCalls = new Map<string, number>(ids.map((id) => [id, 0]));
   const attemptCalls = new Map<string, number>(ids.map((id) => [id, 0]));
+  const abandonCalls = new Map<string, number>(ids.map((id) => [id, 0]));
   const settleScripts = new Map<string, SettleScript>();
   const attemptScripts = new Map<string, AttemptScript>();
   const maxPerAccountInFlight = new Map<string, number>(ids.map((id) => [id, 0]));
@@ -171,6 +174,11 @@ function harness(options: HarnessOptions = {}): Harness {
         const script = settleScripts.get(id);
         return script ? script(result, call) : classifySuccess();
       },
+      // U-035's hook: recorded, never scripted — the tests assert when the
+      // engine owes the account an abandonment notification.
+      abandonCycle: () => {
+        abandonCalls.set(id, (abandonCalls.get(id) ?? 0) + 1);
+      },
     };
   }
 
@@ -192,6 +200,7 @@ function harness(options: HarnessOptions = {}): Harness {
     account,
     attempts: (id) => attemptCalls.get(id) ?? 0,
     settles: (id) => settleCalls.get(id) ?? 0,
+    abandons: (id) => abandonCalls.get(id) ?? 0,
     script: (id, settle) => settleScripts.set(id, settle),
     onAttempt: (id, attempt) => attemptScripts.set(id, attempt),
     holdNext: (id) => pendingGates.set(id, [...(pendingGates.get(id) ?? []), makeGate()]),
@@ -648,6 +657,52 @@ describe('auth-rejection suspension gating (spec §7.2)', () => {
     );
   });
 
+  it('re-suspends and drops the owed attempt when a manual test is refused (§7.2, D-176)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const engine = harness({ ids: ['a'] });
+        engine.script('a', (_result, call) => (call === 1 ? rejected() : classifySuccess()));
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(engine.attempts('a')).toBe(1); // the polled 401 suspends
+        // The request releases and owes an attempt; the provider's refusal
+        // (validateCredentials 401/403) re-enters the machine with a fresh
+        // 60-minute window and the owed attempt is dropped — §7.2's pause
+        // holds on the engine side of a refused manual test.
+        engine.scheduler.requestManualTest('a');
+        expect(engine.scheduler.manualTestRejected('a')).toBe(true);
+        expect(engine.scheduler.manualTestRejected('nobody')).toBe(false);
+        await clock.advanceMsAsync(0);
+        expect(engine.attempts('a')).toBe(1); // nothing dispatched
+        await clock.advanceMsAsync(3_599_999);
+        expect(engine.attempts('a')).toBe(1); // no normal poll, no early probe
+        await clock.advanceMsAsync(1); // the probe at exactly 60 min
+        expect(engine.attempts('a')).toBe(2);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
+  it('enters suspension from a healthy account when a manual test is refused (§7.2)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        const engine = harness({ ids: ['a'] });
+        engine.script('a', () => classifySuccess());
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(engine.attempts('a')).toBe(1); // healthy: normal cadence armed
+        engine.scheduler.manualTestRejected('a');
+        await clock.advanceMsAsync(59_999);
+        expect(engine.attempts('a')).toBe(1); // the interval poll is paused
+        await clock.advanceMsAsync(3_540_001); // t = 3 600 000: the probe
+        expect(engine.attempts('a')).toBe(2);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
   it('keeps the probe cadence across a runtime interval change', async () => {
     await withFakeTimers(
       async (clock) => {
@@ -893,6 +948,130 @@ describe('failure isolation (spec §7.2)', () => {
       { shouldAdvanceTime: false, now: 0 },
     );
   });
+
+  it('abandons a cycle whose wrapper itself threw and keeps polling (U-035)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        // One broken backoff — the wrapper's own programming-mistake throw —
+        // then sound waits: the discriminator is the delay, not call order
+        // (the loop's hang-threshold wake races the backoff and wins the
+        // first call). D-059's backoff window is 2–8.5 s; this engine's
+        // every wake (hang threshold 255.5 s, the 60 s interval) is far
+        // above it, so only the wrapper's backoff sees the broken seam —
+        // a globally broken seam is the loop-killing case pinned in the
+        // regression suite below.
+        const sleep: PollingSleep = (ms, signal) => {
+          if (ms <= 10_000) return Promise.reject(new Error('broken sleep seam'));
+          return new Promise<void>((resolve, reject) => {
+            setTimeout(resolve, ms);
+            signal?.addEventListener('abort', () => reject(new TransportAbortError()), {
+              once: true,
+            });
+          });
+        };
+        const engine = harness({ ids: ['a'], sleep });
+        engine.onAttempt('a', (call) => {
+          // Attempt 1 is retryable, so the wrapper reaches the broken
+          // backoff; later attempts resolve and settle normally.
+          if (call === 1) throw new TransportConnectionError('ECONNREFUSED');
+          return { providerId: 'a' };
+        });
+        engine.scheduler.start();
+        await clock.advanceMsAsync(0);
+
+        // The wrapper threw inside the flight: this cycle can never settle,
+        // so the engine owed the account one abandonment notification
+        // (U-035/D-169 — the recorder drops its cycle-start stamp), no
+        // classification ran, and the plain-interval fallback rescheduled.
+        expect(engine.abandons('a')).toBe(1);
+        expect(engine.settles('a')).toBe(0);
+        expect(engine.attempts('a')).toBe(1);
+        expect(engine.scheduler.running).toBe(true);
+
+        // The next cycle runs, settles normally, and is NOT abandoned again.
+        await clock.advanceMsAsync(60_000);
+        expect(engine.attempts('a')).toBe(2);
+        expect(engine.settles('a')).toBe(1);
+        expect(engine.abandons('a')).toBe(1);
+        await engine.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
+
+  it('contains a throwing abandonCycle and works without one (U-035)', async () => {
+    await withFakeTimers(
+      async (clock) => {
+        /**
+         * One broken backoff (the wrapper's throw), then sound waits — the
+         * delay discriminates: the backoff window (≤ 8.5 s) breaks, every
+         * interval-scale wait behaves (see the sibling test's rationale).
+         */
+        const brokenFirstSleep = (): PollingSleep => {
+          return (ms, signal) => {
+            if (ms <= 10_000) return Promise.reject(new Error('broken sleep seam'));
+            return new Promise<void>((resolve, reject) => {
+              setTimeout(resolve, ms);
+              signal?.addEventListener('abort', () => reject(new TransportAbortError()), {
+                once: true,
+              });
+            });
+          };
+        };
+        const throwsFirst = (): AttemptScript => (call) => {
+          if (call === 1) throw new TransportConnectionError('ECONNREFUSED');
+          return { providerId: 'a' };
+        };
+
+        // A hook that itself throws: the invocation is observable (the
+        // counter increments before the throw) and the containment is the
+        // outer catch's — the account still reschedules on the plain
+        // interval, exactly as for any other programming mistake.
+        let throwingHookCalls = 0;
+        const throwing = harness({ ids: [], sleep: brokenFirstSleep() });
+        throwing.onAttempt('a', throwsFirst());
+        throwing.scheduler.setAccounts([
+          {
+            ...throwing.account('a'),
+            abandonCycle: () => {
+              throwingHookCalls++;
+              throw new Error('broken abandon seam');
+            },
+          },
+        ]);
+        throwing.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(throwingHookCalls).toBe(1);
+        expect(throwing.settles('a')).toBe(0);
+        expect(throwing.scheduler.running).toBe(true);
+        await clock.advanceMsAsync(60_000);
+        expect(throwing.attempts('a')).toBe(2);
+        expect(throwing.settles('a')).toBe(1);
+        await throwing.scheduler.stop();
+
+        // An account seam with no hook at all (it is optional): the wrapper
+        // throw is contained all the same, nothing is notified.
+        const absent = harness({ ids: [], sleep: brokenFirstSleep() });
+        absent.onAttempt('a', throwsFirst());
+        const naked = absent.account('a');
+        absent.scheduler.setAccounts([
+          {
+            accountId: naked.accountId,
+            keyIdentity: naked.keyIdentity,
+            attempt: naked.attempt,
+            settleCycle: naked.settleCycle,
+          },
+        ]);
+        absent.scheduler.start();
+        await clock.advanceMsAsync(0);
+        expect(absent.abandons('a')).toBe(0);
+        await clock.advanceMsAsync(60_000);
+        expect(absent.settles('a')).toBe(1);
+        await absent.scheduler.stop();
+      },
+      { shouldAdvanceTime: false, now: 0 },
+    );
+  });
 });
 
 /* ── Mid-run changes and the empty set ─────────────────────────────────── */
@@ -997,6 +1176,9 @@ describe('account-set and interval changes at runtime', () => {
     expect(() =>
       engine.scheduler.setAccounts([{ ...account, settleCycle: null as never }]),
     ).toThrow(/settleCycle/u);
+    expect(() =>
+      engine.scheduler.setAccounts([{ ...account, abandonCycle: 'nope' as never }]),
+    ).toThrow(/abandonCycle/u);
     expect(() => engine.scheduler.setAccounts([{ ...account, keyIdentity: '' }])).toThrow(
       /keyIdentity/u,
     );
@@ -1042,6 +1224,7 @@ describe('stop (spec §5.6, D-020)', () => {
       expect(() => running.scheduler.setIntervalMs(60_000)).toThrow(/stopped/u);
       expect(() => running.scheduler.setAccounts([])).toThrow(/stopped/u);
       expect(() => running.scheduler.requestManualTest('a')).toThrow(/stopped/u);
+      expect(() => running.scheduler.manualTestRejected('a')).toThrow(/stopped/u);
     });
   });
 

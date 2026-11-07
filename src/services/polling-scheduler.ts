@@ -11,7 +11,7 @@
  * `Retry-After` deferral (D-062's `notBeforeEpochMs`) and task 108's
  * suspension cadence (D-064) — and for the settle context task 110 will
  * timestamp. Nothing here persists anything or classifies providers: each
- * account arrives as an injectable closure pair, and the run writer (110)
+ * account arrives as injectable closures, and the run writer (110)
  * is the seam that turns a retried cycle into a classified, stored run.
  *
  * Composition of the landed seams:
@@ -30,7 +30,10 @@
  * - a failure for one account never stops the others (§7.2): provider
  *   failures arrive as `CycleRetryResult` values, and even a **throwing**
  *   `settleCycle` seam is contained — the account simply reschedules on
- *   the plain interval.
+ *   the plain interval. A **throwing wrapper** (a broken sleep seam, an
+ *   invalid random roll) gets the same containment plus the optional
+ *   `abandonCycle` notification, so a cycle that can never settle leaves
+ *   no per-cycle state behind (U-035/D-169).
  *
  * The one interplay the spec leaves open is decided in D-066: what
  * "sequential" means when a cycle hangs. The dispatcher is strictly
@@ -53,6 +56,7 @@
 import type { Clock } from '../util/clock';
 import { TransportAbortError } from '../providers/transport';
 import type { CycleOutcome } from './polling-outcomes';
+import { STATUS_CONTRIBUTION_BY_OUTCOME } from './polling-outcomes';
 import { runCycleWithRetries, type CycleRetryResult } from './polling-retry';
 import { deferNextPoll } from './polling-retry-after';
 import {
@@ -110,6 +114,23 @@ export function pollingDelayMs(intervalMs: number, random: () => number): number
 /* ── The hang threshold (D-066) ────────────────────────────────────────── */
 
 /**
+ * The auth-rejection classification of a manual test whose provider refused
+ * the key — the outcome `manualTestRejected` feeds the D-064 machine with,
+ * built from the landed tables exactly as the composition's holder builds
+ * its own (`account-suspensions.ts`), so the two machines re-enter on
+ * identical data.
+ */
+const MANUAL_TEST_AUTH_ERROR: CycleOutcome = Object.freeze({
+  outcome: 'auth_error',
+  httpStatus: undefined,
+  retryAfterRaw: undefined,
+  retryAfterEligible: false,
+  retryable: false,
+  statusContribution: STATUS_CONTRIBUTION_BY_OUTCOME.auth_error,
+  errorMessage: undefined,
+}) as CycleOutcome;
+
+/**
  * The default point past which an unsettled cycle stops holding other
  * accounts back: the worst cycle §7.2 itself can produce — four attempts
  * at the 60 s request-timeout ceiling plus the 15.5 s worst-case backoff
@@ -162,6 +183,17 @@ export interface PollingAccount {
    * others.
    */
   readonly settleCycle: (result: CycleRetryResult<unknown>) => CycleOutcome | Promise<CycleOutcome>;
+  /**
+   * Optional notification that a cycle will never settle: the engine calls
+   * it exactly when D-059's wrapper itself threw (a broken sleep seam, an
+   * invalid random roll — contained per §7.2 like a throwing settle), so the
+   * account closure can drop per-cycle state that would otherwise leak into
+   * the next cycle. Task 110's recorder drops its cycle-start stamp here
+   * (U-035/D-169: without this, a thrown wrapper's stamp bled into the next
+   * run row's `started_at`). A throwing `abandonCycle` is contained the same
+   * way; absent means the engine simply proceeds.
+   */
+  readonly abandonCycle?: () => void;
 }
 
 /* ── Options ───────────────────────────────────────────────────────────── */
@@ -247,6 +279,17 @@ export interface PollingScheduler {
    * unconditional). Returns false for an unknown account.
    */
   requestManualTest(accountId: string): boolean;
+  /**
+   * A manual connection test refused the account's key (§7.2's 401/403 row
+   * reached from the manual-test path — the composition's bridge, D-176):
+   * feeds the engine's own D-064 machine an `auth_error` outcome under the
+   * CURRENT wiring's key identity (re-entering or re-arming suspension with
+   * a fresh 60-minute window) and drops any still-owed manual attempt — a
+   * key the provider just refused has nothing left to try; the probe cadence
+   * owns the next attempt. A cycle already in flight settles normally (its
+   * own outcome decides). Returns false for an unknown account.
+   */
+  manualTestRejected(accountId: string): boolean;
   /**
    * Stops scheduling (§5.6): aborts every live cycle and resolves once the
    * loop has exited — promptly, because cycle tasks are detached. The
@@ -359,6 +402,9 @@ function requireAccounts(accounts: readonly PollingAccount[], caller: string): v
     }
     if (typeof account.settleCycle !== 'function') {
       throw new TypeError(`${caller}: settleCycle must be a function`);
+    }
+    if (account.abandonCycle !== undefined && typeof account.abandonCycle !== 'function') {
+      throw new TypeError(`${caller}: abandonCycle must be a function when present`);
     }
     if (seen.has(account.accountId)) {
       throw new TypeError(`${caller}: duplicate account id '${account.accountId}'`);
@@ -569,11 +615,26 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
     const operation = inFlightTracker?.begin();
     const settled = (async (): Promise<void> => {
       try {
-        const result = await runCycleWithRetries(() => account.attempt(flight.controller.signal), {
-          signal: flight.controller.signal,
-          random,
-          sleep,
-        });
+        let result: CycleRetryResult<unknown>;
+        try {
+          result = await runCycleWithRetries(() => account.attempt(flight.controller.signal), {
+            signal: flight.controller.signal,
+            random,
+            sleep,
+          });
+        } catch {
+          // The wrapper itself threw (a broken sleep seam, an invalid random
+          // roll — D-059's programming-mistake throws): this cycle can never
+          // settle, so the account closure is told before per-cycle state can
+          // outlive it (U-035, D-169 — the recorder's start stamp would
+          // otherwise bleed into the next run row's `started_at`). A throwing
+          // abandon hook is one more programming mistake on this already-
+          // contained path: it propagates to the outer catch below, which
+          // makes the same plain-interval fallback — no separate containment.
+          account.abandonCycle?.();
+          rescheduleBestEffort(entry);
+          return;
+        }
         let classified: CycleOutcome;
         try {
           classified = await account.settleCycle(result);
@@ -604,8 +665,9 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
         entry.notBeforeEpochMs = defer.deferred ? defer.notBeforeEpochMs : Number.NEGATIVE_INFINITY;
         scheduleNextPoll(entry);
       } catch {
-        // Programming mistakes only (a fail-fast random roll, a broken
-        // sleep seam): same containment, same plain-interval fallback.
+        // Programming mistakes only (a fail-fast random roll, a broken sleep
+        // seam, a throwing abandon hook): same containment, same
+        // plain-interval fallback.
         rescheduleBestEffort(entry);
       } finally {
         // Cleanup first, third-party seams last: a throwing tracker must
@@ -830,6 +892,27 @@ export function createPollingScheduler(options: PollingSchedulerOptions): Pollin
       // review P2-3) and an interval change, and is consumed at dispatch —
       // through the loop, so the sequential and overlap rules hold (D-066).
       entry.pendingManualTest = true;
+      kick();
+      return true;
+    },
+
+    manualTestRejected(accountId) {
+      if (stopped) throw new Error('polling scheduler: the scheduler is stopped');
+      const entry = entries.get(accountId);
+      if (entry === undefined) return false;
+      // The D-064 outcome seam with the landed auth-error classification,
+      // under the wiring's own key identity — the same vocabulary a polled
+      // 401 carries, so admission, the armed instant, and the release
+      // conditions behave identically.
+      entry.suspension = applyCycleOutcome(
+        entry.suspension,
+        MANUAL_TEST_AUTH_ERROR,
+        entry.account.keyIdentity,
+        wallNow(),
+      ).state;
+      // The owed attempt (if never dispatched) is moot for a refused key;
+      // one already in flight settles normally.
+      entry.pendingManualTest = false;
       kick();
       return true;
     },

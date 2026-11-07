@@ -3,24 +3,39 @@
 The application assembly point (spec §3, §5.6, §13, §15): the process entry
 point `main.ts` — runtime gate (Node.js ≥ 22.13.0 by numeric prefix, so a
 nightly of a supported line runs while anything below the line refuses;
-non-root; task 129, decision D-098), signal wiring, exit codes — whose
-`buildComponents()` (task U-040, decision D-140) now delegates to
+non-root; task 129, decision D-098), signal wiring (SIGTERM/SIGINT graceful
+shutdown; SIGHUP → configuration reload since U-052, decision D-177 —
+installed only when a reload operation exists, so bare-component embedders
+keep the OS default, and a foreground run deliberately survives a terminal
+disconnect), exit codes — whose `buildApplication()` (task U-040, decision
+D-140; called `buildComponents` before U-052) now delegates to
 `composition.ts`: `composeApplication()` resolves the §6.1 directories,
 enforces the §6.3 permissions eagerly (before the file's content is read),
 loads and validates through `loadConfigWithEnv` (§6.2's refuse-to-start),
 then assembles the §5.6 component list
-`[single-instance-lock, storage, http-listener]` with every landed route
-family wired — the D-128 `AccountConfigStore` and D-130 `SettingsStore` over
-`config-stores.ts`'s serialized config-file owner, the D-064 suspension
-holder (`src/services/account-suspensions.ts`) feeding `suspensionOf` and
-the manual-test lift, the registry with observation-wrapped adapters
+`[single-instance-lock, storage, retention, graceful-drain, polling,
+http-listener]`
+(`shutdown.ts`'s documented order, completed by U-051/D-176: one shared
+in-flight tracker serves the scheduler's flight registrations and the
+drain's bounded wait, and by U-053/D-178: the retention schedule runs
+§11.3's cleanup after migrations and daily, its daily wait cancelled
+before storage closes in teardown, with every landed route family wired —
+the D-128
+`AccountConfigStore` and D-130 `SettingsStore` over `config-stores.ts`'s
+serialized config-file owner, the D-064 suspension holder
+(`src/services/account-suspensions.ts`) feeding `suspensionOf` and the
+manual-test lift, the registry with observation-wrapped adapters
 (`providers.ts`, task U-040), and a lazy repository facade bridging eager
 route registration to the storage component's start-time open (the data
-directory exists only after the lock's start, D-017). Deliberately unwired
-(D-140's loose ends): SIGHUP → reload (the D-024 readiness seam) and the
-polling engine; the sessions-backed `isAuthenticated` is wired since task
-U-041 (D-146) — `createSessionAuthenticator` over the lazy repository and
-the shared clock, beside the login/logout routes it pairs with. The
+directory exists only after the lock's start, D-017). The composed result
+also publishes the reload surface since U-052 (D-177): `applyReload` — the
+wrapper every store mutation flows through (the bare reloader plus the
+D-128 config-sync, the D-064 key-identity reports, and the D-176 polling
+feeds) — and `reloadOnSighup`, the fault-containing signal face `main.ts`
+wires to SIGHUP. The sessions-backed `isAuthenticated` is wired since
+task U-041 (D-146): `createSessionAuthenticator` over the lazy repository
+and the shared clock, beside the login/logout routes it pairs with. The
+polling engine itself (`polling.ts`, U-051/D-176) is described below. The
 lifecycle skeleton `app.ts`
 (task 060) is where components
 start in registration order and stop in reverse, realizing the §5.6 shutdown
@@ -34,7 +49,8 @@ shutdown: the polling service registers in-flight operations in a shared
 them — bounded at 10 s by spec §5.6 — when the application stops. The HTTP
 listener keeps its own §5.6 bound instead (decision D-109): it stops before
 the drain in the documented registration order
-(`[lock, storage, graceful-drain, polling, http]`), and `fastify.close()`
+(`[lock, storage, retention, graceful-drain, polling, http]`), and
+`fastify.close()`
 already serializes the in-flight-request wait — so `http.ts` races the close
 against the same ten-second bound and forces completion
 (`closeAllConnections`) when it expires. Registered between storage and the
@@ -155,23 +171,117 @@ limiting is not middleware here: it lives in
 `src/services/login-rate-limit.ts` (156, D-125), composed by the
 login endpoint. It is the only
 layer allowed to wire concrete provider adapters into the registry. `providers.ts` (task 133, extended by
-task U-040) is that privilege's first
-exercise: `createInitialAccountProvider()` constructs the v1.0 adapter with
-production defaults for `init`'s initial-account connection test (spec §5.3
-step 6) — the factory constructs and never registers, so the bootstrap
-composition that fills the `ProviderRegistry` is unchanged by it
-(decision D-102). That same composition (U-040, D-140) now registers the
-adapter into the registry wrapped by `observingManualTests()`: manual
-connection tests feed the §7.2 suspension holder — release-on-request
+tasks U-040/U-054) is that privilege's
+exercise, in two factories with two worlds (U-054, D-179):
+`createConfiguredZaiProvider()` — the registry default the bootstrap
+composition (U-040, D-140) registers wrapped by
+`observingManualTests()` — constructs the v1.0 adapter with
+`{ timeoutMs, clock, logger }` derived from the LIVE effective
+configuration: every request re-reads
+`providers.zai-coding-plan.requestTimeoutSeconds` (§6.4-live per D-026 —
+a reload changes the §7.2 deadline on the next request, no restart, the
+inner adapter memoized by the effective value), `collectedAt` comes from
+the composition's shared clock (D-021), and the skip/soft-failure reports
+ride the shared redacting logger. `createInitialAccountProvider()` — the
+pre-configuration factory for `init`'s initial-account connection test
+(spec §5.3 step 6, before the step-7 write) and `doctor`'s per-account
+probes — keeps the D-052 defaults (the dossier base URLs, the §7.2 default
+15 s deadline): neither CLI path derives its budget from the
+configuration under test — init's fresh run has no file yet (the write is
+§5.3 step 5's configuration half, deferred past the step-6 test, D-102)
+and the re-run flow keeps the same answer-driven factory, while a
+diagnostic's probe budget stays independent of the artifact it examines
+(D-179). The observation wrapper itself is unchanged: manual
+connection tests feed
+the §7.2 suspension holder — release-on-request
 before the attempt, re-entry with a fresh 60-minute window on a D-052
 `credentials-rejected` rejection, so a successful manual test lifts an
 `Auth rejected` pause (wire-observable through `/api/status`), while
 `fetchSnapshot` stays unobserved (the polling engine owns polled-cycle
-outcomes).
+outcomes). Since U-051 (D-176) the wrapper's optional
+`onManualTestRequested`/`onManualTestRejected` callbacks are the
+composition's manual-test bridges into the polling engine: the request
+releases the holder AND the engine's own D-064 machine, owing the account
+one attempt through the dispatch loop, and a refused key re-enters both
+machines' suspensions with a fresh 60-minute window — so §7.2's "until …
+a manual test is requested" and its 401/403 row reach the machine that
+gates polling, not only the status view.
+
+## The polling engine composition (task U-051, spec §7.1, §7.2, §5.6, §6.4; decision D-176)
+
+`src/server/polling.ts` is the wiring between the landed §7 engines and
+the running service — the composition root D-066/D-069 anticipated.
+`createPollingEngine` builds one polling scheduler over the shared clock
+(D-021) and the shared in-flight tracker (D-020), plus one cycle recorder
+per pollable account, and exposes them as the `polling` component of the
+documented order. The account selection is a filter, not an error: only
+accounts that are `enabled`, whose secret resolves (`apiKey` or a set
+`apiKeyEnv`), and whose provider is registered are polled — skips are
+logged (a `warn` for an unknown provider, `debug` for the §7.3 display
+states `Disabled`/`Not configured`), never thrown, so one foreign or
+keyless entry stops neither the others nor the startup (§7.2 isolation).
+The resolved secret reaches only the registry's branded `AccountContext`.
+
+The D-064 seam, per D-140's plan: the scheduler's internal state machine
+gates dispatch; the composition's holder stays the seam `/api/status` and
+the manual-test flow read. The engine's settle wrapper feeds the holder
+every settled classification through a per-account continuity epoch
+(`polledCycleOutcome`) that mirrors the engine's mid-flight entry-identity
+rule exactly — kept rebuilds keep feeding, while removal, re-key, and
+same-key remove/re-add go stale — so the two pure machines — same events,
+same transitions — stay in lockstep: a polled 401 shows `Auth rejected`
+even after a later inconclusive probe run, and a polled success lifts the
+pause. An account leaving the polled set (removed, disabled, secret lost)
+drops its holder episode beside the engine's dropped entry (the restart
+equivalence — suspension is process memory). §6.4 reloads arrive through
+the composition's reload wrapper (`applyReloadChanges`): an `accounts`
+change rebuilds the wiring (added accounts poll immediately,
+removed/disabled ones drop out, re-keyed ones release and are immediately
+due), an interval change re-anchors the schedule. Manual tests bridge both
+ways: the request owes the engine one attempt (`onManualTestRequested` →
+`requestManualTest`), and a refused key re-enters the engine's own
+suspension with a fresh 60-minute window
+(`onManualTestRejected` → the scheduler's additive `manualTestRejected`
+seam, D-176) — §7.2's pause holds on both sides. Contained settlement
+failures surface as one `warn` each — D-066's deferred diagnostics, landed
+with this wiring. `ComposeApplicationOptions.pollingSleep` is the
+composition's test seam for time-compressed integration tests (the
+`port`/`staticRoot` precedent); the e2e acceptance harness keeps its
+seeded worlds still by doubling the real adapter's `fetchSnapshot` off
+(the live engine's proof is
+`test/integration/composition-polling.spec.ts`'s).
 
 **Rule:** as the composition root it may import every layer except
 `src/cli/`. Route handlers validate input through `src/schemas/api/` and
 delegate to services; they never touch providers or SQL directly.
+
+## The retention cleanup schedule (task U-053, spec §11.3, §5.6, §6.4, §16; decision D-178)
+
+`src/server/retention.ts` is the schedule D-063 deferred to the server
+lifecycle: `createRetentionSchedule` exposes the `retention` component,
+registered directly after storage in the documented order. Its `start`
+runs §11.3's cleanup (`runRetentionCleanup` — the operation, unchanged)
+once — strictly after migrations, because storage's own `start` (open →
+migrate → config-sync) completes first by registration order — and then
+re-arms one fixed-duration 24 h abortable wait after each completed run
+(`ComposeApplicationOptions.retentionSleep` is the time-compression test
+seam, the `pollingSleep` precedent). The daily interval is a timer
+duration — monotonic by construction — and the shared clock's `now()` is
+read once per run as the cleanup's `now` (D-021); "daily" is 24 h after
+the previous run, not zone-aligned midnight (§11.3 names no alignment).
+§6.4 reload-awareness is read-at-run-time: each run takes the live
+`app.historyRetentionDays` — per §11.3's own sentence, a reduced window
+applies "at the next cleanup", so no reload feed exists. Faults are
+contained per §16: a failed run (startup or daily) is one `warn` and
+never rejects `start` nor kills the schedule (D-063's repeat-safety makes
+the next run the retry); a success is one `info` record with the removal
+counts. Teardown order (`retention` stops between the drain and storage)
+cancels the daily wait before the database closes — the cleanup itself is
+synchronous, so a run can never interleave with the close and the
+component registers nothing in the in-flight tracker. The done-condition
+is pinned by `test/unit/server-retention.spec.ts` (the schedule's own
+matrix) and `test/integration/composition-retention.spec.ts` (the
+production composition over a seeded temporary database).
 
 ## The accounts endpoints (task 159, spec §13, §8.2; decision D-128)
 
@@ -690,9 +800,10 @@ drift guard's `Required<ApiRoutesOptions>` boot wiring the family.
 
 ## The composition stores and the config-sync (task U-040, spec §6.2–§6.4, §13, §15.2; decision D-140)
 
-`src/server/composition.ts` is the production assembly `buildComponents()`
-delegates to (see the module docblock for the full startup sequence and the
-deliberately-unwired seams). `config-stores.ts` implements the two
+`src/server/composition.ts` is the production assembly `buildApplication()`
+delegates to (see the module docblock for the full startup sequence; the
+reload surface it publishes since U-052 is described above).
+`config-stores.ts` implements the two
 consumer-owned seams over the real configuration file: one
 `ConfigFileOwner` serializes every mutation of both stores (accounts and
 settings edit the same file), and each mutation is a read-modify-write over

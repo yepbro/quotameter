@@ -12,7 +12,10 @@ import {
 } from '../../src/services/account-suspensions';
 import { createFixedClock } from '../../src/util/clock';
 import { isSuspended } from '../../src/services/polling-suspension';
-import { observingManualTests } from '../../src/server/providers';
+import { createConfiguredZaiProvider, observingManualTests } from '../../src/server/providers';
+import type { Config, PeakHoursConfig } from '../../src/schemas/config';
+import { CONFIG_DEFAULTS } from '../../src/schemas/config';
+import { createLogger } from '../../src/util/logger';
 
 /**
  * The manual-test observation wrapper (task U-040, decision D-140): §7.2's
@@ -54,7 +57,11 @@ function innerProvider(mode: InnerMode): QuotaProvider & { calls: number } {
   return provider;
 }
 
-function wrapped(mode: InnerMode): {
+function wrapped(
+  mode: InnerMode,
+  bridge?: (accountId: string) => void,
+  rejectionBridge?: (accountId: string) => void,
+): {
   provider: QuotaProvider;
   inner: QuotaProvider & { calls: number };
   suspensions: ReturnType<typeof createAccountSuspensions>;
@@ -62,13 +69,73 @@ function wrapped(mode: InnerMode): {
   const clock = createFixedClock(T0);
   const suspensions = createAccountSuspensions({ clock });
   const inner = innerProvider(mode);
-  return { provider: observingManualTests(inner, { suspensions }), inner, suspensions };
+  return {
+    provider: observingManualTests(inner, {
+      suspensions,
+      ...(bridge === undefined ? {} : { onManualTestRequested: bridge }),
+      ...(rejectionBridge === undefined ? {} : { onManualTestRejected: rejectionBridge }),
+    }),
+    inner,
+    suspensions,
+  };
 }
 
 const ACCOUNT = createAccountContext('work', 'Work account', MARKER_KEY);
 
 /** The account's D-064 key identity, as the observation derives it. */
 const IDENTITY_A = keyIdentityOfSecret(MARKER_KEY);
+
+describe('createConfiguredZaiProvider (no HTTP here — the transport cells live in integration)', () => {
+  /** A minimal effective configuration; only `providers` varies per cell. */
+  const configOf = (providers?: Config['providers']): Config => ({
+    app: { timezone: 'UTC' },
+    ...(providers === undefined ? {} : { providers }),
+  });
+
+  /** An empty §9.2 schedule — the shape the config type requires. */
+  const peakHours = (): PeakHoursConfig => ({ timezone: 'UTC', windows: [] });
+
+  /** The factory with every seam satisfied, over one reader. */
+  const factory = (config: () => Config): QuotaProvider =>
+    createConfiguredZaiProvider({
+      config,
+      clock: createFixedClock(T0),
+      logger: createLogger({ level: 'error' }),
+    });
+
+  it('exposes the adapter identity facts verbatim (the registry key and D-137 catalog)', () => {
+    const provider = factory(() =>
+      configOf({ 'zai-coding-plan': { peakHours: peakHours(), requestTimeoutSeconds: 30 } }),
+    );
+
+    expect(provider.id).toBe('zai-coding-plan');
+    expect(provider.name).toBe('Z.ai Coding Plan');
+    expect(provider.metricCatalog).toEqual([
+      { metricKey: 'mcp-monthly', label: 'Monthly MCP tool quota' },
+      { metricKey: 'tokens-5h', label: '5-hour token quota' },
+      { metricKey: 'weekly-quota', label: 'Weekly quota' },
+    ]);
+  });
+
+  it('constructs without a providers section (the §7.2 default deadline arm)', () => {
+    const provider = factory(() => configOf());
+
+    // The eager construction is the assertion: the fallback seconds are
+    // CONFIG_DEFAULTS.provider.requestTimeoutSeconds (pinned by the config
+    // suites), and the behavioral pin of the delivered response at the
+    // default deadline lives in the integration suite.
+    expect(CONFIG_DEFAULTS.provider.requestTimeoutSeconds).toBe(15);
+    expect(provider.id).toBe('zai-coding-plan');
+  });
+
+  it('constructs when another provider holds the providers record (the missing-entry arm)', () => {
+    const provider = factory(() =>
+      configOf({ beta: { peakHours: peakHours(), requestTimeoutSeconds: 5 } }),
+    );
+
+    expect(provider.id).toBe('zai-coding-plan');
+  });
+});
 
 describe('observingManualTests', () => {
   it('lifts the suspension when the manual test succeeds (the §7.2 done-condition)', async () => {
@@ -144,5 +211,74 @@ describe('observingManualTests', () => {
     // The identity is stable per key and distinct across keys.
     expect(keyIdentityOfSecret(MARKER_KEY)).toBe(identity);
     expect(identity).not.toBe(keyIdentityOfSecret('sk-another-key-2f8b'));
+  });
+
+  describe('the manual-test bridge into the polling engine (U-051, D-176)', () => {
+    it('notifies the bridge with the account id once per test, before the attempt', async () => {
+      const order: string[] = [];
+      const { provider, inner, suspensions } = wrapped('ok', (accountId) => {
+        // The bridge fires before the attempt: the inner provider has not
+        // been called yet at this vantage point.
+        order.push(`${accountId}@inner-calls=${inner.calls}`);
+      });
+      await provider.validateCredentials(ACCOUNT);
+      expect(order).toEqual(['work@inner-calls=0']);
+      expect(inner.calls).toBe(1);
+      expect(isSuspended(suspensions.suspensionOf('work'))).toBe(false);
+    });
+
+    it('fires even when the attempt is refused — both release events at one site', async () => {
+      const seen: string[] = [];
+      const { provider } = wrapped('rejected', (accountId) => {
+        seen.push(accountId);
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        /rejected the account credentials/,
+      );
+      expect(seen).toEqual(['work']);
+    });
+
+    it('propagates a throwing bridge (a broken bridge is a wiring bug)', async () => {
+      const { provider } = wrapped('ok', () => {
+        throw new Error('bridge is broken (test double)');
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        'bridge is broken (test double)',
+      );
+    });
+
+    it('is absent-safe: no bridge changes nothing (the composition always wires one)', async () => {
+      const { provider, inner } = wrapped('ok');
+      await expect(provider.validateCredentials(ACCOUNT)).resolves.toBeUndefined();
+      expect(inner.calls).toBe(1);
+    });
+
+    it('notifies the rejection bridge beside the holder re-entry, on a refused test only', async () => {
+      const rejections: string[] = [];
+      const { provider, suspensions } = wrapped('rejected', undefined, (accountId) => {
+        rejections.push(accountId);
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        /rejected the account credentials/,
+      );
+      expect(rejections).toEqual(['work']);
+      expect(isSuspended(suspensions.suspensionOf('work'))).toBe(true);
+
+      // A successful test never notifies the rejection half.
+      const healthy = wrapped('ok', undefined, (accountId) => {
+        rejections.push(accountId);
+      });
+      await expect(healthy.provider.validateCredentials(ACCOUNT)).resolves.toBeUndefined();
+      expect(rejections).toEqual(['work']);
+    });
+
+    it('propagates a throwing rejection bridge', async () => {
+      const { provider } = wrapped('rejected', undefined, () => {
+        throw new Error('rejection bridge is broken (test double)');
+      });
+      await expect(provider.validateCredentials(ACCOUNT)).rejects.toThrow(
+        'rejection bridge is broken (test double)',
+      );
+    });
   });
 });

@@ -2,12 +2,10 @@
  * The command dispatch table (task 128, spec §5.2; decision D-044).
  *
  * Every `quotameter` command of spec §5.2 is registered here with its
- * summary line, its option declarations, and a handler. The handler bodies
- * are tasks 129–145: until they land, every entry points at the shared
- * {@link notImplemented} stub, which reports through the same output
- * contract as a real command and exits 1. A task replaces exactly one
- * stub with a real `run` (and adds its options) — the dispatch layer never
- * changes shape.
+ * summary line, its option declarations, and a real handler — the tasks
+ * 129–145 wave plus U-050's `run` (the last stub) completed the surface.
+ * A future command plugs in the same way: one row with its options and a
+ * handler returning the exit code — the dispatch layer never changes shape.
  *
  * Handlers are plain data in a table so tests and embedders can inject a
  * whole table of fakes into `runCli` without touching the process.
@@ -16,6 +14,7 @@
 import type { CliOutput } from './output';
 import type { CliOptions } from './parser';
 import { runInitCommand } from './init';
+import { runRunCommand } from './run';
 import { runServiceControlCommand, type ServiceControlVerb } from './service-control';
 import { runServiceInstallCommand, runServiceUninstallCommand } from './service-install';
 import { runLogsCommand, LOGS_DEFAULT_LINES, LOGS_DEFAULT_OUTPUT } from './service-logs';
@@ -68,30 +67,6 @@ export interface CommandGroup {
 
 /** One row of the dispatch table. */
 export type Command = LeafCommand | CommandGroup;
-
-/**
- * The stub every command starts with: the invocation is valid usage, the
- * feature is simply not built yet, so the message goes to stderr with the
- * standard prefix and the exit code is 1 (not the usage-error 2).
- */
-export function notImplemented(commandPath: readonly string[]): CliHandler {
-  return async (ctx: CliContext): Promise<number> => {
-    ctx.output.err(`quotameter ${commandPath.join(' ')}: not implemented yet`);
-    return 1;
-  };
-}
-
-/** Builds a stub-backed leaf command; helper for the table below. */
-function stub(name: string, summary: string, commandPath: readonly string[]): LeafCommand {
-  return {
-    kind: 'leaf',
-    name,
-    summary,
-    options: {},
-    maxPositionals: 0,
-    run: notImplemented(commandPath),
-  };
-}
 
 /** The §5.2 summaries of the three service-control verbs, pinned per verb. */
 const CONTROL_SUMMARIES: Readonly<Record<ServiceControlVerb, string>> = {
@@ -162,7 +137,18 @@ export function buildCommandTable(): Command[] {
       maxPositionals: 0,
       run: runInitCommand(),
     },
-    stub('run', 'Foreground execution for systemd and debugging', ['run']),
+    // Task U-050 (spec §5.2/§5.6): the foreground service command the
+    // generated unit's ExecStart runs. The handler imports `runServer`
+    // lazily so the server module graph stays out of every unrelated CLI
+    // invocation (see src/cli/run.ts); §5.2 defines no options for it.
+    {
+      kind: 'leaf',
+      name: 'run',
+      summary: 'Foreground execution for systemd and debugging',
+      options: {},
+      maxPositionals: 0,
+      run: runRunCommand(),
+    },
     // Task 140 (spec §5.2, decision D-110): start/stop/restart control the
     // currently installed unit — the manager scope (system vs --user) comes
     // from which unit file is on disk, not from this invocation's

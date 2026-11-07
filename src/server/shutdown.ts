@@ -11,10 +11,16 @@
  * middle, storage closes behind it, and the lock is released last:
  *
  * ```text
- *     registration: [lock, storage, graceful-drain, polling, http]
- *     stop order:   http → polling → graceful-drain → storage → lock
+ *     registration: [lock, storage, retention, graceful-drain, polling, http]
+ *     stop order:   http → polling → graceful-drain → retention → storage → lock
  *                                        └─ bounded in-flight wait
  * ```
+ *
+ * (The `retention` component — U-053, D-178 — sits between storage and
+ * this drain: its startup cleanup runs after migrations, and its daily
+ * cleanup wait is cancelled before the database it would delete from
+ * closes; the cleanup itself is synchronous, so it needs no tracker
+ * entry.)
  *
  * The polling service (109+) registers its active operations in the shared
  * {@link createInFlightTracker} counter and stops scheduling in its own

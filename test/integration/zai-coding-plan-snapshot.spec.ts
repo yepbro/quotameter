@@ -177,6 +177,18 @@ describe('ZaiCodingPlanProvider.fetchSnapshot over real sockets', () => {
       expect(findProviderSnapshotProblems(snapshot)).toEqual([]);
     });
 
+    it('stamps the snapshot with endpoint 1’s delivered status (U-035, D-169)', async () => {
+      routeCycle(SANITIZED_QUOTA);
+      // A soft endpoint answering 503 must not become the cycle’s evidence:
+      // endpoint 1 is the metrics-originating exchange (D-047).
+      server.setPathBehavior(SUBSCRIPTION_PATH, { kind: 'respond', status: 503, body: '' });
+
+      const snapshot = await provider().fetchSnapshot(account, new AbortController().signal);
+
+      expect(snapshot.httpStatus).toBe(200);
+      expect(findProviderSnapshotProblems(snapshot)).toEqual([]);
+    });
+
     it('issues exactly the three dossier GETs, sequentially, with only the Bearer header', async () => {
       const before = server.requests.length;
       routeCycle(SANITIZED_QUOTA);
@@ -502,6 +514,47 @@ describe('ZaiCodingPlanProvider.fetchSnapshot over real sockets', () => {
         expect(error).toBeInstanceOf(SnapshotParseError);
         expect(errorSurface(error)).not.toContain(MARKER_KEY);
       }
+    });
+
+    it('carries the delivered Content-Type on the error (U-035, D-169)', async () => {
+      server.setPathBehavior(QUOTA_PATH, {
+        kind: 'respond',
+        status: 200,
+        body: 'not json',
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+
+      const error = await provider()
+        .fetchSnapshot(account, new AbortController().signal)
+        .catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(SnapshotParseError);
+      // §11.2's raw-response "content type": the header value as delivered —
+      // the media type is application/json by the transport's gate, the
+      // parameters are the evidence that varies.
+      expect((error as SnapshotParseError).contentType).toBe('application/json; charset=utf-8');
+    });
+
+    it('sanitizes a credential echoed inside the Content-Type header (§15.4, U-035)', async () => {
+      server.setPathBehavior(QUOTA_PATH, {
+        kind: 'respond',
+        status: 200,
+        body: 'not json',
+        // The media type still passes the transport's application/json gate;
+        // the parameter echoes the credential back (D-042's threat model for
+        // retained server strings, applied to the stored column).
+        headers: { 'content-type': `application/json; key="${MARKER_KEY}"` },
+      });
+
+      const error = await provider()
+        .fetchSnapshot(account, new AbortController().signal)
+        .catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(SnapshotParseError);
+      const contentType = (error as SnapshotParseError).contentType ?? '';
+      expect(contentType).not.toContain(MARKER_KEY);
+      expect(contentType).toContain('[REDACTED]');
+      expect(errorSurface(error)).not.toContain(MARKER_KEY);
     });
   });
 

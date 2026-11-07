@@ -79,7 +79,11 @@ interface StoreHarness {
   readonly accountStore: ReturnType<typeof createConfigFileAccountStore>;
   readonly settingsStore: ReturnType<typeof createConfigFileSettingsStore>;
   readonly reload: ReloadDouble;
-  readonly repository: { deleteAllSessionsCalls: number };
+  readonly repository: {
+    deleteAllSessionsCalls: number;
+    /** Seeds the `retention:applied-days` marker the settings read serves. */
+    setAppliedRetentionDays(raw: string | null): void;
+  };
   readonly configPath: string;
   /** Re-points the effective() double at a new configuration. */
   setEffective(input: unknown): void;
@@ -104,12 +108,20 @@ async function withStores(
     }
     const state = { effective: effectiveOf(parsed({ app: { timezone: 'UTC' } })) };
     const reload = new ReloadDouble(state);
-    // The repository double: only the §15.2 revocation call the store makes.
+    // The repository double: the §15.2 revocation call the store makes,
+    // plus the §11.3 applied-retention marker its read serves.
+    let appliedRetentionDays: string | null = null;
     const repository = {
       deleteAllSessionsCalls: 0,
       deleteAllSessions(): number {
         this.deleteAllSessionsCalls++;
         return 0;
+      },
+      getMetaValue(key: string): string | null {
+        return key === 'retention:applied-days' ? appliedRetentionDays : null;
+      },
+      setAppliedRetentionDays(raw: string | null): void {
+        appliedRetentionDays = raw;
       },
     };
     const owner = createConfigFileOwner({
@@ -298,6 +310,31 @@ describe('createConfigFileAccountStore', () => {
 });
 
 describe('createConfigFileSettingsStore', () => {
+  it('serves the applied-retention marker from storage, fail-soft (§11.3, D-178)', async () => {
+    await withStores({}, async (h) => {
+      // No cleanup has completed: the marker is absent, the read is null.
+      await expect(h.settingsStore.read()).resolves.toMatchObject({
+        appliedRetentionDays: null,
+      });
+      // The last completed cleanup applied 180 — served verbatim.
+      h.repository.setAppliedRetentionDays('180');
+      await expect(h.settingsStore.read()).resolves.toMatchObject({
+        appliedRetentionDays: 180,
+      });
+      // A corrupted marker reads null, not a 500: the settings page must
+      // survive it, and the next cleanup's write is the repair.
+      h.repository.setAppliedRetentionDays('corrupt-marker');
+      await expect(h.settingsStore.read()).resolves.toMatchObject({
+        appliedRetentionDays: null,
+      });
+      // An out-of-range integer (beyond the safe range) is corrupt too.
+      h.repository.setAppliedRetentionDays('99999999999999999999');
+      await expect(h.settingsStore.read()).resolves.toMatchObject({
+        appliedRetentionDays: null,
+      });
+    });
+  });
+
   it('writes only the attempted field, skipping environment-owned ones', async () => {
     await withStores({}, async (h) => {
       const config = parsed({ app: { timezone: 'UTC', pollingIntervalSeconds: 600 } });

@@ -113,12 +113,25 @@ export class SnapshotParseError extends Error {
    * a malformed envelope's `msg` is noise, not a diagnostic.
    */
   readonly envelopeMessage: string | undefined;
+  /**
+   * The delivered response's `Content-Type` header value as the caller
+   * scrubbed it — the constructor carries, never scrubs (the same caller
+   * contract `sanitizedPayload` documents): the Z.ai cycle runs the value
+   * through `sanitizeRawResponse`'s raw-text path before construction
+   * (D-041; a header cannot be JSON-walked, and a hostile provider echoing
+   * the credential inside a media-type parameter must not land it in
+   * `raw_responses.content_type`, §15.4 — identity for every real media
+   * type). `undefined` when the caller did not observe one. This is the
+   * wire for §11.2's raw-response "content type" column (D-051/D-169).
+   */
+  readonly contentType: string | undefined;
 
   constructor(
     reason: string,
     httpStatus: number | undefined,
     sanitizedPayload: string,
     envelopeMessage?: string,
+    contentType?: string,
   ) {
     super(reason);
     this.name = new.target.name;
@@ -126,6 +139,7 @@ export class SnapshotParseError extends Error {
     this.httpStatus = httpStatus;
     this.sanitizedPayload = sanitizedPayload;
     this.envelopeMessage = envelopeMessage;
+    this.contentType = contentType;
   }
 }
 
@@ -178,9 +192,22 @@ export function parseQuotaLimitBody(
   body: string,
   httpStatus: number,
   secrets: readonly string[],
+  contentType?: string,
 ): QuotaLimitParseResult {
+  // §15.4: the header value is provider-controlled retained text — the same
+  // D-041 scrub the body gets, applied before the value rides the error
+  // toward `raw_responses.content_type` (D-169). The raw-text path returns a
+  // real media type verbatim; only an echoed secret is replaced.
+  const sanitizedContentType =
+    contentType === undefined ? undefined : sanitizeRawResponse(contentType, secrets);
   const fail = (reason: string, envelopeMessage?: string): SnapshotParseError =>
-    new SnapshotParseError(reason, httpStatus, sanitizeRawResponse(body, secrets), envelopeMessage);
+    new SnapshotParseError(
+      reason,
+      httpStatus,
+      sanitizeRawResponse(body, secrets),
+      envelopeMessage,
+      sanitizedContentType,
+    );
 
   let parsed: unknown;
   try {
@@ -356,7 +383,12 @@ export async function collectZaiSnapshot(
     { url: request.urls.quotaLimit, headers, signal },
     { timeoutMs: request.timeoutMs },
   );
-  const parsed = parseQuotaLimitBody(quotaResponse.body, quotaResponse.status, secrets);
+  const parsed = parseQuotaLimitBody(
+    quotaResponse.body,
+    quotaResponse.status,
+    secrets,
+    quotaResponse.contentType,
+  );
   for (const skip of parsed.skips) {
     // The skip report interpolates payload values (the unrecognized
     // type/unit pair); it passes through the sanitizer's raw-text path
@@ -374,6 +406,10 @@ export async function collectZaiSnapshot(
   const planName = parsed.planName ?? subscriptionPlanName;
   const snapshot: ZaiCollectedSnapshot = {
     collectedAt: request.clock.now(),
+    // §11.2's run-row `http_status` on success (D-169): endpoint 1's
+    // delivered status — the metrics-originating exchange (D-047); the soft
+    // endpoints' statuses are context, never cycle evidence.
+    httpStatus: quotaResponse.status,
     metrics: parsed.metrics,
   };
   if (planName !== undefined) snapshot.planName = planName;

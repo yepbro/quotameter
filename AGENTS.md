@@ -14,6 +14,7 @@ Brief rules and pointers. Details live in separate documents under `docs/agents/
 - **English only** for every repository artifact: commits, code comments, docs, UI strings, CLI output, logs (spec §4.1).
 - **Conventional Commits** (`feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`); imperative subject ≤72 chars.
 - **Plan before code**: before implementing any plan task — design first via the `plan` skill (architecture, affected files, scope of changes). No code is written until the design is complete.
+- **Behavioral logic is an explicit state machine**: anything with statuses, states, lifecycles, or retries (polling phases, account status, sessions, suspension, connection lifecycle) is designed and reworked as an explicit finite state machine — a fixed set of states, events, and a table of allowed transitions — never as scattered flags and ad hoc conditions (see `plan/TZ-fsm.md` for the audit and the formalization track).
 - **Skills before writing code**: before writing or reviewing TypeScript (implementation and tests), load the `antfu` and `ts-library` skills — this applies to the main session and to subagents alike. Follow their conventions where they do not conflict with the specification, `DECISIONS.md`, or the project's existing files; on conflict the project's own rules win.
 - **Tests are mandatory**: new or changed logic ships with tests (happy path + errors + edge cases) in the same commit. A failing test is fixed within the task that broke it, never deferred. Green `make check` before committing; green `make check-all` before landing in `master`.
 - **Task statuses are dual-mode**: in the subagent cycle only the main session changes statuses in `plan/tasks.md` (`[done]` = green `make check-all` on `master`); in solo mode the `[x] + [done]` flip is part of the task commit.
@@ -34,6 +35,7 @@ All commands go through `make` and run inside the worktree's container (no host 
 - `make check` — fast local gate (format, lint, type checks server + UI, tests).
 - `make check-all` — full CI parity; **run it before a push is requested** (plain `make test` does not enforce coverage thresholds; CI does).
 - Individual checks: `make test-unit`, `make lint`, `make typecheck`, …; `make help` lists everything.
+- **Docs-only changes** (nothing but `.md` files touched): formatting is the only required gate — verify with `make format-check` and fix with `make format` (or `prettier --write` on the file); the full test gates are not required for the commit.
 - Fresh checkout: `make image up` once; everything else auto-starts.
 
 ## Area guides

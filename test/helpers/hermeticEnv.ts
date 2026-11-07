@@ -1,6 +1,8 @@
 /**
  * Hermetic `process.env` control for the default-environment seams
- * (decision D-028).
+ * (decision D-028). For building the environment a spawned real-launcher
+ * child inherits (U-045, D-173), see `test/helpers/hermetic-child-env.ts`
+ * instead — this helper narrows the parent's own `process.env`.
  *
  * The testing convention is that environments are injected object literals;
  * `process.env` is never mutated. The two production seams whose *default*

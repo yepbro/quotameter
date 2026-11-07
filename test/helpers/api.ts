@@ -1,4 +1,5 @@
 import type { ApiFetch, ApiFetchResponse } from '../../ui/src/api/client';
+import type { SettingsResponse } from '../../src/schemas/api/settings';
 
 /**
  * Deterministic fakes for the API client's injectable fetch seam (task
@@ -108,12 +109,14 @@ export function healthyApiBody(input: string): unknown {
 /**
  * A minimal valid `GET /api/settings` body — the overview reads its
  * display time zone (`UTC`, deterministic in tests) and history
- * retention from here.
+ * retention from here. The return is TYPED as the response contract, so
+ * a future required field fails type checking here first (the review
+ * round's P2: this helper had silently lagged the widened contract).
  */
-export function healthySettingsBody(historyRetentionDays = 365): unknown {
-  const annotated = (value: unknown) => ({
+export function healthySettingsBody(historyRetentionDays = 365): SettingsResponse {
+  const annotated = <T extends string | number>(value: T) => ({
     value,
-    source: 'file',
+    source: 'file' as const,
     restartRequired: false,
   });
   return {
@@ -136,6 +139,8 @@ export function healthySettingsBody(historyRetentionDays = 365): unknown {
       },
     },
     paths: { configPath: '/tmp/quotameter/config.json', dataDir: '/tmp/quotameter/data' },
+    // §11.3/D-178: null — no completed cleanup in the healthy-fixture world.
+    appliedRetentionDays: null,
   };
 }
 

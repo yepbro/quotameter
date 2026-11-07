@@ -190,18 +190,18 @@ retry/error behaviors leave behind. Exercised directly in
 `test/integration/collection-runs.spec.ts`; the typed data access is task
 088's repository.
 
-| Column                | Type      | Rules                                                                                          |
-| --------------------- | --------- | ---------------------------------------------------------------------------------------------- |
-| `id`                  | `INTEGER` | `PRIMARY KEY` (rowid alias, auto-assigned) — the run id snapshots reference                    |
-| `account_id`          | `TEXT`    | `NOT NULL`, `collection_runs_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE` |
-| `started_at`          | `INTEGER` | `NOT NULL`, §11.1 epoch ms, wall-clock (§7.1)                                                  |
-| `ended_at`            | `INTEGER` | `NOT NULL`, §11.1 epoch ms                                                                     |
-| `interval_seconds`    | `INTEGER` | `NOT NULL`, `collection_runs_interval_range`: §7.1's 60–3600                                   |
-| `outcome`             | `TEXT`    | `NOT NULL`, `collection_runs_outcome`: §11.2's seven values only                               |
-| `http_status`         | `INTEGER` | nullable, `collection_runs_http_status_range`: NULL or 100–599                                 |
-| `error_message`       | `TEXT`    | nullable, `collection_runs_error_nonempty`; NULL on success (`collection_runs_success_clean`)  |
-| `attempts`            | `INTEGER` | `NOT NULL`, `collection_runs_attempts_positive`: §7.2's total attempt count                    |
-| `retry_after_seconds` | `INTEGER` | nullable, `collection_runs_retry_after_range`: NULL or 0–3600 (§7.2's cap)                     |
+| Column                | Type      | Rules                                                                                                                           |
+| --------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                  | `INTEGER` | `PRIMARY KEY` (rowid alias, auto-assigned) — the run id snapshots reference                                                     |
+| `account_id`          | `TEXT`    | `NOT NULL`, `collection_runs_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE`                                  |
+| `started_at`          | `INTEGER` | `NOT NULL`, §11.1 epoch ms, wall-clock (§7.1)                                                                                   |
+| `ended_at`            | `INTEGER` | `NOT NULL`, §11.1 epoch ms                                                                                                      |
+| `interval_seconds`    | `INTEGER` | `NOT NULL`, `collection_runs_interval_range`: §7.1's 60–3600                                                                    |
+| `outcome`             | `TEXT`    | `NOT NULL`, `collection_runs_outcome`: §11.2's seven values only                                                                |
+| `http_status`         | `INTEGER` | nullable, `collection_runs_http_status_range`: NULL or 100–599; on success the delivered 2xx of the snapshot's exchange (D-169) |
+| `error_message`       | `TEXT`    | nullable, `collection_runs_error_nonempty`; NULL on success (`collection_runs_success_clean`)                                   |
+| `attempts`            | `INTEGER` | `NOT NULL`, `collection_runs_attempts_positive`: §7.2's total attempt count                                                     |
+| `retry_after_seconds` | `INTEGER` | nullable, `collection_runs_retry_after_range`: NULL or 0–3600 (§7.2's cap)                                                      |
 
 Indexes (§11.2 "runs by account/start and account/outcome/start"):
 `collection_runs_account_start (account_id, started_at)` and
@@ -222,7 +222,12 @@ Pinned interpretations (D-034):
   when no response arrived; `retry_after_seconds` is absent when no
   `Retry-After` applies (a 429 may arrive without the header). Binding either
   to specific outcomes would freeze collector/adapter behavior (tasks 098+)
-  into the on-disk contract.
+  into the on-disk contract. Since U-035 (decision D-169) the success path
+  populates the column too: §8.4's `ProviderSnapshot` carries the delivered
+  2xx as optional transport evidence, and the settle seam retains it through
+  the same classification the failure statuses ride — an adapter that stamps
+  nothing still stores NULL (D-069's recorded gap, closed by its named
+  §8.4-surface successor decision).
 - **`error_message` stores already-sanitized text** (§7.2 "sanitized error
   information") — the redaction module is task 102's; storage keeps the
   absent-or-non-blank shape and the one §7.2 coupling: a successful run
@@ -448,15 +453,15 @@ as-is), retention execution (20 per account / 30 days) is task 103's, and
 the typed access is task 088's. Exercised directly in
 `test/integration/raw-responses.spec.ts`.
 
-| Column         | Type      | Rules                                                                                        |
-| -------------- | --------- | -------------------------------------------------------------------------------------------- |
-| `run_id`       | `INTEGER` | `NOT NULL UNIQUE` — one raw record per run by identity; composite-FK carrier below           |
-| `account_id`   | `TEXT`    | `NOT NULL`, `raw_responses_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE` |
-| `captured_at`  | `INTEGER` | `NOT NULL`, §11.1 epoch ms, writer-supplied (no SQL default) — the 30-day retention key      |
-| `http_status`  | `INTEGER` | nullable, `raw_responses_http_status_range`: NULL or 100–599 (D-034 mirror)                  |
-| `content_type` | `TEXT`    | nullable, `raw_responses_content_type_nonempty`: absent or non-blank                         |
-| `body`         | `TEXT`    | `NOT NULL`, may be empty; `raw_responses_body_size`: `octet_length(body) <= 65536`           |
-| `run_outcome`  | `TEXT`    | `NOT NULL`, `raw_responses_parse_error_only`: `'parse_error'` only — the composite FK's term |
+| Column         | Type      | Rules                                                                                                          |
+| -------------- | --------- | -------------------------------------------------------------------------------------------------------------- |
+| `run_id`       | `INTEGER` | `NOT NULL UNIQUE` — one raw record per run by identity; composite-FK carrier below                             |
+| `account_id`   | `TEXT`    | `NOT NULL`, `raw_responses_account_charset` (D-014), FK → `accounts(id)` `ON DELETE CASCADE`                   |
+| `captured_at`  | `INTEGER` | `NOT NULL`, §11.1 epoch ms, writer-supplied (no SQL default) — the 30-day retention key                        |
+| `http_status`  | `INTEGER` | nullable, `raw_responses_http_status_range`: NULL or 100–599 (D-034 mirror)                                    |
+| `content_type` | `TEXT`    | nullable, `raw_responses_content_type_nonempty`: absent or non-blank; the delivered header since U-035 (D-169) |
+| `body`         | `TEXT`    | `NOT NULL`, may be empty; `raw_responses_body_size`: `octet_length(body) <= 65536`                             |
+| `run_outcome`  | `TEXT`    | `NOT NULL`, `raw_responses_parse_error_only`: `'parse_error'` only — the composite FK's term                   |
 
 Structural constraints beyond the columns:
 
@@ -511,7 +516,14 @@ Pinned interpretations (D-051):
   header value verbatim or absent — unbounded by design: §7.4's cap is the
   payload's, the transport's header-size limit bounds what can arrive, and
   a schema-side bound would reject states the domain can produce (the
-  D-039 rule).
+  D-039 rule). Since U-035 (decision D-169) the column is populated: the
+  adapter's parse-failure hand-off carries the delivered `Content-Type`
+  (§7.4-scrubbed — a credential echoed in a media-type parameter stores
+  `[REDACTED]`, never the key; D-042's retained-server-string discipline),
+  so `doctor --raw` reads the real header instead of a permanent NULL;
+  absent stays NULL. The transport's `application/json` gate means every
+  stored value is an `application/json…` header — the parameters are the
+  varying evidence.
 - **Cascading linkage** — deleting a run removes its payload (§11.3's
   cleanup deletes expired runs — their payloads are older still); deleting
   an account removes its payloads (§8.2 purge); archiving is an UPDATE and
@@ -812,15 +824,20 @@ bytes — against the production connection (task 079's readback-verified WAL).
 §11.3's cleanup as one repeat-safe operation: it deletes every row the window
 expired — through the facade's count-returning deletes (D-058), in one
 transaction that also writes the §11.2 cleanup metadata — and then runs the
-maintenance primitive. **Scheduling is not here**: when this runs (startup and
-daily) is the server lifecycle's concern; the module takes an explicit `now`
-and window (D-021 — the future scheduler computes them from the injectable
-clock and the loaded configuration) and is safe to call back-to-back.
-`test/integration/retention-cleanup.spec.ts` verifies the done-condition —
+maintenance primitive. **Scheduling is not here**: the composition's
+`retention` component (`src/server/retention.ts`, U-051's polling-composition
+shape — task U-053, decision D-178) runs this operation once after the storage
+component's migrations and then once every 24 h, reading `now` from the shared
+clock and the window from the live configuration at each run; this module takes
+an explicit `now` and window (D-021) and stays safe to call back-to-back.
+`test/integration/retention-cleanup.spec.ts` verifies the operation's own
+done-condition —
 "startup and daily cleanup are safe to repeat" — by running the cleanup twice
 over seeded multi-account history (identical input: the second run removes
 nothing and changes nothing), then at a later `now` (only the newly expired
-go), then at an earlier one (a harmless no-op).
+go), then at an earlier one (a harmless no-op);
+`test/unit/server-retention.spec.ts` and
+`test/integration/composition-retention.spec.ts` pin the schedule itself.
 
 | Table             | Time column   | Cutoff                     | Semantics                                                                                                               |
 | ----------------- | ------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -874,9 +891,10 @@ go), then at an earlier one (a harmless no-op).
   except the two markers is touched; expired history of archived accounts
   goes with the window (retention is a history rule), pinned by test.
 - **The reduce-retention warning is a recorded hook, not built here** — the
-  config/UI layer reads `retention:applied-days` and warns when a newly
-  configured window is smaller: the records between the two windows are
-  exactly what the next cleanup deletes.
+  settings surface reads `retention:applied-days` (served as
+  `GET /api/settings`'s `appliedRetentionDays` since task U-053, D-178) and
+  the settings UI warns when a drafted window is smaller: the records
+  between the two windows are exactly what the next cleanup deletes.
 
 ## `raw-response-retention.ts` — the §7.4 per-account cap (task 103, spec §7.4, §5.5, decision D-067)
 

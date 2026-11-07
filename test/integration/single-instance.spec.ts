@@ -791,16 +791,47 @@ describe('recovery guard protocol (D-086, U-017)', () => {
       let probes = 0;
       const lock = createSingleInstanceLock({
         dataDir: dir.path,
-        guardTimeoutMs: 20,
+        // Sized per D-094's ≈3× bar (U-048, decision D-174): the span the
+        // deadline must margin is the one up to its FIRST check —
+        // `acquireGuard` arms the deadline at entry and checks it right
+        // after the FIRST failed `publishGuard`, before any liveness probe;
+        // once past that check, probe #1 and the capture decision at probe
+        // #2 run with no deadline check between them. At the old 20 ms, one
+        // scratch-write + link + rm through the loaded threadpool could
+        // consume the budget and acquisition degraded to contention BEFORE
+        // the mid-break window existed: `isAlive` never ran, the guard path
+        // kept the stale payload, and the payload-identity assertion failed
+        // (the 2026-11-06 `make check-all` flake; reproduced 1/10 isolated
+        // runs under the six-hog rig at ambient load ~22, deterministic at
+        // `guardTimeoutMs: 0`). 1000 ms margins the measured start→capture
+        // worst (58 ms isolated-rig; one warm in-pool sample measured 5 ms)
+        // by ≈17× — equal to the product's default guard budget when sized
+        // (`DEFAULT_GUARD_TIMEOUT_MS` is unexported: the equality is stated,
+        // not coupled, and a lock-protocol change re-measures per D-174's
+        // standing rule). A >1 s stall before the first check remains
+        // D-163's extreme-burst residual class. The ~1 s post-capture wait
+        // the budget buys against the live replacement guard is the pinned
+        // semantics itself (the loop cannot exit against a live holder
+        // except by deadline).
+        guardTimeoutMs: 1000,
         guardPollMs: 2,
         maxAttempts: 1,
         isAlive: () => {
-          if (probes++ === 0) return false;
-          // Between the guard inspection (stale) and the capture decision,
-          // the guard path is retaken by a live holder's guard — the
-          // one-level-down race D-086 documents as its accepted residual.
-          rmSync(guardPath, { force: true });
-          writeFileSync(guardPath, livePayload);
+          const call = probes++;
+          if (call === 0) return false;
+          if (call === 1) {
+            // Between the guard inspection (stale) and the capture decision,
+            // the guard path is retaken by a live holder's guard — the
+            // one-level-down race D-086 documents as its accepted residual.
+            // Installed exactly once, at that decision point: later probes
+            // only answer "live", so the final path assertion below observes
+            // the product keeping the replacement, never the hook
+            // re-creating it (review round P3-1 — the old
+            // rewrite-on-every-probe shape thrashed ~300 rewrites across
+            // the sized wait).
+            rmSync(guardPath, { force: true });
+            writeFileSync(guardPath, livePayload);
+          }
           return true;
         },
       });

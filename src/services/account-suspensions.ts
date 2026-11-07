@@ -13,17 +13,20 @@
  * state machine itself stays the single authority (every entry point here
  * delegates to `polling-suspension`).
  *
- * The transitions fed here are exactly the ones the composition can observe
- * today: the manual connection test (`POST /api/accounts/:id/test`). D-064's
- * own reading is applied verbatim — the *request* releases unconditionally
- * ("until … a manual test is requested"), the attempt then runs, and its
- * 401/403 immediately re-enters suspension with a fresh 60-minute window —
- * so the observable end state is the task's done-condition: a *successful*
- * manual test lifts the pause, a rejected one keeps it. When the polling
- * engine lands it becomes the holding side for polled cycles (feeding
- * `applyCycleOutcome` per normal poll); this holder remains the composition's
- * seam for manual tests and status reads, so the two cannot disagree about
- * whether an account is suspended.
+ * The transitions fed here are the ones the composition can observe: the
+ * manual connection test (`POST /api/accounts/:id/test`) and — since the
+ * polling engine joined the composition (U-051, D-176) — every settled
+ * polled cycle through {@link AccountSuspensions.polledCycleOutcome}. D-064's
+ * own reading is applied verbatim for the manual test — the *request*
+ * releases unconditionally ("until … a manual test is requested"), the
+ * attempt then runs, and its 401/403 immediately re-enters suspension with a
+ * fresh 60-minute window — so the observable end state is the task's
+ * done-condition: a *successful* manual test lifts the pause, a rejected one
+ * keeps it. The polling engine holds its own internal D-064 machine (it
+ * gates dispatch); this holder stays the composition's seam for status
+ * reads and manual tests, fed the same classified outcomes (with the
+ * engine's stale-outcome rule), so the two pure machines — same events,
+ * same transitions — cannot disagree about whether an account is suspended.
  */
 
 import type { Clock } from '../util/clock';
@@ -83,6 +86,27 @@ export interface AccountSuspensions {
    * so unconditional reporting cannot miss or duplicate a release.
    */
   reportKeyIdentity(accountId: string, keyIdentity: string): void;
+  /**
+   * A polled cycle settled with this classification (U-051, D-176): feeds
+   * D-064's outcome seam so this holder — the `/api/status` seam — stays in
+   * lockstep with the polling engine's own machine. `keyIdentity` is the
+   * identity of the key the cycle RAN with (the wiring's, snapshotted at
+   * dispatch — a cycle that raced a key change reports the old identity and
+   * the caller skips the feed, mirroring the engine's stale-outcome rule).
+   * Non-auth outcomes are D-064 no-ops; reporting them keeps the two
+   * machines on identical event streams.
+   */
+  polledCycleOutcome(accountId: string, outcome: CycleOutcome, keyIdentity: string): void;
+  /**
+   * The account left the polled set (removed, disabled, or its secret
+   * stopped resolving — U-051, D-176): the episode drops, matching the
+   * engine's own dropped entry (D-066's removal semantics). Suspension is
+   * process memory — a restart forgets it too (D-064's recorded
+   * consequence) — and D-070's run-evidence arm keeps the §7.3 display
+   * truthful for the first cycle after a return, so the two machines never
+   * disagree about a re-added account.
+   */
+  dropAccount(accountId: string): void;
 }
 
 /**
@@ -135,6 +159,13 @@ export function createAccountSuspensions(options: AccountSuspensionsOptions): Ac
     reportKeyIdentity(accountId, keyIdentity) {
       const now = options.clock.now();
       transition(accountId, (state) => applyKeyIdentity(state, keyIdentity, now).state);
+    },
+    polledCycleOutcome(accountId, outcome, keyIdentity) {
+      const now = options.clock.now();
+      transition(accountId, (state) => applyCycleOutcome(state, outcome, keyIdentity, now).state);
+    },
+    dropAccount(accountId) {
+      states.delete(accountId);
     },
   };
 }

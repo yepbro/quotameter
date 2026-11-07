@@ -8,22 +8,27 @@ quality target comes from spec §17.3 (see
 
 ## What runs where
 
-| Concern    | Answer                                                                                                                                                   |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Trigger    | `schedule` cron `17 2 * * *` — daily at **02:17 UTC = 09:17 (UTC+7)** — plus manual `workflow_dispatch`                                                  |
-| Executor   | GitHub-hosted runner, pinned `ubuntu-24.04` (the systemd-less image the full suite requires, D-160) — GitHub's infrastructure, nothing local is involved |
-| Definition | [`.github/workflows/mutation.yml`](../.github/workflows/mutation.yml) on the default branch (`master`)                                                   |
-| Subject    | The tip of `master` at run start (fresh checkout)                                                                                                        |
-| Tool       | Stryker via `npm run test:mutation`, configured by [`stryker.config.mjs`](../stryker.config.mjs)                                                         |
-| Cost       | Free — Actions minutes are not billed for public repositories                                                                                            |
-| Output     | Run artifact (JSON + HTML) and the rolling `mutation-report` issue                                                                                       |
+| Concern    | Answer                                                                                                                                          |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trigger    | `schedule` cron `17 2 * * *` — daily at **02:17 UTC = 09:17 (UTC+7)** — plus manual `workflow_dispatch`                                         |
+| Executor   | GitHub-hosted runner (`ubuntu-latest`); the job runs in the `node:22.13.0` container — the fresh, systemd-less class the suite requires (D-162) |
+| Definition | [`.github/workflows/mutation.yml`](../.github/workflows/mutation.yml) on the default branch (`master`)                                          |
+| Subject    | The tip of `master` at run start (fresh checkout)                                                                                               |
+| Tool       | Stryker via `npm run test:mutation`, configured by [`stryker.config.mjs`](../stryker.config.mjs)                                                |
+| Cost       | Free — Actions minutes are not billed for public repositories                                                                                   |
+| Output     | Run artifact (JSON + HTML; the Stryker output log when the run crashes before scoring) and the rolling `mutation-report` issue                  |
 
 The pipeline inside the run: checkout → `npm ci` → Stryker
-(`continue-on-error`, so a below-threshold score still produces the
-report) → artifact upload → markdown rendered from the JSON report →
-issue upsert through the preinstalled `gh` CLI (the repository pins
-third-party actions by commit SHA and adds none here) → the job is marked
-failed **after** reporting if the score is below the break threshold.
+(`continue-on-error` and output teed to a log, so both a below-threshold
+score and a crash still produce the triage issue) → the Stryker log is
+preserved into the artifact when no report was written → artifact upload →
+markdown rendered from the JSON report (or a crash report when the JSON
+never appeared) → issue upsert through the preinstalled `gh` CLI (the
+repository pins third-party actions by commit SHA and adds none here) →
+the job is marked failed **after** reporting — with wording that matches
+what actually happened: a below-break score says so, a crashed run says
+no score was measured. The one discriminator is the report file's
+existence, never the step outcome (decision D-172).
 
 The workflow declares `permissions: { contents: read, issues: write }` —
 the auto-injected `GITHUB_TOKEN` can create and edit issues and nothing
@@ -32,11 +37,15 @@ else. No secrets are stored anywhere for this to work.
 ## The rolling issue
 
 - A single open issue labeled **`mutation-report`** carries the latest
-  report as its body (title shows the last run date and verdict); the
-  workflow creates the label itself before first use, via
+  **scored** report as its body (title shows the last run date and verdict);
+  the workflow creates the label itself before first use, via
   `gh label create … || true`, so the repository needs no one-time setup.
 - Every run **appends a one-line comment**, so the comment thread is the
-  history of verdicts over time.
+  history of verdicts over time. A run that crashes before scoring appends
+  its full crash report as the comment instead — and **never replaces the
+  last scored body** (an existing issue is retitled to `crashed (no report
+produced)` only, so the survivor triage list stays the body until a
+  scored run legitimately replaces it; decision D-172).
 - Find it from the command line:
 
   ```bash
@@ -73,9 +82,21 @@ node scripts/render-mutation-report.mjs /tmp/mutation-report/mutation/mutation.j
 ```
 
 The verdict line follows `STRYKER_OUTCOME` (`failure` means below the break
-threshold); prefix the command with `STRYKER_OUTCOME=failure` to preview a
-red run faithfully, since a hand run without the variable always reads as
-passing.
+threshold) — but only because the workflow renders that variable solely
+when a scored report exists; the outcome alone is `failure` for any
+Stryker-step failure and never carries the wording by itself (D-172).
+Prefix the command with `STRYKER_OUTCOME=failure` to preview a red run
+faithfully, since a hand run without the variable always reads as passing.
+
+A **missing** report renders the crash report instead of failing — preview
+that path (locally or against a crashed run's artifact log) by pointing
+the renderer at a nonexistent JSON with the captured Stryker log beside
+it; without the log the body still renders, with the cause `unknown`:
+
+```bash
+STRYKER_LOG_FILE=/tmp/stryker-output.log \
+  node scripts/render-mutation-report.mjs /nonexistent/mutation.json
+```
 
 The HTML report (`mutation.html` in the artifact) shows every mutant with
 its diff — the most convenient view while triaging.
@@ -124,18 +145,30 @@ configured break threshold`. Thresholds live in
    reach by construction (a guard makes the index total, a language
    invariant makes the element exist) is dead code to remove, not a
    test to write.
-3. **Job red (below break threshold)** — treat as a regression of the
+3. **Job red, crashed run — "Stryker exited without producing a mutation
+   report"** — the run died before scoring (an initial-test-run failure is
+   the known shape: Stryker refuses to mutate against a red suite). This
+   is **not** a quality regression and there is nothing to triage as
+   survivors: no score exists. The issue comment carries the crash report
+   (the failing initial-run tests extracted from the Stryker log, capped
+   at 20), the run link, and the run artifact holds `stryker-output.log`.
+   React by making the named tests green — usually a flaky or
+   environment-sensitive suite (see `docs/agents/gotchas.md`) — then
+   `gh workflow run mutation.yml --ref master` to confirm a scored report
+   returns. The rolling issue's body keeps the last scored report until
+   then, so triage of it may continue undisturbed.
+4. **Job red (below break threshold)** — treat as a regression of the
    quality gate: triage the worst files first, land killing tests, and
    re-run the workflow manually (`gh workflow run mutation.yml`) to
    confirm instead of waiting a day. Do not lower thresholds to make a
-   report green; raising them when the §17.3 critical modules
-   (reset detection, peak-hours, sanitization, downsampling) land is the
-   expected direction (task 055 plan).
-4. **Turning findings into work.** During the development cycle, a triage
+   report green; the four §17.3 critical modules (reset detection,
+   peak-hours, sanitization, downsampling) have all landed, and
+   per-module thresholds remain the recorded D-045 follow-up.
+5. **Turning findings into work.** During the development cycle, a triage
    conclusion becomes a normal planned task or an `U-NNN` entry in the
    "Unplanned tasks" section of [`plan/tasks.md`](../plan/tasks.md); the
    next daily run reflects the landed fixes automatically.
-5. **`timed out` mutants** count as detected, but a growing count signals
+6. **`timed out` mutants** count as detected, but a growing count signals
    slow or hanging tests — worth a look before it eats the runner budget.
 
 ## Running locally

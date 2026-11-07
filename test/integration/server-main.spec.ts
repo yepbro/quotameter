@@ -10,8 +10,9 @@ import { configFilePath } from '../../src/config/load';
 import { writeConfigFile } from '../../src/config/write';
 import type { LifecycleComponent } from '../../src/server/app';
 import {
-  buildComponents,
+  buildApplication,
   currentRuntime,
+  installReloadSignal,
   installShutdownSignals,
   runServer,
   verifyRuntime,
@@ -146,7 +147,7 @@ describe('verifyRuntime', () => {
   });
 });
 
-describe('buildComponents', () => {
+describe('buildApplication', () => {
   it('assembles the production composition in §5.6 order', async () => {
     const dir = await createTempDir('quotameter-build-components-');
     try {
@@ -157,10 +158,46 @@ describe('buildComponents', () => {
       await withQuotameterEnv(
         { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: join(dir.path, 'data') },
         async () => {
-          names = (await buildComponents()).map((component) => component.name);
+          names = (await buildApplication()).components.map((component) => component.name);
         },
       );
-      expect(names).toEqual(['single-instance-lock', 'storage', 'http-listener']);
+      // `shutdown.ts`'s documented §5.6 order, completed by U-051/D-176
+      // and U-053/D-178: the retention schedule sits directly after
+      // storage (its startup cleanup runs after migrations; its daily
+      // wait is cancelled before the database closes), and the drain sits
+      // between it and the scheduler so an aborted cycle's settlement
+      // never races the database close.
+      expect(names).toEqual([
+        'single-instance-lock',
+        'storage',
+        'retention',
+        'graceful-drain',
+        'polling',
+        'http-listener',
+      ]);
+    } finally {
+      await dir.remove();
+    }
+  });
+
+  it('exposes the composition-wrapped reload beside the components (D-177)', async () => {
+    // The SIGHUP face is part of the assembled result the runtime wires —
+    // the same wrapped reload the stores flow through, never a bare
+    // `reloader.reload()` (D-176/D-177).
+    const dir = await createTempDir('quotameter-build-reload-');
+    try {
+      const configDir = join(dir.path, 'config');
+      await mkdir(configDir, { recursive: true, mode: 0o700 });
+      await writeConfigFile(configFilePath(configDir), { app: { timezone: 'UTC' } });
+      let composed: Awaited<ReturnType<typeof buildApplication>> | undefined;
+      await withQuotameterEnv(
+        { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: join(dir.path, 'data') },
+        async () => {
+          composed = await buildApplication();
+        },
+      );
+      expect(typeof composed?.applyReload).toBe('function');
+      expect(typeof composed?.reloadOnSighup).toBe('function');
     } finally {
       await dir.remove();
     }
@@ -175,7 +212,7 @@ describe('buildComponents', () => {
         withQuotameterEnv(
           { QUOTAMETER_CONFIG_DIR: configDir, QUOTAMETER_DATA_DIR: join(dir.path, 'data') },
           async () => {
-            await expect(buildComponents()).rejects.toThrow(/configuration file not found/);
+            await expect(buildApplication()).rejects.toThrow(/configuration file not found/);
           },
         ),
       ).resolves.toBeUndefined();
@@ -210,6 +247,39 @@ describe('installShutdownSignals', () => {
     signals.dispose();
     expect(removeSpy).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
     expect(removeSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
+  });
+});
+
+describe('installReloadSignal', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('wires SIGHUP to the reload operation and disposes it', () => {
+    const onSpy = vi.spyOn(process, 'on');
+    const removeSpy = vi.spyOn(process, 'removeListener');
+    const calls: number[] = [];
+    const reload = (): void => {
+      calls.push(calls.length);
+    };
+
+    const signals = installReloadSignal(reload);
+    const registered = onSpy.mock.calls
+      .filter(([event]) => event === 'SIGHUP')
+      .map(([event, listener]) => ({
+        event: event as string,
+        listener: listener as () => void,
+      }));
+    expect(registered).toHaveLength(1);
+
+    // The registered listener is the operation itself — no signal adapter
+    // in between (the operation owns its error containment, D-177).
+    expect(registered[0]?.listener).toBe(reload);
+    registered[0]?.listener();
+    expect(calls).toHaveLength(1);
+
+    signals.dispose();
+    expect(removeSpy).toHaveBeenCalledWith('SIGHUP', reload);
   });
 });
 
@@ -248,6 +318,21 @@ describe('runServer (in-process)', () => {
     const call = onSpy.mock.calls.filter(([event]) => event === 'SIGTERM').at(-1);
     expect(call, 'runServer did not register a SIGTERM handler').toBeDefined();
     return call?.[1] as (signal: NodeJS.Signals) => void;
+  }
+
+  /**
+   * The SIGHUP twin of {@link sigtermHandlerAfter}: the reload handler
+   * `runServer` registered (only when a reload operation exists, D-177).
+   */
+  async function sighupHandlerAfter(
+    onSpy: MockInstance<typeof process.on>,
+    started: Promise<unknown>,
+  ): Promise<() => void> {
+    await started;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const call = onSpy.mock.calls.filter(([event]) => event === 'SIGHUP').at(-1);
+    expect(call, 'runServer did not register a SIGHUP handler').toBeDefined();
+    return call?.[1] as () => void;
   }
 
   /**
@@ -354,6 +439,75 @@ describe('runServer (in-process)', () => {
     await expect(server).resolves.toBe(0);
   });
 
+  it('routes SIGHUP to the reload operation without stopping the process (D-177)', async () => {
+    const onSpy = vi.spyOn(process, 'on');
+    const removeSpy = vi.spyOn(process, 'removeListener');
+    let resolveStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    });
+    const component: LifecycleComponent = {
+      name: 'probe',
+      async start() {
+        resolveStart();
+      },
+      async stop() {},
+    };
+    let reloads = 0;
+    const reload = (): void => {
+      reloads++;
+    };
+
+    const server = runServer({ components: [component], reload });
+    let settled = false;
+    void server.then(() => {
+      settled = true;
+    });
+    const sighup = await sighupHandlerAfter(onSpy, started);
+    const sigterm = await sigtermHandlerAfter(onSpy, started);
+    shutdownTriggers.push(() => sigterm('SIGTERM'));
+
+    // A burst of SIGHUPs reaches the reload operation each time (the
+    // reloader serializes them in production, D-026 §5); only a shutdown
+    // signal resolves the run.
+    sighup();
+    sighup();
+    expect(reloads).toBe(2);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    sigterm('SIGTERM');
+    await expect(server).resolves.toBe(0);
+    // Disposed with the shutdown pair: the seam itself was removed.
+    expect(removeSpy).toHaveBeenCalledWith('SIGHUP', reload);
+  });
+
+  it('keeps the OS-default SIGHUP disposition when no reload operation exists (D-177)', async () => {
+    const onSpy = vi.spyOn(process, 'on');
+    let resolveStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    });
+    const component: LifecycleComponent = {
+      name: 'probe',
+      async start() {
+        resolveStart();
+      },
+      async stop() {},
+    };
+
+    const server = runServer({ components: [component] });
+    const handler = await sigtermHandlerAfter(onSpy, started);
+    shutdownTriggers.push(() => handler('SIGTERM'));
+
+    // Bare components carry no reload operation, so no SIGHUP listener is
+    // installed — an embedder keeps the terminal-disconnect default.
+    expect(onSpy.mock.calls.some(([event]) => event === 'SIGHUP')).toBe(false);
+
+    handler('SIGTERM');
+    await expect(server).resolves.toBe(0);
+  });
+
   it('runs with the assembled default components when none are passed', async () => {
     const onSpy = vi.spyOn(process, 'on');
     let resolveReady!: () => void;
@@ -361,7 +515,7 @@ describe('runServer (in-process)', () => {
       resolveReady = resolve;
     });
 
-    // No `components`: the production assembly from buildComponents() runs —
+    // No `components`: the production assembly from buildApplication() runs —
     // the composed service (config load, lock, migrated storage, the wired
     // listener) over temp directories through the §6.1 environment channel.
     // The listener binds for real, so the configuration names a port
@@ -389,6 +543,12 @@ describe('runServer (in-process)', () => {
       );
       const handler = await sigtermHandlerAfter(onSpy, ready);
       shutdownTriggers.push(() => handler('SIGTERM'));
+
+      // The composed default carries the reload operation, so the SIGHUP
+      // handler is installed beside the shutdown pair (D-177) — the
+      // real-signal behavior is pinned by cli-run.spec.ts through the
+      // launcher.
+      expect(onSpy.mock.calls.some(([event]) => event === 'SIGHUP')).toBe(true);
 
       await handler('SIGTERM');
       await server;

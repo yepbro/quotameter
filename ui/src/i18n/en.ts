@@ -380,6 +380,10 @@ export const en = {
       // the ranges the Overview page offers.
       retentionHint: 'Also decides which history ranges the Overview page offers.',
       retentionInvalid: 'Enter a whole number between {min} and {max}.',
+      // §11.3's reduce-retention warning (D-178): a draft below the window
+      // the last cleanup applied means the records between the two windows
+      // go at the NEXT cleanup — {days} is the drafted new window.
+      retentionReduceWarning: 'History older than {days} days will be removed at the next cleanup.',
       level: 'Log level',
       save: 'Save settings',
       saving: 'Saving…',

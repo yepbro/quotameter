@@ -299,9 +299,10 @@ Semantics, pinned in D-026:
   successful reload applies `logging.level` through `logger.setLevel` —
   the level is schema-guaranteed, so it cannot throw.
 
-Signal installation is deliberately absent: `src/server/main.ts` leaves
-SIGHUP unhandled, and the later assembly task wires
-`process.on('SIGHUP', …)` to `reload()` (the D-024 readiness discipline).
+Signal installation is deliberately absent: `src/server/main.ts` wires
+`process.on('SIGHUP', …)` (U-052, D-177) to the composition-wrapped
+reload — the bare `reloader.reload()` here is one part of it (the D-128
+config-sync and the D-176 polling feeds ride the same wrapper).
 The optional `env`, `filesystem`, and `logger` parameters are seams for
 deterministic tests and composition wiring; production passes `targetPath`,
 `initial`, and `logger` only.

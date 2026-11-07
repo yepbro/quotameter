@@ -45,6 +45,11 @@ void reloadProviders();
 const lastSettings = ref<SettingsResponse['settings'] | null>(null);
 /** The last successfully loaded paths block (same rule). */
 const lastPaths = ref<SettingsResponse['paths'] | null>(null);
+/**
+ * The retention window the last completed cleanup applied (§11.3, D-178) —
+ * the reduce-retention warning's reference; `null` before any cleanup.
+ */
+const lastAppliedRetentionDays = ref<number | null>(null);
 /** Whether the settings view has loaded successfully at least once. */
 const settingsLoaded = ref(false);
 /** The last successfully loaded providers (same rule as the settings). */
@@ -56,6 +61,7 @@ watch(settingsData, (data) => {
   if (data === null) return;
   lastSettings.value = data.settings;
   lastPaths.value = data.paths;
+  lastAppliedRetentionDays.value = data.appliedRetentionDays;
   settingsLoaded.value = true;
 });
 
@@ -166,7 +172,11 @@ function onThemeSelect(event: Event): void {
         </p>
       </section>
 
-      <SettingsGeneralForm :settings="lastSettings" @saved="onSaved" />
+      <SettingsGeneralForm
+        :settings="lastSettings"
+        :applied-retention-days="lastAppliedRetentionDays"
+        @saved="onSaved"
+      />
 
       <!-- §14.1's theme choice, one controller with the header select. -->
       <div class="theme-row" data-testid="settings-theme-row">
