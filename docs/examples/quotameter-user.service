@@ -1,0 +1,87 @@
+# Quotameter - example systemd user unit (spec §5.3/§5.4; decisions
+# D-104/D-200).
+#
+# This is the unit `quotameter init` (or `quotameter service install`
+# without sudo) generates for the per-user service manager, with every
+# directive annotated. A test (test/unit/systemd-unit-examples.spec.ts)
+# renders the real generator and pins every directive line of this file
+# against its output, so the example cannot drift from what the CLI
+# writes; comments and blank lines are the only free-form part.
+#
+# Install location: ~/.config/systemd/user/quotameter.service (no root
+# needed). Prefer `quotameter init` or `quotameter service install` over
+# hand-editing: they fill in the absolute paths from your machine, then
+# enable and start the service through `systemctl --user`. Hand-edit only
+# where the CLI cannot run, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now quotameter.service
+#
+# A user service stops when its owner logs out unless lingering is
+# enabled for the account: `sudo loginctl enable-linger <user>`.
+#
+# No secrets in this file - not even an API key (spec §15.4): the only
+# Environment= line the validators allow is NODE_ENV=production. Deliver
+# a key from the environment through ~/.config/environment.d/ instead -
+# see "First-time setup" in README.md.
+#
+# The values below are one representative install (Node under /usr/local,
+# npm global prefix /usr/local/lib/node_modules). Replace both ExecStart
+# paths with yours. `quotameter service install --restart-sec <seconds>`
+# regenerates the unit with a different restart delay (default 5).
+
+[Unit]
+Description=Quotameter - usage quota monitoring for AI subscriptions
+Documentation=https://github.com/yepbro/quotameter
+# Spec §5.4 requires the network ordering for units. The user manager
+# ships no network-online.target of its own: ordering against a missing
+# unit is trivially satisfied and the Wants= pull-in has no effect -
+# benign, and the directives stay as the spec prescribes.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# A user unit carries no User=/Group= line at all: the per-user manager
+# runs the service as your account (systemd rejects User= here), so the
+# never-root rule of spec §5.1 holds by construction.
+# Fail the start visibly when the ExecStart paths have gone stale after a
+# Node or package upgrade: with Type=exec, systemd itself reports the
+# exec failure. `quotameter doctor` detects the same staleness;
+# `quotameter service install` regenerates the unit.
+Type=exec
+# The supervised foreground command. Both paths are absolute and pinned
+# at generation time because Node may live anywhere (nvm, NodeSource,
+# distro package) and the CLI entry moves with the npm global prefix.
+# After a Node upgrade or a package reinstall these paths go stale -
+# regenerate the unit instead of editing it.
+ExecStart=/usr/local/bin/node /usr/local/lib/node_modules/quotameter/bin/quotameter.mjs run
+# The only environment line the validators allow (spec §5.4):
+# NODE_ENV=production. Never add secrets or other variables.
+Environment=NODE_ENV=production
+# Restart automatically when the process exits with failure. Spec §5.4
+# fixes this value and the validators accept no other - `doctor` fails a
+# unit that carries a different one. A clean SIGTERM shutdown exits 0
+# and is not restarted.
+Restart=on-failure
+# Delay between restart attempts (the `service install --restart-sec`
+# option, default 5 seconds).
+RestartSec=5s
+# The compatible minimal hardening set of spec §5.4 (decision D-104):
+# NoNewPrivileges is the one directive of the system unit's set that the
+# unprivileged user manager can always apply. PrivateTmp,
+# ProtectSystem=strict, ProtectHome=read-only, and ReadWritePaths are
+# not available to the user manager (they need mount-namespace support
+# it does not have), so they are absent here - and the user-unit
+# validator flags them as unexpected directives if pasted in. Write
+# protection in user mode is the application's own discipline:
+# configuration file 0600, config/data directories 0700.
+NoNewPrivileges=true
+# Log to the journal: `journalctl --user -u quotameter`, or
+# `quotameter logs`.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+# The user manager's own default target (it ships no multi-user.target):
+# `systemctl --user enable` creates the wants-symlink here. The system
+# unit uses multi-user.target instead - see quotameter.service.
+WantedBy=default.target

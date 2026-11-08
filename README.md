@@ -138,9 +138,9 @@ Two installation scopes:
   sudo quotameter service install   # writes /etc/systemd/system/quotameter.service with User=<you>
   ```
 
-  The generated system unit carries the hardening set of spec §5.4 (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ReadWritePaths` limited to the config/data directories), `Restart=on-failure`, and ordering after `network-online.target`; install enables and starts the service and verifies `systemctl is-active` plus a loopback `GET /api/health`. Controlling a system service afterwards needs sudo: `sudo quotameter restart`, `sudo quotameter stop`.
+  The generated system unit carries the hardening set of spec §5.4 (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only`, `ReadWritePaths` limited to the config/data directories), `Restart=on-failure`, and ordering after `network-online.target`; install enables and starts the service and verifies `systemctl is-active` plus a loopback `GET /api/health`. Controlling a system service afterwards needs sudo: `sudo quotameter restart`, `sudo quotameter stop`. The complete generated unit with every directive annotated — including what each hardening line does and what the project's checks enforce on them — is [docs/examples/quotameter.service](docs/examples/quotameter.service); treat it as the reference for the rare hand-edit, not as the install path.
 
-- **User service** — `quotameter init` without sudo: writes `~/.config/systemd/user/quotameter.service` and runs `systemctl --user enable --now`. The user unit carries the compatible minimal hardening (`NoNewPrivileges`) — the mount-namespace directives require privileges the user manager does not have.
+- **User service** — `quotameter init` without sudo: writes `~/.config/systemd/user/quotameter.service` and runs `systemctl --user enable --now`. The user unit carries the compatible minimal hardening (`NoNewPrivileges`) — the mount-namespace directives require privileges the user manager does not have. The annotated user unit is [docs/examples/quotameter-user.service](docs/examples/quotameter-user.service).
 
 A **user service stops when its owner logs out** unless lingering is enabled for the account. `init` checks the linger state and prints the exact command when it is off:
 

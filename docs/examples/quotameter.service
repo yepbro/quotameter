@@ -1,0 +1,108 @@
+# Quotameter - example systemd system unit (spec §5.4; decisions D-103/D-200).
+#
+# This is the unit `quotameter service install` generates, with every
+# directive annotated. A test (test/unit/systemd-unit-examples.spec.ts)
+# renders the real generator and pins every directive line of this file
+# against its output, so the example cannot drift from what the CLI
+# writes; comments and blank lines are the only free-form part.
+#
+# Install location: /etc/systemd/system/quotameter.service (root-owned).
+# Prefer `sudo quotameter service install` over hand-editing: it fills in
+# the user, the absolute paths, and the config/data directories from your
+# machine, then enables, starts, and health-checks the service. Hand-edit
+# only where the CLI cannot run, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now quotameter.service
+#   sudo systemctl is-active quotameter.service
+#
+# No secrets in this file - not even an API key (spec §15.4): the only
+# Environment= line the validators allow is NODE_ENV=production. Deliver
+# a key from the environment through a drop-in EnvironmentFile instead -
+# see "First-time setup" in README.md.
+#
+# The values below are one representative install: user "quotameter",
+# Node under /usr/local, npm global prefix /usr/local/lib/node_modules.
+# Replace User=, both ExecStart paths, and the ReadWritePaths pair with
+# yours. `quotameter service install --restart-sec <seconds>` regenerates
+# the unit with a different restart delay (default 5).
+
+[Unit]
+Description=Quotameter - usage quota monitoring for AI subscriptions
+Documentation=https://github.com/yepbro/quotameter
+# Order the start after network availability and pull in the target that
+# waits for network configuration. Spec §5.4 requires both lines. The
+# first collection runs immediately at startup and every cycle talks to
+# the provider, so without the ordering those first cycles can fail while
+# the network is still coming up. A failed cycle never exits the process
+# - the engine retries it in-process at the normal interval - so this
+# ordering avoids noisy error cycles, it is not crash recovery.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Fail the start visibly when the ExecStart paths have gone stale after a
+# Node or package upgrade: with Type=exec, systemd itself reports the
+# exec failure. `quotameter doctor` detects the same staleness in an
+# installed unit; `quotameter service install` regenerates the unit.
+Type=exec
+# The regular account that owns the configuration and data directories.
+# The service never runs as root (spec §5.1); the generator refuses root
+# here. Replace with your user.
+User=quotameter
+# The supervised foreground command. Both paths are absolute and pinned
+# at generation time because Node may live anywhere (nvm, NodeSource,
+# distro package) and the CLI entry moves with the npm global prefix.
+# After a Node upgrade or a package reinstall these paths go stale -
+# regenerate the unit instead of editing it.
+ExecStart=/usr/local/bin/node /usr/local/lib/node_modules/quotameter/bin/quotameter.mjs run
+# The only environment line the validators allow (spec §5.4):
+# NODE_ENV=production. Never add secrets or other variables.
+Environment=NODE_ENV=production
+# Restart automatically when the process exits with failure. Spec §5.4
+# fixes this value and the validators accept no other - `doctor` fails a
+# unit that carries a different one. A clean SIGTERM shutdown exits 0
+# and is not restarted.
+Restart=on-failure
+# Delay between restart attempts (the `service install --restart-sec`
+# option, default 5 seconds).
+RestartSec=5s
+#
+# --- The spec §5.4 hardening set ------------------------------------------
+# The generator always writes this whole set, and the set is the contract
+# the project's own checks enforce: `doctor` validates an installed unit
+# against exactly this shape (a relaxed directive fails its unit check,
+# with the remedy "quotameter service install") and the validators accept
+# only these exact values. Relaxing anything below therefore takes the
+# unit outside what the tooling will vouch for.
+#
+# Blocks the service and its children from gaining privileges through
+# setuid/setgid binaries or file capabilities; the service needs no
+# privilege escalation.
+NoNewPrivileges=true
+# Gives the service a private /tmp and /var/tmp, not shared with other
+# services.
+PrivateTmp=true
+# Mounts the whole file system hierarchy read-only for the service,
+# except the directories ReadWritePaths re-opens below. The validators
+# accept only "strict".
+ProtectSystem=strict
+# /home, /root, and /run/user stay read-only; ReadWritePaths re-opens the
+# application's own directories inside /home. The validators accept only
+# "read-only".
+ProtectHome=read-only
+# The only writable paths under ProtectSystem=strict: the application's
+# config and data directories (spec §6.1). The validators reject
+# non-absolute entries and "/"; `doctor` compares the list against the
+# installation's actual config/data directories. Never widen it - a
+# wider entry silently undoes the read-only sandbox. Replace with your
+# directories.
+ReadWritePaths=/home/quotameter/.config/quotameter /home/quotameter/.local/share/quotameter
+# Log to the journal: `journalctl -u quotameter`, or `quotameter logs`.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+# The standard enablement target for a networked system service:
+# `systemctl enable` creates the wants-symlink here. The user unit uses
+# default.target instead - see quotameter-user.service beside this file.
+WantedBy=multi-user.target
