@@ -65,3 +65,6 @@ Thumbs.db
 # --- Docktree per-worktree state ---
 /.docktree/
 .docktree/
+
+# open-codebase-index
+.opencode/index/
