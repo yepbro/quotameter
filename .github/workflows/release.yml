@@ -106,9 +106,8 @@ jobs:
       # The published tarball ships the prebuilt web UI (spec §3, §17.2: no
       # install-time build). DIST_DIR stays unset, so the build writes to
       # ui/dist — the location the package manifest's `files` allowlist
-      # covers once task 184 lands it. Building before check:package and
-      # publish means the tarball check validates the built artifacts from
-      # the moment the allowlist knows about them.
+      # covers (task 184, D-194). Building before check:package and publish
+      # means the tarball check validates the built artifacts.
       - name: Build the web UI
         run: npm run build:ui
 

@@ -14,7 +14,7 @@ import { inject, ref, type App, type InjectionKey, type Ref } from 'vue';
  *
  * The store deliberately knows nothing about accounts beyond their ids:
  * which ids exist is list data the consumers already load, so
- * reconciliation lives there (documented in `ui/README.md`): on every
+ * reconciliation lives there (documented in `ui/OVERVIEW.md`): on every
  * accounts-list load, keep the stored id when it is listed, else select
  * the first account, else nothing. A stored id the server no longer
  * lists (removed elsewhere, a stale browser) reads back verbatim and is

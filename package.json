@@ -5,12 +5,22 @@
   "description": "Self-hosted web service that monitors usage quotas for AI subscriptions",
   "type": "module",
   "license": "MIT",
+  "author": "Den Brooks <denis@yepbro.pro>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yepbro/quotameter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yepbro/quotameter/issues"
+  },
+  "homepage": "https://github.com/yepbro/quotameter#readme",
   "bin": {
     "quotameter": "bin/quotameter.mjs"
   },
   "files": [
     "bin/",
     "schema/config.schema.json",
+    "ui/dist/",
     "README.md",
     "LICENSE",
     "NOTICE"

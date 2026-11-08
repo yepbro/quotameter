@@ -1,5 +1,11 @@
 # Quotameter web UI
 
+> Why not `README.md`: npm's pack walker drags any README-basename file of a
+> partially-packed directory into the tarball (un-excludable, even by `!`
+> negation in `files`), and only `ui/dist/` ships — so this directory must
+> hold no README basename (task 184, decision D-194; pinned by
+> `test/unit/package-manifest.spec.ts`).
+
 The browser frontend of the Quotameter service (spec §3, §14): a Vue 3
 application bundled by Vite and served — already built — by the
 application's Fastify server from `ui/dist`. The UI never talks to

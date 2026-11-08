@@ -409,7 +409,7 @@ routes through the real API client over a full §14.2 session (plus one
 refused create) and scans every response body, request URL, and
 client-resolved value the browser would see — plus the server-side log
 channel (non-empty by construction of the refused exchange). The proof
-map's entry point is `ui/README.md` ("The write-only key proof map").
+map's entry point is `ui/OVERVIEW.md` ("The write-only key proof map").
 
 ## The §13 status, providers, quota, and settings endpoints (task 160, decision D-130)
 

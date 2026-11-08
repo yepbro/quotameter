@@ -162,11 +162,13 @@ stays plain JavaScript and derives its runtime version gate from the
 manifest's `engines.node` declaration (task 129, decision D-098) — the
 single source of truth, so the gate and the declaration cannot drift; the
 TypeScript under `src/` is compiled at publish
-time; `ui/dist` is the served frontend output. The `files` allowlist, export
-paths, and build-artifact checks are finalized by tasks 184–186, which extend
+time; `ui/dist` is the served frontend output. The `files` allowlist and
+build-artifact checks are finalized by tasks 184–186, which extend
 `package.json`, `scripts/verify-build.mjs`, and `scripts/check-package.mjs`
-accordingly. Module READMEs under `src/` are development documentation and
-stay out of the tarball.
+accordingly; task 184 (decision D-194) deliberately declared **no**
+`exports`/`main` — the package is CLI-first, and a library entry point
+would be a successor decision. Module READMEs under `src/` are development
+documentation and stay out of the tarball.
 
 ## Adding a module or provider
 

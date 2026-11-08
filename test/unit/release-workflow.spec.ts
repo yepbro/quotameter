@@ -23,9 +23,9 @@ import { describe, expect, it } from 'vitest';
  *   the Dockerfile, ci.yml, and release.yml — the mechanized form of the
  *   "keep the pin in sync" comments those files carry;
  * - the publish job builds the web UI (`build:ui`) and verifies it
- *   (`verify:build`) BEFORE the tarball allowlist check, so the moment the
- *   package manifest's `files` allowlist covers `ui/dist` (task 184), the
- *   tarball check validates the built artifacts with no workflow change;
+ *   (`verify:build`) BEFORE the tarball allowlist check, so the tarball
+ *   check validates the built artifacts the `files` allowlist covers
+ *   (`ui/dist`, landed by task 184/D-194);
  * - a test gate (`test:ci`) runs before publishing;
  * - the tarball allowlist check runs before the publish step;
  * - the publish runs with `--provenance` under the `id-token: write`
