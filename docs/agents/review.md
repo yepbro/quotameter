@@ -5,7 +5,7 @@
 - **Primary reviewer: `opencode run`** with `opencode-go/deepseek-v4.1-flash`, run from the working tree under review:
 
   ```bash
-  timeout 1200 opencode run --auto \
+  timeout 2400 opencode run --auto \
     -m "opencode-go/deepseek-v4.1-flash" \
     --title "review-<slug>" "$(cat /tmp/opencode/review/prompt-<slug>.md)" \
     > /tmp/opencode/review/<slug>-deepseek.md 2>&1; echo "exit=$?"
@@ -14,7 +14,7 @@
 - **First fallback: cursor-agent** with `grok-4.7-high` (the Cursor CLI, `~/.local/bin/cursor-agent`; logged-in account auth — `--list-models` verifies both). The review runs as a headless print-mode call:
 
   ```bash
-  timeout 1200 cursor-agent -p --mode plan --trust \
+  timeout 2400 cursor-agent -p --mode plan --trust \
     --model grok-4.7-high --output-format text \
     "$(cat /tmp/opencode/review/prompt-<slug>.md)" \
     > /tmp/opencode/review/<slug>-grok.md 2>&1; echo "exit=$?"
@@ -27,7 +27,7 @@
 - **Second fallback: `opencode run`** with `zai-coding-plan/glm-5.3#max` — the same command shape as the primary, different model:
 
   ```bash
-  timeout 1200 opencode run --auto \
+  timeout 2400 opencode run --auto \
     -m "zai-coding-plan/glm-5.3#max" \
     --title "review-<slug>" "$(cat /tmp/opencode/review/prompt-<slug>.md)" \
     > /tmp/opencode/review/<slug>-glm.md 2>&1; echo "exit=$?"
@@ -36,7 +36,7 @@
 - **Last fallback: kimi** (Kimi Code CLI; see `~/.config/opencode/agent-kimi.md` for auth/diagnostics). The review runs as a headless CLI call with the model `kimi-code/k3.1-pro`:
 
   ```bash
-  timeout 1200 kimi -m kimi-code/k3.1-pro \
+  timeout 2400 kimi -m kimi-code/k3.1-pro \
     -p "$(cat /tmp/opencode/review/prompt-<slug>.md)" --output-format text </dev/null \
     > /tmp/opencode/review/<slug>-kimi.md 2>&1; echo "exit=$?"
   ```
