@@ -269,6 +269,21 @@ describe('parseConfigWithEnv — unknown QUOTAMETER_* variables', () => {
     if (result.ok) expect(result.sources.fields).toEqual([]);
   });
 
+  it('accepts the launcher-reserved entry variable without touching the config', () => {
+    // QUOTAMETER_CLI_ENTRY is read by bin/quotameter.mjs before the
+    // configuration pipeline ever runs (the D-196 entry-mode pin): a
+    // declared consumer, not a configuration override — the PATH_VARIABLES
+    // precedent. Without this carve-out every real-launcher suite that
+    // pins the source mode would die here instead ("unsupported
+    // environment variable"), and the launcher override would be unusable
+    // in front of any configured deployment.
+    for (const value of ['source', 'dist'] as const) {
+      const result = parseConfigWithEnv(fileConfig(), { QUOTAMETER_CLI_ENTRY: value });
+      expect(result.ok, `QUOTAMETER_CLI_ENTRY=${value} must pass the scan`).toBe(true);
+      if (result.ok) expect(result.sources.fields).toEqual([]);
+    }
+  });
+
   it('reports unknown names alongside parser problems, unknown names first', () => {
     const result = parseConfigWithEnv(
       { ...fileConfig(), server: { host: '127.0.0.1', port: 0 } },

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configFilePath } from '../../src/config/load';
-import { hermeticChildEnv } from '../helpers/hermetic-child-env';
+import { CLI_ENTRY_SOURCE, hermeticChildEnv } from '../helpers/hermetic-child-env';
 import { createTempDir, type TempDir } from '../helpers/isolation';
 
 /**
@@ -93,7 +93,7 @@ function runInitYes(args: readonly string[], env: NodeJS.ProcessEnv): Promise<Ru
  * `test/helpers/hermetic-child-env.ts`).
  */
 function childEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return { ...hermeticChildEnv(), ...overrides } as NodeJS.ProcessEnv;
+  return { ...hermeticChildEnv(), ...CLI_ENTRY_SOURCE, ...overrides } as NodeJS.ProcessEnv;
 }
 
 const SECRET = 'sk-integration-key-value';

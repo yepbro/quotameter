@@ -9,6 +9,7 @@ import { openStorageConnection } from '../../src/storage/connection';
 import { createMigrationRunner, MIGRATIONS } from '../../src/storage/migrations';
 import { createQuotaRepository } from '../../src/storage/repository';
 import { createTempDir, type TempDir } from '../helpers/isolation';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The `quotameter doctor` command end-to-end through the real launcher
@@ -73,6 +74,7 @@ function runDoctor(
     {
       env: {
         ...process.env,
+        ...CLI_ENTRY_SOURCE,
         QUOTAMETER_CONFIG_DIR: join(dir.path, 'config'),
         QUOTAMETER_DATA_DIR: join(dir.path, 'data'),
         HOME: dir.path,

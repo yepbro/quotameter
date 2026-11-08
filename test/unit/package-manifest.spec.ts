@@ -40,6 +40,7 @@ interface Manifest {
   engines: { node: string };
   bin: Record<string, string>;
   files: string[];
+  scripts: Record<string, string>;
   dependencies: Record<string, string>;
   author?: string;
   homepage?: string;
@@ -204,6 +205,35 @@ describe('npm package manifest (task 184, D-194)', () => {
     // docs/release.md (D-152): `npm pkg delete private` runs in the release
     // pipeline; in-tree it must stay so no local publish can ever succeed.
     expect(manifest.private).toBe(true);
+  });
+
+  it('declares no install-time lifecycle scripts (spec §3: no install-time build)', () => {
+    // Spec §3: "Do not use `postinstall` scripts or native modules." The
+    // ban is npm's complete install-time lifecycle set, not just
+    // `postinstall`: `preinstall`/`install`/`postinstall` run when a
+    // consumer installs the package; `prepare` (with its `preprepare`/
+    // `postprepare` companions) and the deprecated `prepublish` run on
+    // git-URL and local installs — an install-time build under any of
+    // these names is still an install-time build. (`prepublishOnly` is
+    // publish-time, owned by the release pipeline, not install-time.) The
+    // dependency side of the contract (nothing in the production closure
+    // may compile or run scripts either) is pinned by
+    // test/unit/install-time-build.spec.ts; CI proves both on stock
+    // compiler-free distro images (task 186, D-196).
+    const banned = [
+      'preinstall',
+      'install',
+      'postinstall',
+      'preprepare',
+      'prepare',
+      'postprepare',
+      'prepublish',
+    ];
+    const present = banned.filter((script) => script in (manifest.scripts ?? {}));
+    expect(
+      present,
+      'spec §3 forbids install-time lifecycle scripts; adding one is a successor decision to D-196',
+    ).toEqual([]);
   });
 
   it('declares the GitHub repository provenance publication requires', () => {

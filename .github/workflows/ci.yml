@@ -229,6 +229,24 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl xz-utils
 
+      # Task 186 (spec §3/§17.2, D-196): the no-install-time-build proof
+      # needs a container where native compilation is IMPOSSIBLE, not merely
+      # unnecessary. The stock ubuntu/debian images were verified
+      # compiler-free at design time; this step keeps the property checked —
+      # if a base image ever ships a toolchain, the job fails here instead
+      # of silently weakening what the install matrix proves. The step runs
+      # AFTER the prerequisites install, so it also proves apt did not drag
+      # a toolchain in, and BEFORE the tarball install it guards.
+      - name: Verify the container ships no build toolchain
+        run: |
+          for tool in gcc cc g++ clang make python3 python; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::$tool is present in the install container; the no-install-time-build proof requires a compiler-free environment (task 186, D-196)"
+              exit 1
+            fi
+          done
+          echo "compiler-free container confirmed: none of gcc cc g++ clang make python3 python found"
+
       # Supply-chain pin (spec §4.4, decision D-157): the runtime archive is
       # verified against the SHA-256 digests pinned below, in repository
       # history — the one trust domain a compromised nodejs.org mirror or CDN
@@ -280,8 +298,49 @@ jobs:
       - name: Install the package globally from the tarball
         # --prefix /usr/local keeps the binary on PATH: the container's Node
         # lives in its own prefix (/usr/local/lib/nodejs/...) whose bin
-        # directory is not on PATH.
-        run: npm install --global --prefix /usr/local ./quotameter-*.tgz
+        # directory is not on PATH. --foreground-scripts (task 186, D-196)
+        # surfaces any dependency lifecycle script in the job log as it
+        # runs; the structural pins assert none exists, so a script line
+        # appearing here is a loud signal, not log noise.
+        run: npm install --global --prefix /usr/local --foreground-scripts ./quotameter-*.tgz
+
+      # Task 186 (spec §3, §17.2, D-196): spec §3 forbids install-time
+      # lifecycle scripts. The in-tree pin is test/unit/package-manifest.spec.ts
+      # (npm's complete install-time set may not appear in the manifest);
+      # this step proves the SHIPPED tarball's manifest agrees on the
+      # installed machine — the tarball is what npm reads.
+      - name: Verify the installed manifest has no install-time lifecycle scripts
+        run: |
+          node -e 'const p=require("/usr/local/lib/node_modules/quotameter/package.json");const banned=["preinstall","install","postinstall","preprepare","prepare","postprepare","prepublish"];const found=banned.filter((s)=>p.scripts&&s in p.scripts);if(found.length>0){console.error("::error::install-time lifecycle scripts present: "+found.join(", "));process.exit(1)}console.log("installed manifest carries no install-time lifecycle scripts")'
+
+      # Task 186 (spec §3, §17.2, D-196): no native modules, and no
+      # install scripts anywhere in what npm laid down. A consumer's
+      # install re-resolves the dependency ranges against the live
+      # registry (the lockfile does not travel with a tarball), so this
+      # scans the installed-package tree — the root manifest's directory
+      # and every package under any node_modules (scoped or plain) — for
+      # install scripts, *.node binaries, and binding.gyp recipes. Only
+      # REAL package manifests are checked: fixture package.json files a
+      # dependency ships inside its test tree (resolve's
+      # test/resolver/multirepo, verified live) are never read by npm.
+      # With the toolchain absent (step above) nothing could have
+      # compiled; this proves no prebuilt native shipped either, on x64
+      # and arm64 alike (D-196's pure-JS audit).
+      - name: Verify the installed tree contains no native addons or install scripts
+        run: |
+          node -e 'const fs=require("fs"),path=require("path");const root="/usr/local/lib/node_modules/quotameter";const banned=["preinstall","install","postinstall"];const offenders=[];const checkScripts=(pkgDir)=>{let pkg;try{pkg=JSON.parse(fs.readFileSync(path.join(pkgDir,"package.json"),"utf8"))}catch{return}const found=pkg.scripts?banned.filter((s)=>s in pkg.scripts):[];if(found.length>0){offenders.push(path.relative(root,pkgDir)+" package.json: "+found.join(","))}};const checkNatives=(pkgDir)=>{const walk=(dir)=>{for(const e of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory()){if(e.name!=="node_modules"){walk(p)}}else if(e.name==="binding.gyp"||e.name.endsWith(".node")){offenders.push(path.relative(root,p))}}};walk(pkgDir)};const visitNm=(dir)=>{for(const e of fs.readdirSync(dir,{withFileTypes:true})){if(!e.isDirectory()&&!e.isSymbolicLink()){continue}if(e.name.startsWith("@")){visitNm(path.join(dir,e.name));continue}const pkgDir=path.join(dir,e.name);checkScripts(pkgDir);checkNatives(pkgDir);const nm=path.join(pkgDir,"node_modules");if(fs.existsSync(nm)){visitNm(nm)}}};checkScripts(root);checkNatives(root);visitNm(path.join(root,"node_modules"));if(offenders.length>0){console.error("::error::native addons or install scripts in the installed tree:");console.error(offenders.join("\n"));process.exit(1)}console.log("no *.node, no binding.gyp, no install scripts in any installed package")'
+
+      # Task 186 (spec §17.2, D-196): the tarball must already contain the
+      # compiled CLI (task 185, D-195) — the --help step below proves it
+      # loads, this step makes the "tarball ships dist/" fact itself a
+      # direct assertion at the installed end.
+      - name: Verify the installed tree ships the compiled CLI (dist)
+        run: |
+          test -f /usr/local/lib/node_modules/quotameter/dist/cli/main.js || {
+            echo "::error::the tarball did not ship dist/cli/main.js — installation would need a build step"
+            exit 1
+          }
+          echo "installed tree ships the compiled CLI (dist/cli/main.js)"
 
       - name: Invoke the installed CLI
         run: |

@@ -9,6 +9,7 @@ import { createQuotaRepository } from '../../src/storage/repository';
 import { openStatusStore } from '../../src/cli/service-status';
 import { readPollingRunEvidence } from '../../src/services/polling-status';
 import { createTempDir, type TempDir } from '../helpers/isolation';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The `quotameter status` command end-to-end through the real launcher
@@ -76,6 +77,7 @@ function runStatus(dir: TempDir): Promise<RunResult> {
     {
       env: {
         ...process.env,
+        ...CLI_ENTRY_SOURCE,
         QUOTAMETER_CONFIG_DIR: join(dir.path, 'config'),
         QUOTAMETER_DATA_DIR: join(dir.path, 'data'),
         HOME: dir.path,

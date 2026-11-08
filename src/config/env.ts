@@ -88,9 +88,21 @@ const PATH_VARIABLES: readonly string[] = Object.freeze([
   'QUOTAMETER_DATA_DIR',
 ]);
 
+/**
+ * The launcher-reserved variable (task 186, D-196): `bin/quotameter.mjs`
+ * reads `QUOTAMETER_CLI_ENTRY` ('dist'/'source') to pin its entry
+ * resolution BEFORE the configuration pipeline ever runs — the stale-dist
+ * remedy and the real-launcher test suites' source-mode pin. Reserved for
+ * the same reason as the path variables: it is a `QUOTAMETER_*` name with
+ * a declared consumer, not a configuration override, so it passes the
+ * unknown-variable scan without touching the effective configuration.
+ */
+const LAUNCHER_VARIABLES: readonly string[] = Object.freeze(['QUOTAMETER_CLI_ENTRY']);
+
 const KNOWN_VARIABLES: ReadonlySet<string> = new Set([
   ...ENV_OVERRIDES.map((spec) => spec.variable),
   ...PATH_VARIABLES,
+  ...LAUNCHER_VARIABLES,
 ]);
 
 /**

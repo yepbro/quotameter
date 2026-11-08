@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configFilePath } from '../../src/config/load';
 import { createTempDir, type TempDir } from '../helpers/isolation';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The interactive `init` command end-to-end (task 130, spec §5.3; decision
@@ -54,6 +55,7 @@ async function runInit(stdinData: string, configDir: string): Promise<RunResult>
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      ...CLI_ENTRY_SOURCE,
       QUOTAMETER_CONFIG_DIR: configDir,
       QUOTAMETER_DATA_DIR: dataDir.path,
     },
@@ -300,6 +302,7 @@ describe('quotameter init (real PTY, hidden key entry)', () => {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
+        ...CLI_ENTRY_SOURCE,
         QUOTAMETER_CONFIG_DIR: configDir,
         QUOTAMETER_DATA_DIR: dataDir.path,
       },

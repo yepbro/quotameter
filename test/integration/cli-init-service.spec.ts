@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configFilePath } from '../../src/config/load';
 import { createTempDir, type TempDir } from '../helpers/isolation';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The `init` service-setup step end-to-end through the real launcher (task
@@ -79,6 +80,7 @@ function collect(child: ChildProcess): Promise<RunResult> {
 function childEnv(dir: TempDir): NodeJS.ProcessEnv {
   return {
     ...process.env,
+    ...CLI_ENTRY_SOURCE,
     QUOTAMETER_CONFIG_DIR: dir.path,
     QUOTAMETER_DATA_DIR: join(dir.path, 'test-data'),
     HOME: dir.path,

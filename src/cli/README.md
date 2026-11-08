@@ -6,6 +6,11 @@ The `quotameter` command surface (spec §5.2, Stage 11): `init`, `run`,
 a thin, build-free launcher that resolves the compiled CLI under `dist/`
 (`npm run build:cli`, task 185/D-195 — no install-time build, spec §3) and
 falls back to this source tree through jiti in development.
+`QUOTAMETER_CLI_ENTRY` ('dist'/'source') pins the choice before the probe
+(task 186, D-196) — the remedy for a stale built `dist/` shadowing the live
+source tree, and the pin the real-launcher test suites set so their children
+always exercise the source contract (`CLI_ENTRY_SOURCE` in
+`test/helpers/hermetic-child-env.ts`).
 
 **Rule:** a top-level consumer — it may import any layer except concrete
 provider adapters. Nothing under `src/` imports this module; only `bin/` does.

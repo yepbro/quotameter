@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createTempDir, type TempDir } from '../helpers/isolation';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The `service install` / `service uninstall` commands end-to-end through
@@ -83,7 +84,7 @@ function runService(args: readonly string[], dir: TempDir): Promise<RunResult> {
     process.execPath,
     ['--import', 'jiti/register', '--import', GUARD, BIN, 'service', ...args],
     {
-      env: { ...process.env, QUOTAMETER_CONFIG_DIR: dir.path, HOME: dir.path },
+      env: { ...process.env, ...CLI_ENTRY_SOURCE, QUOTAMETER_CONFIG_DIR: dir.path, HOME: dir.path },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );

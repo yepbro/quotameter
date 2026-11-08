@@ -33,6 +33,10 @@
  *     '.js' spelling is jiti's loader-hook requirement (a plain '../'
  *     falls through to Node's resolver, which cannot map it onto the .ts).
  *
+ *  `QUOTAMETER_CLI_ENTRY` ('dist' or 'source') pins the choice before the
+ *  probe (task 186, D-196) — the stale-dist remedy and the test-suite
+ *  mode pin; see the delegation block below for the full rationale.
+ *
  * Every failure is actionable (spec §5.1: name the requirement and the
  * fix): a missing entry names both locations and the reinstall; a dist/
  * whose entry loaded but whose graph is broken is a damaged installation
@@ -134,17 +138,60 @@ if (minimum === undefined) {
   // for the source candidate (an absolute file:// URL falls into its CJS
   // require, which cannot load one), and plain Node resolves both forms
   // against this module regardless.
+  //
+  // Mode override (task 186, D-196): QUOTAMETER_CLI_ENTRY pins the choice
+  // — 'dist' or 'source' — before the probe; unset keeps the auto order.
+  // Two consumers: a checkout with a stale built dist/ can force the live
+  // source tree without deleting dist/ (the D-195 footgun's remedy), and
+  // the real-launcher test suites pin 'source' so their children always
+  // exercise the development contract (src/ through jiti) regardless of
+  // any dist/ a previous build left in the tree — under jiti's
+  // process-wide ESM hooks the compiled graph dies in Node's require(esm)
+  // bridge instead (the recorded jiti.mjs "not in cache" failure). Any
+  // other value is refused outright: a typo'd pin must fail loudly, never
+  // silently fall back to auto.
   const distEntryUrl = new URL('./../dist/cli/main.js', import.meta.url);
   const sourceEntryUrl = new URL('./../src/cli/main.ts', import.meta.url);
+  const entryOverride = process.env.QUOTAMETER_CLI_ENTRY;
   let entrySpecifier;
   let entryKind;
-  if (existsSync(distEntryUrl)) {
-    entrySpecifier = './../dist/cli/main.js';
-    entryKind = 'dist';
-  } else if (existsSync(sourceEntryUrl)) {
-    // The '.js' spelling over the '.ts' file is jiti's loader contract.
-    entrySpecifier = './../src/cli/main.js';
-    entryKind = 'source';
+  if (entryOverride !== undefined && entryOverride !== 'dist' && entryOverride !== 'source') {
+    console.error(
+      `quotameter: QUOTAMETER_CLI_ENTRY must be 'dist' or 'source' ` +
+        `(got ${JSON.stringify(entryOverride)}); unset it to resolve dist/cli/main.js ` +
+        'first and fall back to the source tree',
+    );
+    process.exitCode = 1;
+    entrySpecifier = undefined;
+  } else if (
+    entryOverride === 'dist' ||
+    (entryOverride === undefined && existsSync(distEntryUrl))
+  ) {
+    if (existsSync(distEntryUrl)) {
+      entrySpecifier = './../dist/cli/main.js';
+      entryKind = 'dist';
+    } else {
+      console.error(
+        `quotameter ${manifest.version} — QUOTAMETER_CLI_ENTRY=dist is set but ` +
+          'dist/cli/main.js is missing; build the packaged CLI with npm run build:cli ' +
+          'or unset the override',
+      );
+      process.exitCode = 1;
+      entrySpecifier = undefined;
+    }
+  } else if (entryOverride === 'source' || existsSync(sourceEntryUrl)) {
+    if (existsSync(sourceEntryUrl)) {
+      // The '.js' spelling over the '.ts' file is jiti's loader contract.
+      entrySpecifier = './../src/cli/main.js';
+      entryKind = 'source';
+    } else {
+      console.error(
+        `quotameter ${manifest.version} — QUOTAMETER_CLI_ENTRY=source is set but ` +
+          'src/cli/main.ts is missing; run from a source checkout or unset the override',
+      );
+      process.exitCode = 1;
+      entrySpecifier = undefined;
+    }
   } else {
     console.error(
       `quotameter ${manifest.version} — this installation is missing the CLI entry point ` +

@@ -19,7 +19,7 @@ import { hermeticChildEnv } from '../helpers/hermetic-child-env';
  * The packaged CLI behind the installed `quotameter` command (task 185,
  * spec §5.1/§17.2; decision D-195).
  *
- * Two proofs, both through the REAL launcher as a child process:
+ * Three proofs, all through the REAL launcher as a child process:
  *
  * 1. **The compiled build resolves and runs.** `npm run build:cli` emits
  *    `dist/` into a fixture package root (bin + dist + package.json — the
@@ -42,6 +42,14 @@ import { hermeticChildEnv } from '../helpers/hermetic-child-env';
  *    name the requirement and the fix), and the runtime gate still fires
  *    before any entry is loaded (D-098/D-161). The fixtures are fixture
  *    packages in the pattern of `cli-bin-version-gate.spec.ts`.
+ *
+ * 3. **The entry-mode override** (task 186, D-196):
+ *    `QUOTAMETER_CLI_ENTRY` ('dist'/'source') pins the choice D-195's
+ *    dist-first auto order would otherwise make. The mode is exercised
+ *    with BOTH candidates present (the 'source' pin — the stale-dist
+ *    remedy and the real-launcher suites' contract) and every forced
+ *    mode's failure is actionable; jiti appears exactly once, for the
+ *    forced-source fixture — the compiled-mode runs stay plain Node.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -64,6 +72,8 @@ interface RunOptions {
   readonly binPath?: string;
   /** Value the child's `process.versions.node` is redefined to. */
   readonly fakeVersion?: string;
+  /** Extra node arguments before the launcher path (e.g. jiti preloads). */
+  readonly nodeArgs?: readonly string[];
 }
 
 /** Runs a launcher with `args`; resolves when output streams are drained. */
@@ -74,6 +84,9 @@ function runBin(args: readonly string[], options: RunOptions = {}): Promise<RunR
       options.fakeVersion,
     )}});`;
     cliArgs.push('--import', `data:text/javascript,${encodeURIComponent(script)}`);
+  }
+  if (options.nodeArgs !== undefined) {
+    cliArgs.push(...options.nodeArgs);
   }
   cliArgs.push(options.binPath ?? BIN, ...args);
   const child = spawn(process.execPath, cliArgs, {
@@ -335,6 +348,141 @@ describe('entry resolution and actionable startup errors (fixture packages)', ()
       expect(result.stdout).toBe('');
       expect(result.stderr).toContain('quotameter requires Node.js >= 20.0.0');
       expect(result.stderr).not.toContain('SyntaxError');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe('entry-mode override (QUOTAMETER_CLI_ENTRY, task 186, D-196)', () => {
+  /** A fixture with BOTH candidates present, each identifying itself. */
+  function bothEntriesFixture(): { dir: string; binPath: string } {
+    const { dir, binPath } = fixturePackage(PASSING_MANIFEST);
+    mkdirSync(join(dir, 'dist/cli'), { recursive: true });
+    writeFileSync(
+      join(dir, 'dist/cli/main.js'),
+      [
+        'export async function runCli() {',
+        "  console.log('chosen:dist');",
+        '  return 0;',
+        '}',
+      ].join('\n'),
+    );
+    mkdirSync(join(dir, 'src/cli'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src/cli/main.ts'),
+      [
+        'export async function runCli() {',
+        "  console.log('chosen:source');",
+        '  return 0;',
+        '}',
+      ].join('\n'),
+    );
+    return { dir, binPath };
+  }
+
+  it("'source' pins the source tree over a present dist/ (the stale-dist remedy)", async () => {
+    // The inverse of the auto-order pin above: with both candidates
+    // present, the override must WIN over dist-first — the property the
+    // real-launcher suites rely on to test the source contract next to a
+    // built dist/, and the D-195 footgun's explicit remedy.
+    const { dir, binPath } = bothEntriesFixture();
+    try {
+      const result = await runBin(['anything'], {
+        binPath,
+        nodeArgs: ['--import', 'jiti/register'],
+        env: { ...hermeticChildEnv(), QUOTAMETER_CLI_ENTRY: 'source' },
+      });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('chosen:source\n');
+      expect(result.stderr).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("'dist' pins the packaged build even when only dist/ exists (explicit mode)", async () => {
+    const { dir, binPath } = fixturePackage(PASSING_MANIFEST);
+    try {
+      mkdirSync(join(dir, 'dist/cli'), { recursive: true });
+      writeFileSync(
+        join(dir, 'dist/cli/main.js'),
+        [
+          'export async function runCli() {',
+          "  console.log('chosen:dist');",
+          '  return 0;',
+          '}',
+        ].join('\n'),
+      );
+      const result = await runBin(['anything'], {
+        binPath,
+        env: { ...hermeticChildEnv(), QUOTAMETER_CLI_ENTRY: 'dist' },
+      });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('chosen:dist\n');
+      expect(result.stderr).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("names the remedy when 'dist' is forced but dist/ is missing", async () => {
+    const { dir, binPath } = fixturePackage(PASSING_MANIFEST);
+    try {
+      mkdirSync(join(dir, 'src/cli'), { recursive: true });
+      writeFileSync(
+        join(dir, 'src/cli/main.ts'),
+        'export async function runCli() {\n  return 0;\n}\n',
+      );
+      const result = await runBin(['anything'], {
+        binPath,
+        env: { ...hermeticChildEnv(), QUOTAMETER_CLI_ENTRY: 'dist' },
+      });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        'QUOTAMETER_CLI_ENTRY=dist is set but dist/cli/main.js is missing',
+      );
+      expect(result.stderr).toContain('build:cli');
+      expect(result.stderr).toContain('unset the override');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("names the remedy when 'source' is forced but the source tree is missing", async () => {
+    const { dir, binPath } = fixturePackage(PASSING_MANIFEST);
+    try {
+      mkdirSync(join(dir, 'dist/cli'), { recursive: true });
+      writeFileSync(
+        join(dir, 'dist/cli/main.js'),
+        'export async function runCli() {\n  return 0;\n}\n',
+      );
+      const result = await runBin(['anything'], {
+        binPath,
+        env: { ...hermeticChildEnv(), QUOTAMETER_CLI_ENTRY: 'source' },
+      });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        'QUOTAMETER_CLI_ENTRY=source is set but src/cli/main.ts is missing',
+      );
+      expect(result.stderr).toContain('unset the override');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('refuses an unrecognized value instead of silently resolving auto', async () => {
+    // A typo'd pin must fail loudly (the §5.1 fail-closed house rule) —
+    // falling back to auto would make the override a silent no-op.
+    const { dir, binPath } = bothEntriesFixture();
+    try {
+      const result = await runBin(['anything'], {
+        binPath,
+        env: { ...hermeticChildEnv(), QUOTAMETER_CLI_ENTRY: 'src' },
+      });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("QUOTAMETER_CLI_ENTRY must be 'dist' or 'source'");
+      expect(result.stderr).toContain('"src"');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

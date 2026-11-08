@@ -12,6 +12,7 @@ import { openStorageConnection } from '../../src/storage/connection';
 import { createMigrationRunner, MIGRATIONS } from '../../src/storage/migrations';
 import { createQuotaRepository } from '../../src/storage/repository';
 import { createTempDir } from '../helpers/isolation';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The idempotent-`init` done-condition end-to-end (task 132, spec §5.3,
@@ -568,6 +569,7 @@ async function runLauncher(
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      ...CLI_ENTRY_SOURCE,
       QUOTAMETER_CONFIG_DIR: configDir,
       QUOTAMETER_DATA_DIR: dataDir.path,
     },

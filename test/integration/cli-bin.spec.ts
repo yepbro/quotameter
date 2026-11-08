@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The real CLI launcher as a process (task 128, spec §5.2): `bin/quotameter.mjs`
@@ -28,6 +29,9 @@ interface RunResult {
 function runBin(args: readonly string[]): Promise<RunResult> {
   const child = spawn(process.execPath, ['--import', 'jiti/register', BIN, ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    // D-196: this suite tests the source-through-jiti contract; the pin
+    // keeps it off D-195's dist-first path when a built dist/ exists.
+    env: { ...process.env, ...CLI_ENTRY_SOURCE },
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];

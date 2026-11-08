@@ -215,6 +215,10 @@ unsupported environment variable`, codepoint-sorted so the order is
   host-independent) — a typo must fail, not silently pass (the D-014
   closed-contract philosophy). `QUOTAMETER_CONFIG_DIR` and
   `QUOTAMETER_DATA_DIR` are known and ignored here; `paths.ts` owns them.
+  `QUOTAMETER_CLI_ENTRY` is likewise reserved: `bin/quotameter.mjs` reads it
+  ('dist'/'source', the D-196 entry-mode pin) before the configuration
+  pipeline ever runs, so it passes the scan without touching the effective
+  configuration.
 - **Absent file**: when `loadConfigFile` reports the pinned
   `configuration file not found: <path>` problem and at least one override is
   set, the effective configuration is built from the environment alone (a

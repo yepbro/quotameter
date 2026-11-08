@@ -78,3 +78,30 @@ export function hermeticChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.
   }
   return env;
 }
+
+/**
+ * Pins a spawned launcher child to the SOURCE entry (`src/` through jiti):
+ * `QUOTAMETER_CLI_ENTRY=source` (task 186, decision D-196).
+ *
+ * Every real-launcher suite that preloads `--import jiti/register` tests
+ * the development contract — the TypeScript source tree through jiti, the
+ * task-130 child-process pattern. D-195's deliberate dist-first resolution
+ * flips those children into the compiled `dist/` graph whenever a built
+ * `dist/` exists in the tree (`make check-all`'s build leg leaves one; so
+ * does any local `npm run build:cli`), and under jiti's process-wide ESM
+ * hooks the compiled graph then dies inside Node's require(esm) bridge
+ * with `request for '…/node_modules/jiti/lib/jiti.mjs' is not in cache`
+ * (the 2026-11-08 landing failure: 26 real-launcher tests, red only on
+ * the SECOND consecutive `make check-all`). Spreading this pin into the
+ * spawn env makes the suites' subject independent of ambient build state;
+ * the compiled mode keeps its own dedicated suite
+ * (`test/integration/cli-bin-dist.spec.ts` — plain Node, fixture package
+ * roots, no jiti hooks) and the launcher's auto order stays untouched.
+ *
+ * Spread AFTER any `...process.env`/`hermeticChildEnv()` base so the pin
+ * wins over an ambient value; the suites that deliberately strip
+ * `QUOTAMETER_*` re-set it explicitly. Membership is guarded by
+ * `test/unit/launcher-source-mode-pin.spec.ts` — a new jiti-spawning
+ * launcher suite without the pin fails `make check`.
+ */
+export const CLI_ENTRY_SOURCE: Readonly<NodeJS.ProcessEnv> = { QUOTAMETER_CLI_ENTRY: 'source' };

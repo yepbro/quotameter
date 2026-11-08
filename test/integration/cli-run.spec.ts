@@ -69,6 +69,10 @@ function childEnv(configDir: string, dataDir: string): NodeJS.ProcessEnv {
   }
   env.QUOTAMETER_CONFIG_DIR = configDir;
   env.QUOTAMETER_DATA_DIR = dataDir;
+  // Re-set after the strip, like the two pins above: this suite tests the
+  // source-through-jiti contract, so the launcher's entry mode must not
+  // depend on a dist/ built by an earlier run (D-196, CLI_ENTRY_SOURCE).
+  env.QUOTAMETER_CLI_ENTRY = 'source';
   return env;
 }
 

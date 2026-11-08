@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createTempDir, type TempDir } from '../helpers/isolation';
+import { CLI_ENTRY_SOURCE } from '../helpers/hermetic-child-env';
 
 /**
  * The `quotameter reload` command end-to-end through the real launcher
@@ -82,6 +83,7 @@ function runReload(dir: TempDir): Promise<RunResult> {
     {
       env: {
         ...process.env,
+        ...CLI_ENTRY_SOURCE,
         QUOTAMETER_CONFIG_DIR: join(dir.path, 'config'),
         QUOTAMETER_DATA_DIR: join(dir.path, 'data'),
         HOME: dir.path,

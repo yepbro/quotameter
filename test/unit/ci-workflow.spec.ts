@@ -381,4 +381,160 @@ describe('ci workflow guard (task U-033, spec §4.4; decisions D-045, D-157)', (
       'the step must assert the rendered command table, not just a zero exit',
     ).toBe(true);
   });
+
+  it('the install job proves the container is compiler-free before the tarball install', () => {
+    // Task 186 (spec §3/§17.2, D-196): the no-install-time-build proof needs
+    // a container where native compilation is IMPOSSIBLE. The tool list is
+    // an exact pin — dropping a compiler from it would silently weaken what
+    // the matrix proves.
+    const steps = installSteps();
+    const toolchain = steps.findIndex(
+      (candidate) => candidate.name === 'Verify the container ships no build toolchain',
+    );
+    expect(
+      toolchain,
+      "the install job lost its 'Verify the container ships no build toolchain' step — the " +
+        'compiler-free proof of task 186 (D-196) would be gone; restore the step or update ' +
+        'this guard with its replacement',
+    ).toBeGreaterThan(-1);
+    const runLines = steps[toolchain]?.runLines ?? [];
+    expect(
+      runLines.includes('for tool in gcc cc g++ clang make python3 python; do'),
+      'the toolchain check must cover exactly the pinned compiler/interpreter set — ' +
+        'gcc cc g++ clang make python3 python (decision D-196)',
+    ).toBe(true);
+    expect(
+      runLines.some((line) => line.includes('command -v "$tool"')),
+      'the toolchain check must probe each tool with command -v',
+    ).toBe(true);
+    expect(
+      runLines.some((line) => line.trim() === 'exit 1'),
+      'the toolchain check must exit non-zero when a tool is present — a warning-only ' +
+        'check would let the matrix silently run with a compiler',
+    ).toBe(true);
+    expect(
+      steps[toolchain]?.rawLines.some((line) => line.includes('continue-on-error')),
+      'continue-on-error on the toolchain check would downgrade a present compiler to a ' +
+        'warning — the D-157 fail-closed rule for every install-job guard step',
+    ).toBe(false);
+    const install = steps.findIndex(
+      (candidate) => candidate.name === 'Install the package globally from the tarball',
+    );
+    expect(
+      toolchain,
+      'the toolchain check must run BEFORE the tarball install it guards',
+    ).toBeLessThan(install);
+  });
+
+  it('the tarball install surfaces lifecycle scripts (--foreground-scripts)', () => {
+    // Task 186 (D-196): with the structural pins asserting no script
+    // exists, running the install with --foreground-scripts turns any
+    // regression into a visible line in the job log instead of hidden
+    // detached output.
+    const step = installSteps().find(
+      (candidate) => candidate.name === 'Install the package globally from the tarball',
+    );
+    expect(
+      step,
+      "the 'Install the package globally from the tarball' step is missing",
+    ).toBeDefined();
+    expect(
+      step?.runLines.includes(
+        'npm install --global --prefix /usr/local --foreground-scripts ./quotameter-*.tgz',
+      ),
+      'the install command must keep --foreground-scripts (task 186, D-196) — it surfaces ' +
+        'any dependency lifecycle script the moment it runs',
+    ).toBe(true);
+  });
+
+  it('the install job verifies the installed package: no scripts, no natives, dist present', () => {
+    // Task 186 (spec §3/§17.2, D-196): the post-install verification trio —
+    // the installed manifest (what npm actually read), the installed tree
+    // (nothing native shipped or compiled, and no install script anywhere
+    // npm wrote — a consumer install re-resolves dependency ranges against
+    // the live registry, so the scan reads the tree npm laid down on THIS
+    // run), and the compiled CLI the tarball must already carry (task 185,
+    // D-195). Every step must stay fail-closed: the failure expressions
+    // are pinned and continue-on-error banned (the D-157 rule).
+    const steps = installSteps();
+    const byName = (name: string) => steps.findIndex((candidate) => candidate.name === name);
+    const install = byName('Install the package globally from the tarball');
+
+    const lifecycle = byName('Verify the installed manifest has no install-time lifecycle scripts');
+    expect(
+      lifecycle,
+      'the install job lost its installed-manifest lifecycle check — the shipped tarball ' +
+        'could grow an install-time script without any gate noticing (task 186, D-196)',
+    ).toBeGreaterThan(-1);
+    const lifecycleLines = steps[lifecycle]?.runLines ?? [];
+    expect(
+      lifecycleLines.some((line) =>
+        line.includes(
+          '"preinstall","install","postinstall","preprepare","prepare","postprepare","prepublish"',
+        ),
+      ),
+      "the lifecycle check must ban npm's complete install-time set, matching the manifest pin",
+    ).toBe(true);
+    expect(
+      lifecycleLines.some((line) => line.includes('process.exit(1)')),
+      'the lifecycle check must fail the job (process.exit(1)), not just log — deleting the ' +
+        'failure branch would otherwise keep this pin green',
+    ).toBe(true);
+
+    const natives = byName(
+      'Verify the installed tree contains no native addons or install scripts',
+    );
+    expect(
+      natives,
+      'the install job lost its installed-tree scan — a dependency shipping prebuilt or ' +
+        'compiled addons, or an install script in the registry-resolved tree, would install ' +
+        'unnoticed (task 186, D-196)',
+    ).toBeGreaterThan(-1);
+    const nativeLines = steps[natives]?.runLines ?? [];
+    expect(
+      nativeLines.some((line) => line.includes('binding.gyp')) &&
+        nativeLines.some((line) => line.includes('endsWith(".node")')),
+      'the installed-tree scan must look for both *.node binaries and binding.gyp recipes',
+    ).toBe(true);
+    expect(
+      nativeLines.some((line) =>
+        line.includes('const banned=["preinstall","install","postinstall"]'),
+      ),
+      "the tree scan must also check every installed package's manifest for install scripts — the " +
+        'lockfile pins guard the snapshot, this guards what npm resolved THIS run',
+    ).toBe(true);
+    expect(
+      nativeLines.some((line) => line.includes('process.exit(1)')),
+      'the tree scan must fail the job when an offender is found, not just log',
+    ).toBe(true);
+
+    const dist = byName('Verify the installed tree ships the compiled CLI (dist)');
+    expect(
+      dist,
+      'the install job lost its dist-presence check — a tarball without the compiled CLI ' +
+        'would need an install-time build (task 186, D-195/D-196)',
+    ).toBeGreaterThan(-1);
+    const distLines = steps[dist]?.runLines ?? [];
+    expect(
+      distLines.some((line) => line.includes('dist/cli/main.js')),
+      'the dist check must assert the entry the launcher resolves (dist/cli/main.js)',
+    ).toBe(true);
+    expect(
+      distLines.some((line) => line.trim() === 'exit 1'),
+      'the dist check must fail the job, not warn',
+    ).toBe(true);
+
+    for (const [index, what] of [
+      [lifecycle, 'the lifecycle check'],
+      [natives, 'the installed-tree scan'],
+      [dist, 'the dist-presence check'],
+    ] as const) {
+      expect(index, `${what} must run AFTER the tarball install`).toBeGreaterThan(install);
+      expect(
+        steps[index]?.rawLines.some((line) => line.includes('continue-on-error')),
+        `${what} must not carry continue-on-error — it would downgrade a real failure to a ` +
+          'warning (the D-157 fail-closed rule)',
+      ).toBe(false);
+    }
+  });
 });
