@@ -2,10 +2,13 @@
 /**
  * Build-artifact verification (spec §3, §17.2; decisions D-127, D-129).
  *
- * Runs after the CI build step and fails when an expected artifact is
+ * Runs after the CI build steps and fails when an expected artifact is
  * missing, so a silently broken build cannot pass. The manifest below is
  * the contract between the build scripts and CI; extend it when new build
- * outputs (server bundle, package tarball) become real.
+ * outputs (further package artifacts) become real. Since task 185 (D-195)
+ * it covers both halves of the packaged product: the compiled CLI under
+ * `dist/` (`npm run build:cli`, honored through CLI_DIST_DIR) beside the
+ * web UI (`npm run build:ui`, DIST_DIR).
  *
  * Beyond existence, the built output's CSP shape is asserted (D-127):
  * the served policy (`script-src`/`style-src 'self'`, `img-src`/
@@ -18,18 +21,24 @@
 import { access, glob, readFile } from 'node:fs/promises'; // Node >= 22 supports fs.glob
 
 // Container builds live in the isolated data volume (DIST_DIR, see
-// compose.yaml); host and CI builds use the default ui/dist.
-const BASE = process.env.DIST_DIR ?? 'ui/dist';
+// compose.yaml); host and CI builds use the default ui/dist. The compiled
+// CLI follows the same pattern through CLI_DIST_DIR (task 185, D-195) —
+// tests build into temp fixture roots, every other context uses dist/.
+const UI_BASE = process.env.DIST_DIR ?? 'ui/dist';
+const CLI_BASE = process.env.CLI_DIST_DIR ?? 'dist';
 
-/** Each entry must exist after `npm run build` for the build to count. */
-const REQUIRED_FILES = [`${BASE}/index.html`];
+/** Each entry must exist after the build steps for the build to count. */
+const REQUIRED_FILES = [`${UI_BASE}/index.html`, `${CLI_BASE}/cli/main.js`];
 
 /** Each glob must match at least one file after the build. */
 const REQUIRED_GLOBS = [
   // Vite output: at least one JS and one CSS bundle with hashed names.
-  // (Sourcemaps are intentionally not produced for the shipped UI.)
-  `${BASE}/assets/*.js`,
-  `${BASE}/assets/*.css`,
+  // (Sourcemaps are intentionally not produced for the shipping UI.)
+  `${UI_BASE}/assets/*.js`,
+  `${UI_BASE}/assets/*.css`,
+  // tsc output: the compiled CLI island (the launcher resolves
+  // dist/cli/main.js; the rest of the graph hangs off it transitively).
+  `${CLI_BASE}/cli/*.js`,
 ];
 
 /**
@@ -86,7 +95,7 @@ for (const pattern of REQUIRED_GLOBS) {
 // existence problems, which are already recorded above.
 let indexHtml;
 try {
-  indexHtml = await readFile(`${BASE}/index.html`, 'utf8');
+  indexHtml = await readFile(`${UI_BASE}/index.html`, 'utf8');
 } catch {
   indexHtml = undefined;
 }
@@ -94,38 +103,38 @@ try {
 if (indexHtml !== undefined) {
   if (INLINE_SCRIPT_PATTERN.test(indexHtml)) {
     problems.push(
-      `inline <script> without src in ${BASE}/index.html — the served CSP blocks inline scripts (D-127)`,
+      `inline <script> without src in ${UI_BASE}/index.html — the served CSP blocks inline scripts (D-127)`,
     );
   }
   if (STYLE_BLOCK_PATTERN.test(indexHtml)) {
     problems.push(
-      `inline <style> block in ${BASE}/index.html — the served CSP blocks inline stylesheets (D-127)`,
+      `inline <style> block in ${UI_BASE}/index.html — the served CSP blocks inline stylesheets (D-127)`,
     );
   }
   if (STYLE_ATTRIBUTE_PATTERN.test(indexHtml)) {
     problems.push(
-      `style= attribute in ${BASE}/index.html — the served CSP blocks inline style attributes (D-127)`,
+      `style= attribute in ${UI_BASE}/index.html — the served CSP blocks inline style attributes (D-127)`,
     );
   }
   if (EVENT_HANDLER_PATTERN.test(indexHtml)) {
     problems.push(
-      `inline event handler (on*=) in ${BASE}/index.html — the served CSP blocks inline script attributes (D-127)`,
+      `inline event handler (on*=) in ${UI_BASE}/index.html — the served CSP blocks inline script attributes (D-127)`,
     );
   }
   if (JAVASCRIPT_URI_PATTERN.test(indexHtml)) {
     problems.push(
-      `javascript: URI in ${BASE}/index.html — the served CSP blocks inline scripts (D-127)`,
+      `javascript: URI in ${UI_BASE}/index.html — the served CSP blocks inline scripts (D-127)`,
     );
   }
   if (DATA_URI_PATTERN.test(indexHtml)) {
     problems.push(
-      `data: URI in ${BASE}/index.html — the served CSP admits no data: sources (D-127)`,
+      `data: URI in ${UI_BASE}/index.html — the served CSP admits no data: sources (D-127)`,
     );
   }
 }
 
 // Stylesheets: inlined data: URIs and external url() references.
-for (const cssFile of await globArray(`${BASE}/assets/*.css`)) {
+for (const cssFile of await globArray(`${UI_BASE}/assets/*.css`)) {
   const css = await readFile(cssFile, 'utf8');
   if (DATA_URI_PATTERN.test(css)) {
     problems.push(`data: URI in ${cssFile} — the served CSP admits no data: sources (D-127)`);
@@ -138,7 +147,7 @@ for (const cssFile of await globArray(`${BASE}/assets/*.css`)) {
 }
 
 // JavaScript bundles: Vite's asset inlining lands JS-imported assets here.
-for (const jsFile of await globArray(`${BASE}/assets/*.js`)) {
+for (const jsFile of await globArray(`${UI_BASE}/assets/*.js`)) {
   const js = await readFile(jsFile, 'utf8');
   if (DATA_URI_PATTERN.test(js)) {
     problems.push(
@@ -153,4 +162,4 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-console.log('build artifacts verified: expected outputs present, CSP shape clean');
+console.log('build artifacts verified: web UI present and CSP-clean, compiled CLI present');

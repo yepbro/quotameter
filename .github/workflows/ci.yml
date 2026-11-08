@@ -199,6 +199,14 @@ jobs:
       - name: Build
         run: npm run build:ui
 
+      # The compiled CLI the launcher resolves in an installed package
+      # (task 185, D-195): the same step order the release workflow and
+      # test/unit/release-workflow.spec.ts pin. verify:build then requires
+      # the dist/cli entry, so a build that silently emitted nothing
+      # cannot pass.
+      - name: Build the compiled CLI (dist)
+        run: npm run build:cli
+
       - name: Verify build artifacts
         run: npm run verify:build
 
@@ -283,6 +291,25 @@ jobs:
           echo "quotameter --version -> $version (expected $expected)"
           test "$version" = "$expected"
 
+      # Task 185 (spec §5.1/§17.2, D-195): the installed command must
+      # resolve to the PACKAGED CLI — the compiled dist/ shipped in the
+      # tarball, not a source checkout and not an install-time build. The
+      # --version fast path above proves almost nothing (it never loads the
+      # command modules); --help loads the whole compiled dispatch graph
+      # through plain Node ESM. A tarball without dist/ fails here loudly.
+      - name: Run a real command through the installed CLI
+        run: |
+          help="$(quotameter --help)"
+          echo "$help" | head -5
+          echo "$help" | grep -F "Usage: quotameter <command> [options]" >/dev/null || {
+            echo "::error::the installed quotameter did not resolve the compiled command table (dist/)"
+            exit 1
+          }
+          echo "$help" | grep -F "doctor" >/dev/null || {
+            echo "::error::the installed quotameter --help is missing the command table"
+            exit 1
+          }
+
   # Package content check (task 052): the tarball must contain exactly the
   # allowlisted files. The job is consumed by install smoke tests (task 053).
   package:
@@ -300,6 +327,14 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # The smoke-test tarball must carry the compiled CLI (task 185,
+      # D-195): the install job's steps below run the installed `quotameter`
+      # command through dist/, with no source checkout, no jiti, and no
+      # install-time build — so the pack happens after the CLI build and
+      # check:package validates the built dist/ entries too.
+      - name: Build the compiled CLI (dist)
+        run: npm run build:cli
 
       - name: Check tarball contents against the allowlist
         run: npm run check:package

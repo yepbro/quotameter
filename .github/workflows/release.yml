@@ -111,6 +111,13 @@ jobs:
       - name: Build the web UI
         run: npm run build:ui
 
+      # The compiled CLI (task 185, D-195): the same packaging build CI's
+      # build and package jobs run, emitted to dist/ and verified below —
+      # the published tarball ships it, and the launcher resolves
+      # dist/cli/main.js from the installed package.
+      - name: Build the compiled CLI (dist)
+        run: npm run build:cli
+
       - name: Verify build artifacts
         run: npm run verify:build
 

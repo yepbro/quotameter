@@ -15,13 +15,15 @@ import { ALLOWED_EXACT, ALLOWED_PREFIXES, REQUIRED_ENTRIES } from '../../scripts
  * constants there — extending either side alone fails here), and the
  * production-dependency audit against the code the shipped CLI resolves to.
  *
- * Boundary (D-194): the compiled server graph beyond `bin/` + `schema/` is
- * tasks 185/186's manifest work, so the dependency audit scans `src/` + `bin/`
- * — today's production entry graph (`bin/quotameter.mjs` → `src/cli/main`) —
- * and will scan whatever the packaged CLI comes to resolve through. The web
- * UI's runtime libraries (vue, echarts, …) are deliberately not audited:
- * they stay devDependencies because the shipped artifact is the prebuilt
- * `ui/dist` bundle (spec §3: the frontend is built before publication).
+ * Boundary (D-194, executed by task 185/D-195): the compiled server graph
+ * ships as `dist/` (tsc-emitted ESM from this same `src/` tree), packed
+ * under the `dist/` allowlist prefix. The dependency audit scans
+ * `src/` + `bin/` — the shipped graph is emitted from exactly that code
+ * with specifier strings preserved, so the audit remains its faithful
+ * proxy. The web UI's runtime libraries (vue, echarts, …) are deliberately
+ * not audited: they stay devDependencies because the shipped artifact is
+ * the prebuilt `ui/dist` bundle (spec §3: the frontend is built before
+ * publication).
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');

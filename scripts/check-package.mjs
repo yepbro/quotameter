@@ -10,16 +10,18 @@
  * Two entry classes (task 184, D-194):
  *  - exact entries — single files (`bin/quotameter.mjs`, the published
  *    schema, the README, LICENSE, NOTICE);
- *  - prefix entries — `ui/dist/`, the prebuilt web UI the release workflow
- *    builds before packing (spec §3: no install-time build). npm lists each
- *    built file individually, so the prefix matches them all.
+ *  - prefix entries — directories of built output: `dist/` (the compiled
+ *    CLI, task 185/D-195) and `ui/dist/` (the prebuilt web UI).
  *
  * The prefix class is allowed but not required: `npm pack` silently skips
- * allowlisted-but-missing paths (the LICENSE/NOTICE precedent), the CI
- * `package` job packs without building the UI, and dev-container builds go
- * to the data volume (`DIST_DIR`) — only the release pipeline (build →
- * check → publish, its step order pinned by test/unit/release-workflow.spec.ts)
- * produces a tarball that carries `ui/dist`.
+ * allowlisted-but-missing paths (the LICENSE/NOTICE precedent), and a clean
+ * checkout packs without builds. Every context that packs for real — CI's
+ * `package` job (its smoke-test tarball must carry `dist/` for the install
+ * job's command test) and the release pipeline (build → check → publish,
+ * its step order pinned by test/unit/release-workflow.spec.ts) — runs
+ * `npm run build:cli` first, and `npm run verify:build` fails on a missing
+ * compiled entry, so "allowed" never decays into "silently absent" where
+ * it matters.
  *
  * The lists are exported (consumed by test/unit/package-manifest.spec.ts,
  * which pins their agreement with the manifest's `files`) and the check runs
@@ -47,11 +49,13 @@ export const ALLOWED_EXACT = [
 ];
 
 /**
- * Directory prefixes whose packed contents are allowed: the prebuilt UI of
- * the release build (task 184, D-194). Every packed entry starting with one
- * of these prefixes passes.
+ * Directory prefixes whose packed contents are allowed: the compiled CLI
+ * (task 185, D-195 — tsc-emitted ESM under `dist/`, built by every pack
+ * context through `npm run build:cli`) and the prebuilt UI of the release
+ * build (task 184, D-194). Every packed entry starting with one of these
+ * prefixes passes.
  */
-export const ALLOWED_PREFIXES = ['ui/dist/'];
+export const ALLOWED_PREFIXES = ['dist/', 'ui/dist/'];
 
 /** Entries that must be present in every packed tarball. */
 export const REQUIRED_ENTRIES = ['package.json', 'bin/quotameter.mjs', 'schema/config.schema.json'];

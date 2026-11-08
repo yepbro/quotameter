@@ -91,7 +91,7 @@ Everything works inside the worktree exactly as in the main tree (`make check`, 
 | `make mutation`                                                   | Stryker mutation testing                                                                                                          |
 | `make package`                                                    | npm tarball contents against the packaging allowlist                                                                              |
 | `make schema` / `make openapi`                                    | Regenerate the published JSON config schema (`schema/`) / the published OpenAPI document (`docs/openapi.json`)                    |
-| `make build`                                                      | Build the UI and verify the expected artifacts                                                                                    |
+| `make build`                                                      | Build the UI and the compiled CLI (`dist/`, task 185/D-195), verify the expected artifacts of both                                |
 | `make verify-runtime`                                             | Confirm Node `>= 22.13.0` and flagless `node:sqlite`                                                                              |
 
 Layout inside the container:

@@ -4,36 +4,46 @@
  *
  * Thin, build-free launcher: it gates the runtime, answers `--version`
  * without loading the command modules, and delegates everything else to
- * `src/cli/` (task 128). Plain JavaScript on purpose: the binary must run
- * from an npm installation without a build step, on any machine that
- * satisfies the declared minimum runtime.
+ * the compiled CLI under `dist/` — or, in a source checkout, to `src/cli/`
+ * through jiti (task 128, task 185, decision D-195). Plain JavaScript on
+ * purpose: the binary must run from an npm installation without a build
+ * step, on any machine that satisfies the declared minimum runtime.
  *
  * Runtime gate (task 129, spec §5.1, decision D-098): the declared minimum
  * is derived from the manifest's `engines.node` field — the single source
  * of truth, so the gate cannot drift from the declaration npm surfaces —
  * and a runtime below it (or one whose version string cannot be parsed) is
- * rejected with an actionable message before anything under `src/` loads.
- * The gate fails closed: an unreadable manifest, an unexpected `engines`
- * shape, or an unparseable `process.versions.node` all refuse to run.
+ * rejected with an actionable message before any command module loads
+ * (decision D-161's ordering, kept for both entry kinds below). The gate
+ * fails closed: an unreadable manifest, an unexpected `engines` shape, or
+ * an unparseable `process.versions.node` all refuse to run.
  *
- * Delegation uses a dynamic import so the version gate above always runs
- * first (a static import would be evaluated before it), and resolves the
- * handler through `mod.runCli ?? mod.default`: under jiti (development and
- * tests) the TypeScript module arrives as a CommonJS namespace whose
- * exports sit on `default`, while the published build is real ESM with
- * named exports. The specifier is deliberately './'-prefixed ('./../'
- * instead of '../'): jiti's loader hook skips anything that does not start
- * with './' or 'file://', and a plain '../' would fall through to Node's
- * resolver, which cannot map the '.js' spelling onto the TypeScript source.
- * Until the packaging tasks ship compiled `src/` in the tarball, an
- * installation without command modules fails with a clear message instead
- * of a module-not-found stack trace.
+ * Delegation (task 185, D-195) tries two candidates in order, after the
+ * gate, through a dynamic import so the gate always runs first (a static
+ * import would be evaluated before it):
+ *
+ *  1. `../dist/cli/main.js` — the packaged build: real Node ESM emitted by
+ *     `npm run build:cli` (release builds, CI packs, or a local build), no
+ *     jiti, no TypeScript sources. Dist-first is deliberate: the installed
+ *     package carries only this form, and a source checkout that also has
+ *     a built dist/ should exercise the packaged shape.
+ *  2. `../src/cli/main.js` — the source checkout, resolved through jiti
+ *     (`node --import jiti/register`, the development contract). The
+ *     existence probe looks for the TypeScript file; the './'-prefixed
+ *     '.js' spelling is jiti's loader-hook requirement (a plain '../'
+ *     falls through to Node's resolver, which cannot map it onto the .ts).
+ *
+ * Every failure is actionable (spec §5.1: name the requirement and the
+ * fix): a missing entry names both locations and the reinstall; a dist/
+ * whose entry loaded but whose graph is broken is a damaged installation
+ * to reinstall; a source checkout without jiti names the loader and the
+ * build command.
  *
  * All exits set process.exitCode and let the event loop drain instead of
  * calling process.exit(): an immediate exit can truncate buffered pipe
  * writes, and nothing else keeps the loop alive here.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 /**
  * Parses `engines.node`, which must declare exactly `>=X.Y.Z` — the
@@ -113,35 +123,78 @@ if (minimum === undefined) {
   process.exitCode = 1;
 } else if (args[0] === '--version' || args[0] === '-v') {
   // Fast path with a fixed contract (CI install smoke): a leading --version
-  // or -v prints exactly the package version. It must not load src/cli/, so
-  // it also works from the pre-packaging tarball, which ships bin/ only.
+  // or -v prints exactly the package version. It must not load the CLI
+  // modules, so it also works from a tarball whose dist/ was never built.
   console.log(manifest.version);
   process.exitCode = 0;
 } else {
-  try {
-    const mod = await import('./../src/cli/main.js');
-    const runCli = mod.runCli ?? mod.default?.runCli;
-    if (typeof runCli !== 'function') {
-      console.error(
-        `quotameter ${manifest.version} — this installation has an unusable CLI entry module; ` +
-          'reinstall the quotameter package',
-      );
-      process.exitCode = 1;
-    } else {
-      process.exitCode = await runCli(args, { version: manifest.version });
-    }
-  } catch (error) {
-    // A missing module means an installation that ships bin/ without the
-    // compiled command modules (the tarball until the packaging tasks);
-    // anything else is a real defect and must surface as itself.
-    if (error && error.code === 'ERR_MODULE_NOT_FOUND') {
-      console.error(
-        `quotameter ${manifest.version} — this installation is missing the CLI command modules; ` +
-          'reinstall the quotameter package',
-      );
-    } else {
-      console.error(`quotameter: internal CLI error: ${String(error)}`);
-    }
+  // Candidate resolution (D-195): the packaged build first, the source
+  // checkout second. Existence is probed with URLs; the imports keep the
+  // './'-prefixed relative specifier strings — jiti's loader-hook contract
+  // for the source candidate (an absolute file:// URL falls into its CJS
+  // require, which cannot load one), and plain Node resolves both forms
+  // against this module regardless.
+  const distEntryUrl = new URL('./../dist/cli/main.js', import.meta.url);
+  const sourceEntryUrl = new URL('./../src/cli/main.ts', import.meta.url);
+  let entrySpecifier;
+  let entryKind;
+  if (existsSync(distEntryUrl)) {
+    entrySpecifier = './../dist/cli/main.js';
+    entryKind = 'dist';
+  } else if (existsSync(sourceEntryUrl)) {
+    // The '.js' spelling over the '.ts' file is jiti's loader contract.
+    entrySpecifier = './../src/cli/main.js';
+    entryKind = 'source';
+  } else {
+    console.error(
+      `quotameter ${manifest.version} — this installation is missing the CLI entry point ` +
+        '(neither dist/cli/main.js nor src/cli/main.ts is present); ' +
+        'reinstall the quotameter package',
+    );
     process.exitCode = 1;
+    entrySpecifier = undefined;
+  }
+
+  if (entrySpecifier !== undefined) {
+    try {
+      const mod = await import(entrySpecifier);
+      const runCli = mod.runCli ?? mod.default?.runCli;
+      if (typeof runCli !== 'function') {
+        console.error(
+          `quotameter ${manifest.version} — this installation has an unusable CLI entry module; ` +
+            'reinstall the quotameter package',
+        );
+        process.exitCode = 1;
+      } else {
+        process.exitCode = await runCli(args, { version: manifest.version });
+      }
+    } catch (error) {
+      const moduleNotFound =
+        error &&
+        (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'ERR_UNSUPPORTED_DIR_IMPORT');
+      if (moduleNotFound) {
+        // The entry itself was probed above, so a module-not-found (or a
+        // directory-import refusal — a damaged layout where a directory
+        // sits at a module's path) is a broken graph behind the entry,
+        // never a wrong candidate choice.
+        if (entryKind === 'dist') {
+          console.error(
+            `quotameter ${manifest.version} — this installation is damaged: ` +
+              'a module of the compiled CLI is missing; reinstall the quotameter package',
+          );
+        } else {
+          console.error(
+            `quotameter ${manifest.version} — this source checkout's CLI modules ` +
+              'could not be loaded (jiti is missing from this environment, or a module ' +
+              'of the checkout is absent); run through the development environment ' +
+              '(node --import jiti/register) or build the packaged CLI ' +
+              'with npm run build:cli',
+          );
+        }
+      } else {
+        console.error(`quotameter: internal CLI error: ${String(error)}`);
+      }
+      process.exitCode = 1;
+    }
   }
 }

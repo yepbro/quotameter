@@ -27,9 +27,23 @@ interface ScriptRun {
 }
 
 /** Spawns the verifier against `distDir` (DIST_DIR) and collects its output. */
-function runVerifyBuild(distDir: string): Promise<ScriptRun> {
+async function runVerifyBuild(distDir: string, cliDir?: string): Promise<ScriptRun> {
+  // Since task 185 (D-195) the verifier also requires the compiled CLI.
+  // Tests that judge the UI half supply a valid CLI tree automatically at
+  // a companion path INSIDE distDir — withTempDir's cleanup removes the
+  // whole root, so nothing leaks into the container /tmp (the review
+  // round measured 90 leaked sibling dirs from the `${distDir}-cli`
+  // placement this replaces); CLI-specific tests pass their own (possibly
+  // empty) dir. CLI_DIST_DIR is always set explicitly — the repo-root
+  // default must never decide a test's outcome.
+  const resolvedCliDir = cliDir ?? join(distDir, 'cli-companion');
+  if (cliDir === undefined) {
+    await mkdir(join(resolvedCliDir, 'cli'), { recursive: true });
+    await writeFile(join(resolvedCliDir, 'cli', 'main.js'), 'export const runCli = 0;\n');
+    await writeFile(join(resolvedCliDir, 'cli', 'commands.js'), 'export const table = [];\n');
+  }
   const child = spawn(process.execPath, [SCRIPT], {
-    env: { ...process.env, DIST_DIR: distDir },
+    env: { ...process.env, DIST_DIR: distDir, CLI_DIST_DIR: resolvedCliDir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const stdout: Buffer[] = [];
@@ -77,6 +91,23 @@ const HAPPY_INDEX = [
 ].join('\n');
 
 describe('verify-build script', () => {
+  it('rejects a missing compiled CLI entry (dist/cli/main.js)', async () => {
+    // Task 185 (D-195): the installed command resolves dist/cli/main.js —
+    // a build that emitted no CLI must fail verification, not publish a
+    // tarball whose command can only print --version.
+    await withTempDir(async (dir) => {
+      await writeBuildTree(dir.path, HAPPY_INDEX);
+      const cliDir = join(dir.path, 'cli-out');
+      await mkdir(join(cliDir, 'cli'), { recursive: true }); // exists, empty
+
+      const run = await runVerifyBuild(dir.path, cliDir);
+
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain('missing expected build artifact');
+      expect(run.stderr).toContain('cli/main.js');
+    });
+  });
+
   it('accepts a build with external hashed bundles only', async () => {
     await withTempDir(async (dir) => {
       await writeBuildTree(dir.path, HAPPY_INDEX);

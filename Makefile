@@ -201,9 +201,10 @@ openapi: deps ## Regenerate the published OpenAPI document (docs/openapi.json)
 	echo "regenerated docs/openapi.json"
 
 .PHONY: build
-build: deps ## Build the UI and verify expected artifacts
+build: deps ## Build the UI and the compiled CLI (dist/), verify artifacts
 	@set -e; \
 	$(RUN) npm run build:ui; \
+	$(RUN) npm run build:cli; \
 	$(RUN) npm run verify:build
 
 .PHONY: verify-runtime

@@ -19,6 +19,7 @@
   },
   "files": [
     "bin/",
+    "dist/",
     "schema/config.schema.json",
     "ui/dist/",
     "README.md",
@@ -54,6 +55,7 @@
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "build:ui": "vite build ui",
+    "build:cli": "node scripts/build-cli.mjs",
     "preview:ui": "vite preview ui --port 4173 --strictPort --host 127.0.0.1"
   },
   "devDependencies": {

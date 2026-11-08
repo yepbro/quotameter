@@ -1,0 +1,25 @@
+{
+  // The packaging build of the compiled CLI (task 185, spec §3, §5.1; decision D-195):
+  // type-erased ESM emitted into `dist/`, mirroring `src/` one-to-one (same module
+  // graph, same dynamic-import edges — the node:sqlite confinement and the lazy
+  // server/storage imports hold in the shipped artifact by construction). Invoked
+  // only through `npm run build:cli` (scripts/build-cli.mjs), never by the editor
+  // or `tsc` alone: the emitted specifiers need the build script's normalization
+  // pass (extensionless relative imports → `.js`, directory imports → `/index.js`)
+  // before plain Node ESM can load the output — `src/` keeps the project's
+  // extensionless bundler-resolution style (moduleResolution: bundler, jiti in
+  // development), so `noEmit` here is false only in this derived configuration.
+  //
+  // `incremental` stays off deliberately: an incremental emit reusing a rewritten
+  // outDir silently skips files whose sources did not change (observed live in
+  // the design phase of task 185) — the build script always starts from a clean
+  // `dist/`, and this config must never resurrect a stale-output build.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}

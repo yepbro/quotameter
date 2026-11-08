@@ -38,13 +38,13 @@ The publish job runs this pipeline, in order, on the tagged commit:
 3. Verify the tag matches `package.json`'s version (a mismatch aborts before the CI gate, tests, build, and publish).
 4. **Require a green `CI` check run on the tagged commit**: the workflow first verifies the commit is on `master` (a compare against `master` must report the tag at or behind it — a green check run on an unmerged PR-head commit does not qualify), then queries the commit's check runs via the GitHub API and refuses to publish unless the latest `CI` run (the required gate that protects `master`) completed successfully. This mechanically enforces the rule above that tags point at a green `master` commit — a tag pushed while CI is still running, pointing at a commit that never ran CI, pointing at a red commit, or pointing off `master` is refused with an explanation (after CI finishes, re-run the workflow; tags are immutable).
 5. Run the test suite (`npm run test:ci` — the same coverage-gated run CI's test job and `make check` use).
-6. Build the web UI (`npm run build:ui`) and verify the build artifacts (`npm run verify:build`).
-7. Check the tarball contents against the allowlist (`npm run check:package`). The build (step 6) happens first, so the check validates the built artifacts: the package manifest's `files` allowlist covers `ui/dist` (task 184, D-194), so the published tarball ships the prebuilt UI.
+6. Build the web UI (`npm run build:ui`), build the compiled CLI (`npm run build:cli` — the `dist/` graph the installed `quotameter` command resolves, task 185/D-195), and verify the build artifacts (`npm run verify:build`, which requires both halves' entries).
+7. Check the tarball contents against the allowlist (`npm run check:package`). The builds (step 6) happen first, so the check validates the built artifacts: the package manifest's `files` allowlist covers `ui/dist` (task 184, D-194) and `dist/` (task 185, D-195), so the published tarball ships the prebuilt UI and the compiled CLI.
 8. Remove the `private` marker and publish with `npm publish --provenance --access public`.
 
 The workflow carries no npm token or secret of any kind; its only elevated permission is the workflow-scoped `id-token` used for the OIDC exchange.
 
-> **Remaining packaging boundary (tasks 185/186, recorded in D-194):** the tarball today ships `bin/`, the published JSON Schema, and — from the release build — `ui/dist`. The packaged server code (whatever the shipped CLI resolves to beyond the launcher) is tasks 185/186's manifest work: when it lands, it joins `package.json`'s `files` and `scripts/check-package.mjs`'s allowlist **in the same change** (their agreement is pinned by `test/unit/package-manifest.spec.ts`, so a half-update fails `make check`), and task 186 verifies installation in a clean, compiler-free container with no `postinstall` step. Until then, an installed package's `--version` fast path works (the CI install smoke tests it) while the command modules are absent by design.
+> **Remaining packaging boundary (task 186, recorded in D-194/D-195):** the tarball now ships `bin/`, the published JSON Schema, the compiled CLI under `dist/`, and — from the release build — `ui/dist` (task 185 landed the compiled entry graph, its `files`/allowlist entries, and the build step in every pack context; CI's install job proves the installed command runs `--help` through `dist/`). Task 186 owns the deeper clean-container verification: `init --yes` non-interactively, install/start, restart after failure, reboot enablement, and user service with linger, per §17.2.
 
 ### Trusted publishing setup (one-time, before the first release)
 
@@ -68,7 +68,7 @@ Run through every step; the release is aborted if any check fails.
 3. **Bump the version** in `package.json` to the target `X.Y.Z` following the semver rules above, then regenerate the version-stamped OpenAPI document (`make openapi`) and include `docs/openapi.json` in the same commit — the drift guard fails CI on a stale artifact otherwise.
 4. **Commit and push** the version commit (`chore(release): vX.Y.Z`); wait for CI.
 5. **Create and push the tag**: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-6. **Watch the release workflow**: it verifies the tag/version match and the green CI run on the tagged commit, runs the test suite, builds and verifies the web UI, re-checks the tarball allowlist, and publishes with provenance. Publication only happens from this workflow (see "What the release workflow does" above).
+6. **Watch the release workflow**: it verifies the tag/version match and the green CI run on the tagged commit, runs the test suite, builds and verifies the web UI and the compiled CLI, re-checks the tarball allowlist, and publishes with provenance. Publication only happens from this workflow (see "What the release workflow does" above).
 7. **Verify on npm**: the new version exists, provenance is linked, `npm install -g quotameter@X.Y.Z` works in a clean container.
 8. **Announce** in the repository release notes if the release is notable; link the changelog section.
 

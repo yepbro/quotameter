@@ -329,4 +329,56 @@ describe('ci workflow guard (task U-033, spec §4.4; decisions D-045, D-157)', (
         'beside the Dependabot section (decision D-157)',
     ).toContain(repair);
   });
+
+  it('the package job builds the compiled CLI before the tarball check and the pack', () => {
+    // Task 185 (spec §17.2, D-195): the install job's smoke steps run the
+    // installed `quotameter` through the compiled dist/ shipped in the
+    // tarball — so the pack cannot happen without the build, and
+    // check:package must validate the built dist/ entries too.
+    const text = readCiWorkflow();
+    const lines = text.split('\n');
+    const jobIndex = lines.findIndex((line) => line === '  package:');
+    expect(jobIndex, "the 'package:' job is missing from ci.yml").toBeGreaterThan(-1);
+    const jobEnd = lines.findIndex(
+      (line, index) => index > jobIndex && /^ {2}[A-Za-z][A-Za-z0-9-]*:$/.test(line),
+    );
+    const jobLines = lines.slice(jobIndex, jobEnd === -1 ? lines.length : jobEnd);
+    const buildIndex = jobLines.findIndex((line) => line.trim() === 'run: npm run build:cli');
+    const checkIndex = jobLines.findIndex((line) => line.trim() === 'run: npm run check:package');
+    const packIndex = jobLines.findIndex((line) => line.trim() === 'run: npm pack');
+    expect(buildIndex, 'the package job must run `npm run build:cli`').toBeGreaterThan(-1);
+    expect(
+      checkIndex,
+      'the package job must keep its tarball allowlist check (npm run check:package)',
+    ).toBeGreaterThan(-1);
+    expect(packIndex, 'the package job must keep packing (npm pack)').toBeGreaterThan(-1);
+    expect(
+      buildIndex,
+      'build:cli must precede check:package — the check validates the packed dist/',
+    ).toBeLessThan(checkIndex);
+    expect(
+      buildIndex,
+      'build:cli must precede the pack — the smoke-test tarball carries dist/',
+    ).toBeLessThan(packIndex);
+  });
+
+  it('the install job runs a real command through the installed CLI (dist resolution)', () => {
+    // The --version fast path proves nothing about the packaged CLI (it
+    // never loads the command modules); --help loads the whole compiled
+    // dispatch graph. A tarball without dist/ fails this step loudly.
+    const steps = installSteps();
+    const step = steps.find((candidate) =>
+      candidate.runLines.some((line) => line.includes('quotameter --help')),
+    );
+    expect(
+      step,
+      'the install job lost its real-command step (quotameter --help) — the clean ' +
+        'global-install proof of task 185 (D-195) would be gone; restore the step or ' +
+        'update this guard with its replacement',
+    ).toBeDefined();
+    expect(
+      step?.runLines.some((line) => line.includes('Usage: quotameter')),
+      'the step must assert the rendered command table, not just a zero exit',
+    ).toBe(true);
+  });
 });

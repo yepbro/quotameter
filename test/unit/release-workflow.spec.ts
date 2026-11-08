@@ -26,6 +26,10 @@ import { describe, expect, it } from 'vitest';
  *   (`verify:build`) BEFORE the tarball allowlist check, so the tarball
  *   check validates the built artifacts the `files` allowlist covers
  *   (`ui/dist`, landed by task 184/D-194);
+ * - the publish job builds the compiled CLI (`build:cli`) before
+ *   `verify:build` and the tarball check (task 185/D-195: the installed
+ *   command resolves `dist/cli/main.js`, so the published tarball must
+ *   carry it and the checks must validate it);
  * - a test gate (`test:ci`) runs before publishing;
  * - the tarball allowlist check runs before the publish step;
  * - the publish runs with `--provenance` under the `id-token: write`
@@ -216,6 +220,29 @@ describe('release workflow guard (task U-029, spec §4.4; decisions D-008, D-152
       'verify:build must precede check:package — an unverified build must ' +
         'not reach the tarball check',
     ).toBeLessThan(pack);
+  });
+
+  it('the publish job builds and verifies the compiled CLI before the tarball check', () => {
+    // Task 185 (D-195): the installed `quotameter` command resolves to
+    // dist/cli/main.js, so the published tarball must carry it. The build
+    // precedes verify:build (which requires the dist entry — a build that
+    // silently emitted nothing cannot pass) and check:package (which then
+    // validates the packed dist/ entries against the allowlist).
+    const steps = releaseSteps();
+    const build = requireStep(steps, (run) => run === 'npm run build:cli', 'compiled CLI build');
+    const verify = requireStep(
+      steps,
+      (run) => run === 'npm run verify:build',
+      'build verification',
+    );
+    const pack = requireStep(steps, (run) => run === 'npm run check:package', 'tarball allowlist');
+    const publish = requireStep(steps, (run) => run.startsWith('npm publish'), 'npm publish');
+    expect(verify, 'verify:build must run after build:cli').toBeGreaterThan(build);
+    expect(
+      pack,
+      'check:package must run after build:cli — the tarball check validates the built dist/',
+    ).toBeGreaterThan(build);
+    expect(pack, 'the tarball check must precede the publish step').toBeLessThan(publish);
   });
 
   it('a coverage-gated test run and the allowlist check precede the publish', () => {

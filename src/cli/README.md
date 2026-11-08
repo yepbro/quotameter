@@ -3,8 +3,9 @@
 The `quotameter` command surface (spec §5.2, Stage 11): `init`, `run`,
 `start`/`stop`/`restart`, `reload`, `status`, `logs`, `service`
 (`install`/`uninstall`), `passwd`, and `doctor`. `bin/quotameter.mjs` stays
-a thin, build-free launcher that dispatches here (compiled at publish time
-— no install-time build, spec §3).
+a thin, build-free launcher that resolves the compiled CLI under `dist/`
+(`npm run build:cli`, task 185/D-195 — no install-time build, spec §3) and
+falls back to this source tree through jiti in development.
 
 **Rule:** a top-level consumer — it may import any layer except concrete
 provider adapters. Nothing under `src/` imports this module; only `bin/` does.
