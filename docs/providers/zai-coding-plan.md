@@ -16,9 +16,12 @@ consumed by tasks 098–100), the task 112 peak-schedule encoding (the example c
 and its provenance), the task 097 fixture-matrix note (the synthetic fixtures completing
 the adapter contract's coverage and the rows deliberately left unfixtured), the task 100
 mapping-verification and task 101 derived-field-audit rounds (the test-proof rounds over
-the metric mapping), and the task 127 schedule-source verification (the 2026-10-31 re-check
+the metric mapping), the task 127 schedule-source verification (the 2026-10-31 re-check
 of the official peak-hours schedule and rate pages — URLs, access date, weekdays, time zone,
-and rate semantics). The 094 snapshot
+and rate semantics), and the task 189 contract summary and evidence audit (the §18 completion
+round: the claim-by-claim audit of everything above and the current-state summary — endpoints,
+units, quota mapping, error behavior, fixtures, and the peak-hours reference — with every
+claim's evidence named). The 094 snapshot
 records **only** what
 official Z.ai documentation says, with exact URLs and access dates; nothing there is inferred,
 and undocumented endpoints, fields, or samples are deliberately absent there (spec §8.3 forbids
@@ -1443,3 +1446,269 @@ dated checks: 2026-10-28 (spec §9.1), 2026-10-30 (tasks 094 and 112), and
 2026-10-31 (this round). The falsifier that would reopen it: either
 current-plan page dropping or rewording the quoted statements, or the
 documentation index (source 18) growing a new schedule/rate notice.
+
+## Contract summary and evidence audit — 2026-11-08 (task 189)
+
+### What this section is
+
+Spec §18's provider deliverable — `docs/providers/zai-coding-plan.md` "with verified
+API/usage-statistics behavior and peak-hours source" — completed as an audit round plus a
+current-state summary. Every claim in this dossier was checked against the landed
+implementation (`src/providers/zai-coding-plan/`, `src/providers/transport.ts`,
+`src/services/polling-outcomes.ts` and its retry/suspension siblings), the committed fixtures,
+the test suites, and `DECISIONS.md`; this section then states the contract **as it ships**,
+with each claim's evidence named inline. Nothing below rewrites an earlier dated section (the
+dossier's append-only rule): where a dated section speaks of a then-future task in the future
+tense ("task 105 owns the mapping…"), that section stays as the historical record and this
+section is the landed state. Decision **D-199** records the round, the evidence conventions,
+and the guard; `test/unit/provider-dossier.spec.ts` pins the load-bearing claims executably.
+
+### Audit outcome
+
+- **Classification.** Every endpoint, authentication, envelope, mapping, units, error-behavior,
+  and schedule claim in the dated sections traces to **(a)** in-repo evidence — a fixture path,
+  a test file, a source file, or a `DECISIONS.md` entry — or **(b)** an external official source
+  with URL and access date (the numbered sources of the
+  [094 round](#research-snapshot--2026-10-30-task-094-official-documentation) and the
+  [127 round](#schedule-source-verification--2026-10-31-task-127)). **No unbacked claim was
+  found; nothing was removed or reworded.** The two weakest-evidence items were already
+  honestly labeled and stand as recorded: the D-047.2 capture-time consumption context
+  ("recorded here as given evidence — this task made no new probe") and the task-093 ZCode
+  `app.asar` grep counts (a dated observation of a local first-party client binary, not
+  re-verifiable from the repository).
+- **Corrections.** The only staleness found was tense, not fact: dated sections describing
+  then-future tasks in the future tense (task 105's kind→outcome mapping, task 106's retry
+  layer). Those sections are accurate as history; the landed behavior is summarized below. The
+  intro index (a living list, not a dated section) was extended with this round — the sole edit
+  outside the appended section.
+- **Re-verification performed in this round** (no live request was made to Z.ai: §8.3's
+  evidence is the recorded 2026-10-30 probe and capture, per the task-127 discipline of citing
+  already-recorded evidence): the
+  [096 adapter-contract](#adapter-contract--implementation-facing-rules-for-tasks-098-100-2026-10-30-task-096)
+  recognition and field-by-field tables were re-checked line-by-line against
+  `src/providers/zai-coding-plan/mapping.ts` and `snapshot.ts`; the 096 "concrete
+  observed-state outputs" against `test/fixtures/sanitized/zai-quota-limit.json` (byte-exact:
+  2/1998/2000 at `percentage: 1`, `nextResetTime` 1795885500000; `percentage: 23`, 1793353200000);
+  the transport claims against `src/providers/transport.ts`; the timeout-wiring claims against
+  `src/server/providers.ts` and `schema/config.schema.json`. All agree.
+- **Coverage gaps closed by this section** (behaviors the implementation ships that no dated
+  section describes, all landed after 096): the §7.2 error behavior as landed (D-048
+  classification, D-059 retries, D-062 `Retry-After`, D-064/D-189 suspension, §7.4 retention),
+  the D-137 metric catalog, and the complete fixtures inventory in one place.
+
+### The verified data source (landed state)
+
+**Authentication.** One verified form: `Authorization: Bearer <key>` on every request
+([093 authentication](#authentication-observed-forms); the documented platform scheme — 094
+sources 5 and 12). The adapter sends exactly this header and no other (assumption A7); the
+transport's error scrubbing treats the whole header value plus the after-scheme credential as
+secret material (`src/providers/transport.ts`, `sensitiveHeaderValues` — D-042).
+
+**Endpoints.** Four GETs, composed by `src/providers/zai-coding-plan/provider.ts`
+(`composeSnapshotUrls` / `composeCredentialCheckUrl`) from the production defaults
+(`DEFAULT_API_BASE_URL`/`DEFAULT_CODING_BASE_URL`); the guard asserts each URL below verbatim
+against those functions:
+
+| #   | Role                                                       | URL (production default)                                                   | Evidence                                                                                                                                                           |
+| --- | ---------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Primary — quota metrics + `level`; failure fails the cycle | `https://api.z.ai/api/monitor/usage/quota/limit`                           | [093 endpoint 1](#endpoint-1--quota-limits-get-apimonitorusagequotalimit); `sanitized/zai-quota-limit.json`; `snapshot.ts`                                         |
+| 2   | Soft — plan-name fallback context                          | `https://api.z.ai/api/biz/subscription/list`                               | [093 endpoint 2](#endpoint-2--subscription-records-get-apibizsubscriptionlist); `sanitized/zai-subscription-list.json`; `snapshot.ts`                              |
+| 3   | Soft — reset-card context, maps nothing in v1              | `https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL` | [093 endpoint 3](#endpoint-3--reset-cards-get-apibizcustomer-package-resetlisttargettypepersonal); `sanitized/zai-customer-package-reset-list.json`; `snapshot.ts` |
+| 4   | Credential check only; never in a collection cycle         | `https://api.z.ai/api/coding/paas/v4/models`                               | [093 authentication](#authentication-observed-forms) (probe-observed 200); `validate.ts`                                                                           |
+
+All three quota-surface paths are **undocumented by Z.ai** (the
+[094 verdict](#quotausage-endpoint-status); corroborated for endpoints 1–2 inside the
+first-party ZCode client — [093's table](#undocumented-endpoints--verification-status-and-limitations)).
+The limitations recorded per §8.3 stand: undocumented (may change without notice → `Format
+changed`, never guessed), observed once from one Pro-tier personal account, no error sample
+ever captured. Endpoint 4 is a documented coding-surface path (094 sources 3, 6) whose **body
+was never captured** — validation is status-based (D-052).
+
+**Envelope.** Success is top-level `code` of `0` or `200`, number or string spelling; `success`
+and `msg` are never interpreted; any other `code`, a missing `code`, or a wrong-typed container
+is a parse error ([096 envelope rules](#response-envelopes); `snapshot.ts` `isSuccessCode`;
+fixtures `zai-envelope-code-zero.json`, `zai-envelope-code-string.json`,
+`zai-envelope-error.json`, `zai-envelope-malformed.json`).
+
+**Cycle shape.** Three sequential GETs per collection, each with its own §7.2 deadline and the
+caller's abort signal; endpoint 1 fail-fast, endpoints 2/3 total-soft (D-047/D-053;
+`snapshot.ts`, `test/integration/zai-coding-plan-snapshot.spec.ts`). `collectedAt` is stamped
+by the injected shared clock at cycle end (D-021/D-179); endpoint 1's delivered HTTP status is
+retained on the snapshot and the success run row (D-169).
+
+### Units and quota mapping (§8.3/§8.4)
+
+Entry recognition by `(type, unit)` and the field-by-field translation are
+[096's tables](#metric-mapping-endpoint-1--84) — verified row-by-row this round against
+`mapping.ts` and pinned by `test/unit/zai-coding-plan-mapping.spec.ts` (task 100) and
+`test/unit/zai-coding-plan-mapping.property.spec.ts` (task 101, the D-057 finite-derivation
+proof). Landed identities (the guard asserts these match `ZAI_METRIC_CATALOG` exactly):
+
+| Metric key     | Label                  | `limitType`      | `unit`                                                                                 | `windowSeconds`              |
+| -------------- | ---------------------- | ---------------- | -------------------------------------------------------------------------------------- | ---------------------------- |
+| `mcp-monthly`  | Monthly MCP tool quota | `MONTHLY`        | `REQUESTS` (fixed)                                                                     | —                            |
+| `tokens-5h`    | 5-hour token quota     | `ROLLING_WINDOW` | `CREDITS` when absolute values are supplied, `PERCENT` while only `percentage` is (A5) | `number × 3600` (18000 obs.) |
+| `weekly-quota` | Weekly quota           | `WEEKLY`         | per present fields, as `tokens-5h` (A1/A5)                                             | —                            |
+
+Pinned interpretations: `usage` = allowance, `currentValue` = consumed, `remaining` = remainder
+(D-047.1 — the only self-consistent reading; a violated supplied triple is an invalid metric,
+never a parse error); `percentage` is integer percent passed through verbatim (D-047.2); `unit`
+is a closed enum and `PERCENT` metrics carry no absolute fields — token counts are **never**
+derived from percentages (§8.4; the property suite is the standing proof); derivations fire only
+on finite arithmetic (D-057); `resetsAt` is `nextResetTime` verbatim (epoch milliseconds,
+[093 timestamps](#the-prototype-traceability)); unknown `(type, unit)` pairs are skipped and
+logged, and envelope-valid emptiness (`limits: []`) is a valid zero-metric snapshot; key
+collisions resolve first-wins. The same three key/label pairs are served to the UI through
+`GET /api/providers` as the adapter's static metric catalog (`ZAI_METRIC_CATALOG`, `mapping.ts`;
+decision D-137).
+
+### Error behavior (§7.2, as landed)
+
+The adapter never retries and never classifies: it re-throws the transport error unchanged or
+throws `SnapshotParseError` (D-053; `snapshot.ts`). Classification, retries, `Retry-After`, and
+suspension are the services layer's, over D-048's seven-outcome seam
+(`src/services/polling-outcomes.ts`; `test/unit` and `test/integration`
+`polling-outcomes.spec.ts`). The table's transport rows describe **cycle-fatal endpoint-1
+failures** — soft endpoints-2/3 failures are absorbed inside the cycle and never reach the
+classifier (the "Soft endpoints" bullet below):
+
+| Failure (this provider's surface)                              | Outcome         | Retried in-cycle                          | `Retry-After`                                                 | §7.3 status                       |
+| -------------------------------------------------------------- | --------------- | ----------------------------------------- | ------------------------------------------------------------- | --------------------------------- |
+| Deadline expiry on endpoint 1 (§7.2 timeout, per request)      | `timeout`       | yes (3×, 2/4/8 s + ≤500 ms jitter, D-059) | no                                                            | `unreachable`                     |
+| DNS / connection / socket / other network failure (endpoint 1) | `network_error` | yes (same)                                | no                                                            | `unreachable`                     |
+| HTTP 5xx on endpoint 1                                         | `server_error`  | yes (same)                                | no                                                            | `unreachable`                     |
+| HTTP 429                                                       | `rate_limited`  | no                                        | honored, 0–3600 s, 429-only (D-062, `polling-retry-after.ts`) | none (age states govern)          |
+| HTTP 401/403 (A3 — only these reject)                          | `auth_error`    | no                                        | no                                                            | `auth-rejected`                   |
+| Any other HTTP status; `response-too-large`; `content-type`    | `parse_error`   | no                                        | no                                                            | `format-changed`                  |
+| Envelope/container/JSON violation (endpoint 1)                 | `parse_error`   | no                                        | no                                                            | `format-changed`                  |
+| Caller abort (§8.1 signal)                                     | `'cancelled'`   | no                                        | no                                                            | none — lifecycle, never persisted |
+
+- **Retries** (D-059, `polling-retry.ts`): one initial attempt plus up to three retries with
+  base delays 2 s → 4 s → 8 s plus 0–500 ms jitter, only for `network_error`/`timeout`/
+  `server_error`; one run row records the total attempt count (§11.2).
+- **Suspension** (D-064, `polling-suspension.ts`; single process-wide holder per D-189): an
+  `auth_error` outcome pauses normal polling for the account; verification attempts are admitted
+  at most once per 60 minutes; release on a **successful verification probe** (any `success`
+  outcome — the automatic recovery path), a key change, or a manual test request (the "test
+  connection" action feeds the same store through the composition's observation wrapper,
+  D-140/D-189); every other non-auth outcome — the inconclusive probe classes
+  (`rate_limited`, `network_error`, `timeout`, `server_error`, `parse_error`, cancelled) — is a
+  no-op that keeps the pause and the cadence.
+- **Parse failures and §7.4 retention**: a `parse_error` run stores no metric values and
+  retains one sanitized response — exact-secret `[REDACTED]` substitution plus sensitive-name
+  field removal and a marker-inclusive 64 KiB byte cap (`sanitize.ts`, D-041), parse-error-only
+  linkage in `raw_responses` (D-051), ≤20 per account and 30-day retention (D-063/D-067),
+  exposed only through `quotameter doctor --raw <account>` (§7.4, D-067).
+- **Soft endpoints**: an endpoints-2/3 failure — transport, parse, or mid-cycle abort — never
+  fails the cycle: the run outcome stays `success` (endpoint 1's metrics are complete), the
+  degradation is a `warn` log, and no §7.4 payload is retained (D-047/D-053; `snapshot.ts`).
+- **Scope note (D-192)**: dead-engine observability (the polling loop's one `error` record,
+  the authenticated `polling: { running }` health block, the CLI stale-silence warning) is
+  engine-level behavior, not part of the provider contract; it is documented with the polling
+  and operations surfaces and listed here only to state the boundary.
+
+### Configuration knobs
+
+- `providers["zai-coding-plan"].requestTimeoutSeconds` — integer, 5–60, default 15
+  (`schema/config.schema.json`; spec §7.2): one total deadline **per request** (a cycle makes
+  up to three). §6.4-**live**: the running service derives the deadline from the effective
+  configuration at every request through `createConfiguredZaiProvider` (`src/server/providers.ts`,
+  D-179 — memoized by the effective value, no restart needed), while the CLI's
+  pre-configuration paths (`init` step 6, `doctor`) use the D-052 default-15 s factory
+  (`createInitialAccountProvider`). Pinned by
+  `test/integration/zai-coding-plan-configured-provider.spec.ts` and
+  `test/integration/example-config.spec.ts`.
+- `providers["zai-coding-plan"].peakHours` — the verified schedule as configuration data
+  (D-043; see [below](#peak-hours-official-reference-91)).
+- Transport constants shared by every endpoint: response-body cap 64 KiB, `application/json`
+  content-type gate, GET-only with redirects refused (`transport.ts`, D-042).
+
+### Fixtures inventory
+
+The complete corpus lives under `test/fixtures/` with the full row→fixture map and consumer
+notes in [`test/fixtures/README.md`](../../test/fixtures/README.md) (D-040/D-049). Inventory —
+the guard asserts this list matches the directory in both directions:
+
+- **Sanitized (3)** — the 2026-10-30 capture, structure verbatim, every account-linked value
+  re-invented (D-040): `zai-quota-limit.json` (the verified two-entry limits shape + `level`),
+  `zai-subscription-list.json` (three records; the A9 rules coincide),
+  `zai-customer-package-reset-list.json` (empty card arrays, both `last*ResetTime` shapes).
+- **Synthetic, Z.ai contract (22)** — 095's three error shapes
+  (`zai-envelope-malformed.json`, `zai-quota-limit-empty-limits.json`,
+  `zai-quota-limit-unknown-type.json`) plus task 097's nineteen (D-049):
+  `zai-envelope-code-zero.json`, `zai-envelope-code-string.json` (success spellings),
+  `zai-envelope-error.json` (A2), `zai-quota-limit-weekly.json` (A1+A5),
+  `zai-quota-limit-tokens-absolute.json` (A5 + partial-triple derivation),
+  `zai-quota-limit-partial.json`, `zai-quota-limit-different-plan.json`,
+  `zai-quota-limit-different-unit.json`, `zai-quota-limit-duplicate-keys.json`,
+  `zai-quota-limit-invalid-entries.json`, `zai-quota-limit-reset-time-string.json`,
+  `zai-quota-limit-renamed-fields.json`, `zai-quota-limit-extra-fields.json`,
+  `zai-quota-limit-data-not-object.json`, `zai-quota-limit-limits-not-array.json`,
+  `zai-subscription-list-divergent.json` (A9 divergence),
+  `zai-subscription-list-data-not-array.json`, `zai-customer-package-reset-cards.json` (A4),
+  and `zai-models.json` (endpoint-4 stand-in, never parsed — D-049/D-052).
+- **Synthetic, provider-neutral (2)** — `provider-usage-sample.json`,
+  `provider-usage-empty.json` (early generic parsing fixtures; not part of the Z.ai matrix).
+
+Deliberately unfixtured (D-049): HTTP-level failures (401/403/429/5xx, timeout, oversized,
+content-type) belong to the mock server because the transport rejects them before parsing;
+trivial cross-cells stay in-test mutations.
+
+### Peak-hours official reference (§9.1)
+
+The verified schedule — the only provider-specific data shipped as configuration:
+
+- **Official source**: <https://docs.z.ai/devpack/overview> (dossier source 15, the canonical
+  page spec §9.1 cites), corroborated verbatim by <https://docs.z.ai/devpack/teamplan>
+  (source 16). Checked on three dated rounds: **2026-10-28** (spec §9.1), **2026-10-30**
+  (tasks 094/112), **2026-10-31** (task 127 — the latest check; see the
+  [127 section](#schedule-source-verification--2026-10-31-task-127) for all six sources and
+  the verbatim statements).
+- **Schedule**: peak hours **Monday to Friday, 14:00–18:00 Singapore Standard Time (UTC+8)** →
+  `Asia/Singapore` (UTC+8, no DST); Saturday and Sunday are off-peak.
+- **Rate semantics** (spec §9.1 defines the configured multipliers as the quota-credit rate
+  relative to the standard rate): peak `multiplier: 1.0` ("charged at 1× the standard credit
+  rate" — sources 15/16), `offPeakMultiplier: 0.5` ("50% of the standard credit rate", "0.5×").
+  Legacy plan V2's "1×/3×" and "0.4×/1.2×" request multipliers (source 17) are deliberately
+  not encoded. The multipliers are descriptive metadata only — the application never rewrites
+  collected values or infers quotas from them (§9.1).
+- **Where it ships**: `docs/config.example.json`'s `providers["zai-coding-plan"].peakHours`
+  (task 112, D-043), pinned executably by `test/integration/example-config.spec.ts` (the parsed
+  schedule equals the verified schedule; this dossier's provenance pins).
+- **Re-verification**: a live re-check was **not** performed in task 189 (the recorded evidence
+  stands, per the no-live-requests discipline); the next re-check belongs to a dedicated round
+  against source 15, with the 127 section's falsifiers — either page dropping/rewording the
+  quoted statements, or the documentation index growing a schedule/rate notice.
+
+### Test map
+
+The suites that make the contract executable (all named files exist; the guard pins it):
+
+| Suite                                                          | Pins                                                                                                                                                                                                 |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test/unit/zai-coding-plan-mapping.spec.ts`                    | every 096 mapping row: recognition identities, unit discipline, tolerance cross-cells (task 100)                                                                                                     |
+| `test/unit/zai-coding-plan-mapping.property.spec.ts`           | §8.4 derivation rules incl. "percentages never invent counts" and D-057 finiteness (task 101)                                                                                                        |
+| `test/unit/zai-coding-plan-provider.spec.ts`                   | URL composition, adapter facts, options validation                                                                                                                                                   |
+| `test/unit/zai-coding-plan-validate.spec.ts`                   | the status-based credential check's three results (task 098, D-052)                                                                                                                                  |
+| `test/integration/zai-coding-plan-validate.spec.ts`            | the check over the mock server, all transport kinds                                                                                                                                                  |
+| `test/integration/zai-coding-plan-snapshot.spec.ts`            | the three-GET cycle: strict/soft policy, envelope failures, §7.4 hand-off (task 099, D-053)                                                                                                          |
+| `test/integration/zai-coding-plan-configured-provider.spec.ts` | the live `requestTimeoutSeconds` wiring (D-179)                                                                                                                                                      |
+| `test/integration/example-config.spec.ts`                      | the example configuration's schedule and this dossier's provenance pins (task 112, D-043)                                                                                                            |
+| `test/unit/provider-dossier.spec.ts`                           | this section's load-bearing claims: endpoint URLs ↔ adapter code, metric identities ↔ catalog, fixture inventory both directions, cited tests and decisions exist, §9.1 essentials (task 189, D-199) |
+
+### Evidence conventions of this dossier
+
+- **(a) In-repo evidence** — fixture paths under `test/fixtures/`, test files, source files,
+  and `D-NNN` decision references; all names are exact and existence is guard-pinned.
+- **(b) External official sources** — numbered dossier sources with URL and access date; quoted
+  verbatim; the peak schedule carries three dated checks.
+- **(c) Honesty about gaps** — assumption ledger entries (A1–A10 in
+  [096](#assumption-ledger)) label every unverified shape with its reopen trigger; observations
+  that cannot be re-verified from the repository (the ZCode grep, the capture-time context) say
+  so where they are recorded. Nothing inferred is presented as observed — every unverified shape
+  carries an assumption label; undocumented endpoints, fields, and samples are never invented
+  (§8.3).
+- **Append-only**: dated sections are immutable records; later rounds append. This summary
+  section states the current state and cites the dated sections as its provenance; when a future
+  round changes the contract, it appends a new dated section and this summary is superseded
+  there — never silently rewritten here.
