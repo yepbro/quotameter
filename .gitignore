@@ -68,3 +68,5 @@ Thumbs.db
 
 # open-codebase-index
 .opencode/index/
+# CodeGraphContext
+.codegraphcontext/
