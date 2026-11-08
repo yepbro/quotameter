@@ -24,7 +24,8 @@
     "ui/dist/",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "THIRD-PARTY-NOTICES"
   ],
   "engines": {
     "node": ">=22.13.0"

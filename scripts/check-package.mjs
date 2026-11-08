@@ -34,8 +34,9 @@ import { pathToFileURL } from 'node:url';
 
 /**
  * Exact entries allowed in the tarball. `npm` always adds `package.json`
- * and the README automatically; LICENSE/NOTICE are listed here and packed
- * once they exist (they are §18 deliverables of the plan). The published
+ * and the README automatically; LICENSE/NOTICE/THIRD-PARTY-NOTICES are
+ * listed here and packed once they exist (they are §18 deliverables or, for
+ * the third-party notices, the embedded-license set of D-201). The published
  * JSON Schema (task 062, D-015) is listed and required: it is committed,
  * so a tarball without it means the allowlist stopped matching reality.
  */
@@ -46,6 +47,7 @@ export const ALLOWED_EXACT = [
   'schema/config.schema.json',
   'LICENSE',
   'NOTICE',
+  'THIRD-PARTY-NOTICES',
 ];
 
 /**

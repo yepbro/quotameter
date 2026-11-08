@@ -3,7 +3,8 @@
  * Dependency license verification (spec §4.3, §4.4).
  *
  * Checks production and development dependency licenses against the
- * project's allowlist (MIT-licensed distribution, see DECISIONS.md D-007).
+ * project's allowlist (MIT-licensed distribution, see DECISIONS.md D-007;
+ * the full allowlist review is decision D-201, task 191).
  * Reports are retained as text files under reports/ for review; the command
  * exits non-zero when a dependency is unapproved or its license is unknown.
  */
@@ -12,27 +13,42 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Approved licenses. Anything else — including "UNKNOWN" and "(UNLICENSED)"
- * — must be reviewed and added here explicitly with a justification in the
- * pull request that introduces the dependency.
+ * Approved licenses — every id earned by a package in the current lockfile
+ * (the task-191 review, decision D-201; the pre-review list carried unused
+ * 'Unlicense' and 'MPL-2.0-no-copyleft-exception' entries, since removed —
+ * additions arrive with the dependency that needs them, never before).
+ * Anything else — including "UNKNOWN" and "(UNLICENSED)" — must be
+ * reviewed and added here explicitly with a justification in the pull
+ * request that introduces the dependency.
  */
 const ALLOWED = new Set([
+  // Permissive runtime family: production and development scopes alike.
   'MIT',
-  'Apache-2.0',
+  'ISC',
   'BSD-2-Clause',
   'BSD-3-Clause',
-  'ISC',
   '0BSD',
+  // Modern permissive licenses: the production glob family (glob,
+  // minimatch, path-scurry, ...) ships BlueOak-1.0.0.
+  'BlueOak-1.0.0',
+  // Development-scope toolchain (D-201 review): Apache-2.0 — Playwright,
+  // Stryker, ESLint helpers; MPL-2.0 — axe-core and lightningcss (via
+  // Vite), file-level copyleft that never ships because dev dependencies
+  // are not distributed. A production-scope arrival of either is a
+  // successor decision; embedding into the shipped ui/dist bundle is
+  // fenced by test/unit/license-attribution.spec.ts.
+  'Apache-2.0',
+  'MPL-2.0',
+  // Python-2.0: argparse@2 only, the js-yaml chain (development scope).
+  // The production tree resolves the nested argparse@1, which is MIT.
+  'Python-2.0',
+  // Data, not code: CC0-1.0 spdx-license-ids, CC-BY-4.0 caniuse-lite
+  // (browserslist data), and — below — the SPDX license-list texts.
   'CC0-1.0',
   'CC-BY-4.0',
-  'Python-2.0',
-  'Unlicense',
-  'BlueOak-1.0.0',
-  'MPL-2.0',
-  'MPL-2.0-no-copyleft-exception',
   // SPDX license-list data files (spdx-exceptions, spdx-ranges) carry
   // CC-BY-3.0 for the license text itself; content license, no code
-  // obligations. Reviewed with task 043.
+  // obligations. Reviewed with task 043; re-verified with task 191.
   'CC-BY-3.0',
 ]);
 
