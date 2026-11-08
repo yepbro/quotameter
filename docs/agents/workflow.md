@@ -39,5 +39,5 @@ Held updates: `typescript` major bumps are ignored in `dependabot.yml` (since 20
 
 ## Releases
 
-- npm publishing happens **only from CI** on a pushed `vX.Y.Z` tag (`.github/workflows/release.yml`, OIDC trusted publishing, provenance; no tokens in the repo). `private: true` stays in `package.json`; the release workflow removes it.
+- npm publishing happens **only from CI** on a pushed `vX.Y.Z` tag (`.github/workflows/release.yml`, OIDC trusted publishing, provenance; no tokens in the repo) — the one recorded exception is the one-time `quotameter@0.0.0` name-reservation stub (D-204). `private: true` stays in `package.json`; the release workflow removes it.
 - Semver + `CHANGELOG.md` (Keep a Changelog): fold **Unreleased** into the version at release time. Checklist: `docs/release.md`.

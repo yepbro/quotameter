@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * The release-workflow guard (task U-029, spec §4.4; decisions D-008, D-152).
+ * The release-workflow guard (task U-029, spec §4.4; decisions D-008, D-152, D-204).
  *
  * `.github/workflows/release.yml` is the only publish channel (D-008), and
  * its defects were found the hard way: it once ran on the npm bundled with
@@ -33,7 +33,12 @@ import { describe, expect, it } from 'vitest';
  * - a test gate (`test:ci`) runs before publishing;
  * - the tarball allowlist check runs before the publish step;
  * - the publish runs with `--provenance` under the `id-token: write`
- *   permission, and no npm token/secret appears anywhere in the workflow.
+ *   permission, and no npm token/secret appears anywhere in the workflow;
+ * - the publish job declares the `npm` environment the trusted-publisher
+ *   configuration on the registry names (D-204) — GitHub only puts the
+ *   environment claim in the OIDC token of a job that declares it, so
+ *   leaving the line commented would fail the claim match at the first
+ *   publish.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -158,7 +163,7 @@ function npmPin(relativePath: string): string | undefined {
   )?.[0];
 }
 
-describe('release workflow guard (task U-029, spec §4.4; decisions D-008, D-152)', () => {
+describe('release workflow guard (task U-029, spec §4.4; decisions D-008, D-152, D-204)', () => {
   it('the npm pin is identical across the Dockerfile, ci.yml, and release.yml', () => {
     const pins = {
       Dockerfile: npmPin('Dockerfile'),
@@ -288,6 +293,34 @@ describe('release workflow guard (task U-029, spec §4.4; decisions D-008, D-152
       text,
       'the publish must carry --provenance (D-008: releases carry attestations)',
     ).toMatch(/npm publish --provenance/);
+  });
+
+  it('the publish job declares the npm environment the trusted publisher expects', () => {
+    // D-204: the npm trusted-publisher configuration names environment `npm`,
+    // and GitHub only mints the environment claim for a job that declares
+    // `environment:` — the commented-out line this replaces would have sent
+    // the first tag's OIDC exchange without the claim and failed the match.
+    // The assertion is scoped to the publish job's own lines (the releaseSteps
+    // scanner only sees steps; job-level keys precede them) so an environment
+    // declared on some other job can never satisfy this pin.
+    const lines = readWorkflow().split('\n');
+    const jobIndex = lines.findIndex((line) => line === '  publish:');
+    expect(jobIndex, "the 'publish:' job is missing from .github/workflows/release.yml").not.toBe(
+      -1,
+    );
+    const nextJob = lines.findIndex(
+      (line, index) => index > jobIndex && /^ {2}[A-Za-z][A-Za-z0-9-]*:$/.test(line),
+    );
+    const publishJob = lines
+      .slice(jobIndex + 1, nextJob === -1 ? lines.length : nextJob)
+      .join('\n');
+    expect(
+      publishJob,
+      'the publish job must declare `environment: npm` (uncommented, job ' +
+        'level) — the trusted-publisher configuration on the npm package names ' +
+        'this environment; without the declaration the OIDC claim cannot match ' +
+        '(D-204)',
+    ).toMatch(/^ {4}environment: npm$/m);
   });
 
   it('every pinned step is found by exactly one scanner match (no dead pins)', () => {

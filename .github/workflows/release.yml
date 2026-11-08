@@ -25,9 +25,11 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # Recommended protected environment on GitHub; enable it and add the
-    # npm registry as a deployment target when configuring trusted publishing.
-    # environment: npm
+    # The npm environment is part of the trusted-publisher configuration
+    # on the registry (repository yepbro/quotameter, workflow release.yml,
+    # environment npm): the job must declare it for the OIDC claim to
+    # match (D-204; pinned by test/unit/release-workflow.spec.ts).
+    environment: npm
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
