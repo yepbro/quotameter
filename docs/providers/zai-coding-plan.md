@@ -854,8 +854,10 @@ alike), which name the redaction convention and carry no marker payload.
 
 ### What this section is
 
-The seed data D-014 anticipated ("provider-specific values … are configuration _data_ seeded by
-`init` and the example config"): the verified Z.ai peak-hours schedule encoded as
+The seed data D-014 anticipated (provider-specific values are configuration _data_, never schema
+constraints — D-014's wording says "seeded by `init` and the example config"; in the landed tree
+the carrier is the example config, since `init` writes no provider data): the verified Z.ai
+peak-hours schedule encoded as
 [`docs/config.example.json`](../config.example.json), a complete example `config.json` whose
 `providers["zai-coding-plan"].peakHours` carries the schedule verbatim from spec §9.2's sample —
 window `zai-weekday-peak`, Monday–Friday `14:00`–`18:00`, `multiplier: 1.0`, explicit

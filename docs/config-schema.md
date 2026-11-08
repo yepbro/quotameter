@@ -4,6 +4,10 @@ Quotameter's `config.json` format is defined by a published JSON Schema
 (spec §6.2, §18): [`schema/config.schema.json`](../schema/config.schema.json)
 in the repository, shipped in the npm package at the same relative path. In a
 global installation it lives at `$(npm root -g)/quotameter/schema/config.schema.json`.
+The field-by-field companion — every field's type, default, validation,
+environment override, and restart requirement, kept in agreement with this
+artifact by an executable drift guard — is the
+[configuration reference](configuration.md) (task 187, decision D-197).
 
 The schema is **generated, not hand-written**: it is the JSON serialization of
 the canonical TypeScript contract (`CONFIG_SCHEMA_DOCUMENT` in
