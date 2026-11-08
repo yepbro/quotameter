@@ -23,7 +23,16 @@ While the version is `0.x`, breaking changes and new functionality bump MINOR (`
 
 - Every merged pull request that changes user-visible behavior adds an entry under **Unreleased**.
 - Entries use the categories _Added_, _Changed_, _Fixed_, _Deprecated_, _Removed_, _Security_.
+- Each category heading appears **at most once per section** — entries for one category are never appended under a second, duplicate heading.
+- Sections are ordered newest first, and entries inside a category are ordered newest first (newest task at the top).
 - At release time, **Unreleased** becomes the new version section with its date, and a fresh **Unreleased** section is opened.
+
+The structure the fold depends on is enforced by `test/unit/release-checklist.spec.ts` (decision D-205): the first section heading is exactly `## [Unreleased]` and carries no date; every released section is `## [X.Y.Z] - YYYY-MM-DD` — a real calendar date; each category heading appears at most once per section; every entry line is a `- ` list item under a category heading. That is what makes the fold a deterministic edit rather than a restructuring:
+
+1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, using the release date.
+2. Insert a fresh `## [Unreleased]` heading directly above it.
+
+Nothing else moves: the section already carries each category at most once, so the folded section is a complete Keep a Changelog version section as-is, and the next entry lands under the new **Unreleased**.
 
 ## Publishing
 
@@ -63,17 +72,21 @@ Two-factor authentication is mandatory on the publishing npm account: without it
 
 ## Release checklist
 
-Run through every step; the release is aborted if any check fails.
+Run through every step; the release is aborted if any check fails. Every step names its executable form — step 5 is necessarily prose (npm exposes no CLI for a package's trusted-publishing settings; the registry's package settings page is the mechanism), and step 9's whether-to-announce is a judgement call while its mechanism is still a command. `test/unit/release-checklist.spec.ts` (decision D-205) fails when this checklist goes stale: a command naming a script or target that no longer exists, a Node image version that no longer matches the Dockerfile pin, a changelog that loses the structure step 2's fold needs, or a version bump that leaves `package-lock.json` behind.
 
-1. **Verify CI is green** on the release commit for: `master` (unit/integration/component/E2E, lint, types, format, audit, licenses, clean-container installs, unsupported-Node behavior). Mutation testing runs on its own daily schedule (D-045) and does not gate the release.
-2. **Update the changelog**: fold **Unreleased** into the new version with today's date; open a new **Unreleased** section.
-3. **Bump the version** in `package.json` to the target `X.Y.Z` following the semver rules above, then regenerate the version-stamped OpenAPI document (`make openapi`) and include `docs/openapi.json` in the same commit — the drift guard fails CI on a stale artifact otherwise.
-4. **Commit and push** the version commit (`chore(release): vX.Y.Z`); wait for CI.
-5. **Verify the npm trusted-publisher configuration is valid** right before tagging (decision D-204): a configuration npm has not validated within 48 hours of creation is **deleted** — the 2026-11-08 configuration was expected to expire unused, so assume re-creation. Check the package's trusted-publishing settings on npm for repository `yepbro/quotameter`, workflow `release.yml`, environment `npm` (publish/stage/dist-tag actions, strict package 2FA intact); if missing or still pending, re-create it — this release's own publish is the validating publish, so it must happen inside the fresh 48-hour window.
+1. **Verify CI is green** on the release commit for `master`: `gh run list --workflow ci.yml --commit <release-commit-sha> --limit 1` finds the run of the required `CI` gate for exactly that commit (unit/integration/component/E2E, lint, types, format, audit, licenses, clean-container installs, unsupported-Node behavior); `gh run watch <run-id> --exit-status` waits for it and itself fails when the run fails. Mutation testing runs on its own daily schedule (D-045) and does not gate the release.
+2. **Update the changelog**: fold **Unreleased** into the new version exactly as the [Changelog](#changelog) mechanics describe — rename the section heading to `## [X.Y.Z] - YYYY-MM-DD` with today's date, insert a fresh `## [Unreleased]` heading above it, move nothing else.
+3. **Bump the version** with `npm version X.Y.Z --no-git-tag-version` — it updates `package.json` **and** both `package-lock.json` version sites without committing or tagging — then regenerate the version-stamped OpenAPI document (`make openapi`). The version commit carries `package.json`, `package-lock.json`, `CHANGELOG.md`, and `docs/openapi.json` together — the drift guard fails CI on a stale artifact otherwise.
+4. **Commit and push** the version commit (`chore(release): vX.Y.Z`); wait for CI exactly as in step 1.
+5. **Verify the npm trusted-publisher configuration** right before tagging (decision D-204): a configuration npm has not validated within 48 hours of creation is **deleted** — the 2026-11-08 configuration was expected to expire unused, so assume re-creation. Check the package's trusted-publishing settings on npm for repository `yepbro/quotameter`, workflow `release.yml`, environment `npm` (publish/stage/dist-tag actions, strict package 2FA intact); if missing or still pending, re-create it — this release's own publish is the validating publish, so it must happen inside the fresh 48-hour window.
 6. **Create and push the tag**: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-7. **Watch the release workflow**: it verifies the tag/version match and the green CI run on the tagged commit, runs the test suite, builds and verifies the web UI and the compiled CLI, re-checks the tarball allowlist, and publishes with provenance. Publication only happens from this workflow (see "What the release workflow does" above).
-8. **Verify on npm**: the new version exists, provenance is linked, `npm install -g quotameter@X.Y.Z` works in a clean container, and `dist-tags.latest` moved off the `0.0.0` reservation stub to `X.Y.Z`.
-9. **Announce** in the repository release notes if the release is notable; link the changelog section.
+7. **Watch the release workflow**: `gh run list --workflow release.yml --limit 1` finds the run the tag push started; `gh run watch <run-id> --exit-status` waits for it and fails with it. The workflow verifies the tag/version match and the green CI run on the tagged commit, runs the test suite (`npm run test:ci`), builds and verifies the web UI and the compiled CLI, re-checks the tarball contents against the allowlist (`npm run check:package`), and publishes with `npm publish --provenance --access public`. Publication only happens from this workflow (see "What the release workflow does" above).
+8. **Verify on npm**:
+   - `npm view quotameter@X.Y.Z` — the version exists with the expected metadata.
+   - `npm view quotameter@X.Y.Z dist.attestations` — the provenance check: this must print the attestations object (`url` plus `provenance.predicateType` `https://slsa.dev/provenance/v1`), not empty output. Empty means the publish carried no provenance — treat that as a failed release.
+   - `npm view quotameter dist-tags --json` — `latest` moved off the `0.0.0` reservation stub to `X.Y.Z` (decision D-204).
+   - Clean-container install: `docker run --rm node:22.13.0-slim sh -c 'npm install -g quotameter@X.Y.Z && quotameter --version'` — prints `X.Y.Z` through the registry-installed command. The image is pinned to the declared minimum, the same Node line the Dockerfile carries.
+9. **Announce**: for a notable release, publish GitHub release notes from the tag — `gh release create vX.Y.Z --title "vX.Y.Z" --notes "…"` — linking the version's `CHANGELOG.md` section.
 
 ## Rollbacks
 
