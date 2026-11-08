@@ -173,7 +173,8 @@ describe('npm package manifest (task 184, D-194)', () => {
     // The exact shape is the manifest contract the runtime gates fail closed
     // on (bin/quotameter.mjs and scripts/verify-runtime.mjs, D-098); the
     // minimum must equal the dev image's pinned node tag. The CI sites are
-    // pinned by test/unit/ci-workflow.spec.ts (PINNED_VERSION).
+    // pinned by test/unit/ci-workflow.spec.ts (PINNED_RUNTIMES' minimum
+    // entry).
     expect(manifest.engines.node).toMatch(/^>=\d+\.\d+\.\d+$/);
     expect(manifest.engines.node).toBe(`>=${dockerfileNodeTag()}`);
   });

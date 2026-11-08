@@ -11,14 +11,14 @@
 - `master` is protected: pull requests + the required status check named exactly **`CI`** are enforced; force-pushes and branch deletion are disabled.
 - The required check is a **gate job** named `CI` in `.github/workflows/ci.yml` that fails when any job behind it fails (static, test matrix, timezone matrix, install containers, package, unsupported-node). Never rename it; add new jobs to its `needs`. Mutation testing lives in the separate daily `.github/workflows/mutation.yml` (D-045) and does not gate pushes.
 - Admin (`yepbro`) may push directly — used during bootstrap; regular work lands via squash-merged PRs.
-- Node matrix: `22.13.0` (declared minimum), `22`, `24`. Add the next LTS to the matrix when it ships.
+- Node matrix: `22.13.0` (declared minimum), `22`, `24` in the test job; the install job's clean-container matrix pins §17.2's two runtime lines — the declared minimum and the 24 LTS line the spec names — each SHA-verified (see below). §17.2 names 22 and 24; adding a newer LTS to either matrix is a deliberate spec-following change, not an automatic one.
 - Diagnosing a red run: `gh api "repos/yepbro/quotameter/actions/runs?head_sha=<full-sha>"` → job ids → `gh run view --job <id> --log`.
 
 ## Actions pinning
 
 Pin third-party actions to full commit SHAs with the version in a comment. **Verify SHAs via `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`** — never write them from memory; a made-up SHA silently breaks the workflow.
 
-The same root-of-trust rule covers the Node runtime archive the `install` job downloads: it is verified against SHA-256 digests **pinned in the workflow, in repository history** (the one domain a compromised nodejs.org mirror/CDN cannot rewrite — a run-time `SHASUMS256.txt` fetch from the same CDN would verify the mirror against itself; decision D-157). Bumping the pinned Node version is a documented all-sites procedure in the workflow's comment (`version=` + step name + both digests, the `node -v` expectation, the unsupported-node grep, `package.json` `engines.node`, the guard's `PINNED_VERSION`/`PINNED_DIGESTS`, and the Dockerfile `FROM node:` tag — cross-pinned by `test/unit/package-manifest.spec.ts`, D-194), enforced by `test/unit/ci-workflow.spec.ts` — a bump that skips a site fails `make check`, not CI.
+The same root-of-trust rule covers the Node runtime archives the `install` job downloads — one per pinned runtime of §17.2's install matrix (the declared minimum and the 24 LTS line the spec names, task 195/D-203): each is verified against SHA-256 digests **pinned in the workflow's matrix `node:` entries, in repository history** (the one domain a compromised nodejs.org mirror/CDN cannot rewrite — a run-time `SHASUMS256.txt` fetch from the same CDN would verify the mirror against itself; decision D-157). Bumping a pinned Node version is a documented all-sites procedure in the workflow's comment (the matrix entry's version + both digests, the test matrix's declared-minimum entry and the timezone job's `node-version:` ICU-oracle pin, the unsupported-node grep, `package.json` `engines.node`, the guard's `PINNED_RUNTIMES`, and — minimum only — the Dockerfile `FROM node:` tag, cross-pinned by `test/unit/package-manifest.spec.ts`, D-194), enforced by `test/unit/ci-workflow.spec.ts` — a bump that skips a site fails `make check`, not CI.
 
 ## Dependabot
 

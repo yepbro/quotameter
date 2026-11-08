@@ -211,17 +211,35 @@ jobs:
         run: npm run verify:build
 
   # Clean-distribution installation containers (spec §4.4, §17.2): Ubuntu
-  # 22.04, Ubuntu 24.04, and Debian stable, each with the pinned minimum
-  # Node.js runtime installed from the official binaries. The jobs verify
-  # the declared minimum runtime on the target distributions and install
-  # the packed tarball globally without a source checkout (task 053).
+  # 22.04, Ubuntu 24.04, and Debian stable crossed with §17.2's runtime
+  # axis — the declared-minimum Node.js and the 24 LTS line the spec
+  # names, each installed from the SHA-verified official binaries. The
+  # jobs verify the pinned runtime on the target distributions, install
+  # the packed tarball globally without a source checkout (task 053), and
+  # — task 195 (D-203) — complete §17.2's installation matrix with
+  # `init --yes` run non-interactively and the provider host blackholed.
   install:
     needs: package
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Spec §17.2: "with Node 22 and 24". The runtime axis pins the two
+      # lines the spec names — the declared minimum (22.13.0) and the 24
+      # LTS line (Krypton; 26 Lithium is the newer Active LTS, outside
+      # §17.2's named set) — each with both architecture digests (D-157);
+      # the digest arms of the install step below read these entries, so a
+      # runtime and its digests move together in one matrix entry. When
+      # the matrix grows (the next LTS §17.2 names), add an entry with its
+      # re-verified digests.
       matrix:
         container: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:stable']
+        node:
+          - version: '22.13.0'
+            digest_x64: 3ff0d57063c33313d73d0bdcebc4c778ad6be948234584694a042c6fe57164f6
+            digest_arm64: 5de54a12983d0de6ba23597d4d0194e64933e26b0f04a469db3be9c3e18b6b2b
+          - version: '24.22.2'
+            digest_x64: 48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75
+            digest_arm64: eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8
     container: ${{ matrix.container }}
     steps:
       - name: Install container prerequisites
@@ -248,33 +266,37 @@ jobs:
           echo "compiler-free container confirmed: none of gcc cc g++ clang make python3 python found"
 
       # Supply-chain pin (spec §4.4, decision D-157): the runtime archive is
-      # verified against the SHA-256 digests pinned below, in repository
-      # history — the one trust domain a compromised nodejs.org mirror or CDN
-      # cannot rewrite (the same reasoning as the SHA-pinned actions above).
-      # Fetching SHASUMS256.txt from the same CDN at run time would verify
-      # the mirror against itself and stop nothing.
+      # verified against the SHA-256 digests pinned in the matrix `node:`
+      # entries above, in repository history — the one trust domain a
+      # compromised nodejs.org mirror or CDN cannot rewrite (the same
+      # reasoning as the SHA-pinned actions above). Fetching SHASUMS256.txt
+      # from the same CDN at run time would verify the mirror against itself
+      # and stop nothing.
       #
-      # Digest source, sourced deliberately and then re-verified by
-      # downloading and hashing both archives before pinning:
+      # Digest sources, sourced deliberately and then re-verified by
+      # downloading and hashing both archives of each version before
+      # pinning:
       # https://nodejs.org/dist/v22.13.0/SHASUMS256.txt (retrieved 2026-11-04)
+      # https://nodejs.org/dist/v24.22.2/SHASUMS256.txt (retrieved 2026-11-08)
       #
       # BUMP PROCEDURE — a Node version bump edits ALL of these sites in
       # one change (`make check` fails otherwise via
       # test/unit/ci-workflow.spec.ts):
-      # 1. this step: the `version=` line, the step name, both digest arms;
-      # 2. the next step's `node -v` expectation;
+      # 1. this job's matrix `node:` entry (version + both digest arms);
+      #    the declared-minimum entry only moves with sites 3–6;
+      # 2. the next step's `node -v` expectation (it reads the matrix);
       # 3. the test matrix's declared-minimum entry and the timezone job's
       #    `node-version:` ICU-oracle pin;
       # 4. the unsupported-node job's `grep -F` version literal;
       # 5. package.json's `engines.node`;
-      # 6. PINNED_VERSION and PINNED_DIGESTS in that guard spec.
-      - name: Install Node.js 22.13.0 from official binaries
+      # 6. PINNED_RUNTIMES in that guard spec.
+      - name: Install Node.js ${{ matrix.node.version }} from official binaries
         run: |
-          version=22.13.0
+          version=${{ matrix.node.version }}
           arch="$(uname -m)"
           case "$arch" in
-            x86_64) arch=x64; digest=3ff0d57063c33313d73d0bdcebc4c778ad6be948234584694a042c6fe57164f6 ;;
-            aarch64) arch=arm64; digest=5de54a12983d0de6ba23597d4d0194e64933e26b0f04a469db3be9c3e18b6b2b ;;
+            x86_64) arch=x64; digest=${{ matrix.node.digest_x64 }} ;;
+            aarch64) arch=arm64; digest=${{ matrix.node.digest_arm64 }} ;;
             *) echo "::error::unsupported runner architecture: $arch" >&2; exit 1 ;;
           esac
           curl -fsSL "https://nodejs.org/dist/v${version}/node-v${version}-linux-${arch}.tar.xz" -o /tmp/node.tar.xz
@@ -285,9 +307,9 @@ jobs:
             ln -sf "/usr/local/lib/nodejs/node-v${version}-linux-${arch}/bin/$bin" "/usr/local/bin/$bin"
           done
 
-      - name: Verify the declared minimum runtime
+      - name: Verify the pinned runtime
         run: |
-          test "$(node -v)" = "v22.13.0"
+          test "$(node -v)" = "v${{ matrix.node.version }}"
           node -e "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(':memory:'); db.close()"
 
       - name: Download the packed tarball
@@ -366,6 +388,55 @@ jobs:
           }
           echo "$help" | grep -F "doctor" >/dev/null || {
             echo "::error::the installed quotameter --help is missing the command table"
+            exit 1
+          }
+
+      # Task 195 (spec §17.2, D-203): `init --yes` must complete
+      # non-interactively in the clean container with NO network path to
+      # the provider. Without account flags the run performs no connection
+      # test by construction (D-100/D-102); the /etc/hosts blackhole makes
+      # that absence structural — RFC 5737 TEST-NET-1 and the RFC 6666
+      # discard-only block are unroutable by design, for both address
+      # families, so an accidental provider request could only fail, never
+      # silently succeed (a files hit short-circuits DNS in getaddrinfo,
+      # verified with Node's own dns.lookup). init refuses a root process
+      # without SUDO_USER (D-105), so the run executes as a freshly
+      # created regular account (the operator's shape) with stdin closed
+      # — `--yes` never reads it, and </dev/null makes that claim
+      # checkable.
+      - name: Run init --yes non-interactively without provider access
+        run: |
+          printf '192.0.2.1 api.z.ai\n100:: api.z.ai\n' >> /etc/hosts
+          node -e 'const dns=require("node:dns");dns.lookup("api.z.ai",{all:true},(e,a)=>{const bad=(a||[]).filter((r)=>r.address!=="192.0.2.1"&&r.address!=="100::");if(e||!a||a.length===0||bad.length>0){console.error("::error::the provider blackhole is not effective; api.z.ai resolves outside it: "+JSON.stringify(a||String(e)));process.exit(1)}})'
+          useradd --create-home --user-group --shell /bin/sh qminit
+          if ! setpriv --reuid=qminit --regid=qminit --init-groups env HOME=/home/qminit quotameter init --yes --timezone UTC </dev/null >/tmp/init-output 2>&1; then
+            cat /tmp/init-output >&2
+            echo "::error::quotameter init --yes failed in the clean container"
+            exit 1
+          fi
+          cat /tmp/init-output
+          grep -F "Configuration written to /home/qminit/.config/quotameter/config.json." /tmp/init-output >/dev/null || {
+            echo "::error::init --yes did not report the written configuration (§5.3 step 5)"
+            exit 1
+          }
+          grep -F "Database ready at /home/qminit/.local/share/quotameter/quotameter.sqlite." /tmp/init-output >/dev/null || {
+            echo "::error::init --yes did not report the initialized database (§5.3 step 5)"
+            exit 1
+          }
+          if grep -F "api.z.ai" /tmp/init-output >/dev/null; then
+            echo "::error::init --yes named or contacted the provider host in the no-provider matrix"
+            exit 1
+          fi
+          test "$(stat -c %a /home/qminit/.config/quotameter)" = 700 || {
+            echo "::error::the configuration directory is not 0700 (§5.3 step 5)"
+            exit 1
+          }
+          test "$(stat -c %a /home/qminit/.config/quotameter/config.json)" = 600 || {
+            echo "::error::the configuration file is not 0600 (§5.3 step 5)"
+            exit 1
+          }
+          test "$(stat -c %a /home/qminit/.local/share/quotameter)" = 700 || {
+            echo "::error::the data directory is not 0700 (§5.3 step 5)"
             exit 1
           }
 
