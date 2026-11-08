@@ -498,6 +498,9 @@ export async function composeApplication(
   const settingsStore = createConfigFileSettingsStore(owner, {
     repository,
     dataDir: paths.dataDir,
+    // FSM-5/D-193: the reloader's own live diff — the settings GET's
+    // pendingRestart is this getter verbatim, never a recomputation.
+    pendingRestart: reloader.pendingRestart,
   });
 
   // §5.6 component 1: the single-instance lock — creates the data directory

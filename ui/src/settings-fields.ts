@@ -1,7 +1,8 @@
 /**
  * The settings page's UI-local vocabulary (task 179, spec §14.5, §7.1,
  * §11.3, §15.2; decision D-156): the validated ranges, the log-level
- * enum, and the §15.2 password minimum, as plain browser-side constants.
+ * enum, the §15.2 password minimum, and the §6.4 restart-field labels
+ * (FSM-5, D-193), as plain browser-side constants.
  *
  * Each value mirrors a server-side constant (the ranges live in
  * `src/schemas/config.ts`'s schema bounds, the levels and the password
@@ -29,6 +30,28 @@ export const MIN_PASSWORD_LENGTH = 12;
 
 /** The `logging.level` choices, in the served enum's own order. */
 export const LOG_LEVELS = ['error', 'warn', 'info', 'debug'] as const;
+
+/** One §6.4 restart-requiring field path, as the API vocabularies carry it. */
+export type RestartField = 'server.host' | 'server.port' | 'auth.mode';
+
+/**
+ * The operator-facing label of each §6.4 restart-requiring field (the
+ * facts rows' own names) — the shared vocabulary of the live
+ * `pendingRestart` notice (SettingsView, FSM-5/D-193) and the PUT
+ * outcome's `restartRequired` notice (SettingsGeneralForm), so the two
+ * surfaces name one field identically. The field paths mirror the
+ * server's `SETTINGS_RESTART_FIELDS` as plain literals (the LOG_LEVELS
+ * precedent — no runtime server import); `test/component/settings-view.spec.ts`
+ * pins the no-drift row, and every `t()` argument stays a static literal
+ * (the both-directions rule, D-132).
+ */
+export function createRestartFieldLabels(t: (key: string) => string): Record<RestartField, string> {
+  return {
+    'server.host': t('settings.facts.host'),
+    'server.port': t('settings.facts.port'),
+    'auth.mode': t('settings.facts.authMode'),
+  };
+}
 
 /**
  * Parses a whole-number input strictly: the trimmed text must be an

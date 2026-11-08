@@ -131,6 +131,55 @@ describe('ComposedApplication reload surface (SIGHUP, D-177)', () => {
   );
 
   it(
+    'the settings GET carries the reloader live restart-pending diff (FSM-5, D-193)',
+    { timeout: 20_000 },
+    async () => {
+      const world = await startHarness({
+        app: { timezone: 'UTC', pollingIntervalSeconds: 60 },
+        server: { host: '127.0.0.1', port: 8787 },
+      });
+      try {
+        const pendingOf = async (): Promise<string[]> => {
+          const response = await world.composed.httpServer.server.inject({
+            method: 'GET',
+            url: '/api/settings',
+          });
+          expect(response.statusCode).toBe(200);
+          return (response.json() as { pendingRestart: string[] }).pendingRestart;
+        };
+
+        // Fresh process: the startup configuration IS the effective one —
+        // nothing awaits a restart.
+        expect(await pendingOf()).toEqual([]);
+
+        // The audit's exact scenario: a hand-edited file (host) plus the
+        // wrapped reload. The change is adopted as the effective
+        // configuration, the reload reports it as restart-requiring, and
+        // the GET surfaces the same list through the store's injected
+        // reloader thunk — the production seam, end to end. (The changed
+        // host stays loopback — a non-loopback bind without a password is
+        // refused by §15.1's own parse-time rule, which would reject the
+        // reload for an unrelated reason.)
+        await writeConfigFile(world.configPath, {
+          app: { timezone: 'UTC', pollingIntervalSeconds: 60 },
+          server: { host: 'localhost', port: 8787 },
+        });
+        const result = await world.composed.applyReload();
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.restartRequired).toEqual(['server.host']);
+        }
+
+        // Persisting across GETs: only a process restart clears it.
+        expect(await pendingOf()).toEqual(['server.host']);
+        expect(await pendingOf()).toEqual(['server.host']);
+      } finally {
+        await world.cleanup();
+      }
+    },
+  );
+
+  it(
     'reloadOnSighup delivers the same reload, notes the arrival at debug, and survives a rejected file (§6.2)',
     { timeout: 20_000 },
     async () => {

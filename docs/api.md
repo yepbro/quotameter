@@ -99,6 +99,14 @@ direction:
   with the retained history honestly labeled.
 - **API keys** (spec §15.4): never on the wire — accounts carry `hasKey` and
   a constant, content-free mask.
+- **Settings restart state** (spec §6.4/§14.5, D-193): every settings
+  scalar carries its static `restartRequired` class marking, while the
+  response's `pendingRestart` list carries the live state — the
+  restart-requiring fields whose effective values differ from what the
+  process started with right now (the reloader's own effective-vs-startup
+  diff). Empty on a fresh process; a hand-edited file plus
+  `quotameter reload`/SIGHUP surfaces as e.g. `["server.host"]` on every
+  GET until a `quotameter restart` adopts the values.
 - **Health diagnostics** (spec §13, D-192): `GET /api/health` is public in
   every auth mode and its unauthenticated body is the byte-exact literal
   `{"status":"ok"}` — the schema-compiled serializer omits the optional

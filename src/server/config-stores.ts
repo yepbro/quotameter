@@ -26,13 +26,20 @@
  * The settings half's `read` also serves §11.3's applied-retention
  * reference (U-053, D-178): the `retention:applied-days` storage marker,
  * read through the repository — the one storage fact the settings surface
- * needs, beside the configuration facts.
+ * needs, beside the configuration facts — and, since FSM-5 (D-193), the
+ * reloader's live restart-pending diff (§6.4), injected as a thunk and
+ * read per call.
  */
 
 import { readFile } from 'node:fs/promises';
 import { parseJson } from '../config/load';
 import { parseConfigWithEnv } from '../config/env';
-import type { EffectiveConfig, ReloadResult, ReloadSuccess } from '../config/reload';
+import type {
+  EffectiveConfig,
+  ReloadResult,
+  ReloadSuccess,
+  RestartRequiredField,
+} from '../config/reload';
 import { writeConfigFile } from '../config/write';
 import { hashPassword } from '../services/password-hash';
 import type { QuotaRepository } from '../storage/repository';
@@ -389,6 +396,13 @@ export interface ConfigFileSettingsStoreOptions {
   readonly repository: QuotaRepository;
   /** The data directory of the §14.5 read-only paths block. */
   readonly dataDir: string;
+  /**
+   * The reloader's live restart-pending diff (§6.4, FSM-5/D-193) — read
+   * per `read()` call so every GET reports the moment's state, exactly as
+   * `effective` is (the same live-thunk shape). The single source: the
+   * store never recomputes the diff.
+   */
+  readonly pendingRestart: () => readonly RestartRequiredField[];
 }
 
 /**
@@ -446,6 +460,7 @@ export function createConfigFileSettingsStore(
         sources: current.sources,
         paths: { configPath: owner.targetPath, dataDir: options.dataDir },
         appliedRetentionDays: appliedRetentionDaysOf(options.repository),
+        pendingRestart: options.pendingRestart(),
       };
     },
     async apply(change) {

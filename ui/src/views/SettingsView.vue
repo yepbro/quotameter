@@ -9,12 +9,18 @@ import SettingsPasswordForm from '../components/SettingsPasswordForm.vue';
 import SettingsScheduleSection from '../components/SettingsScheduleSection.vue';
 import { useApi, useApiCall } from '../api';
 import { isTheme, useTheme } from '../theme';
+import { createRestartFieldLabels, type RestartField } from '../settings-fields';
 
 // The settings page (task 179, spec §14.5; decision D-156): the two loads
 // (the D-130 annotated settings view and the providers listing that
 // carries the §9.2 schedules), the read-only server/auth facts with
 // their §6.4 annotations, the editable scalars (their forms), the theme
-// row, the password change, and the §6.1 paths display.
+// row, the password change, and the §6.1 paths display. Since FSM-5
+// (D-193) the facts section also renders the live §6.4 state the GET
+// carries: `pendingRestart` names the restart-requiring fields whose
+// values changed and were adopted by a reload — the per-row "restart
+// pending" marker and the notice with the `quotameter restart` remedy,
+// beside the static class markings (spec §14.5's distinguishing rule).
 //
 // The failed-load rule is D-135's: a failed reload keeps the last good
 // surface rendered beside its notice and a retry — the empty page renders
@@ -38,6 +44,12 @@ const {
   execute: reloadProviders,
 } = useApiCall(() => api.providers.list());
 
+// The pending fields' operator-facing names — the shared §6.4 vocabulary
+// (the SettingsGeneralForm outcome notice names the same fields the same
+// way), built from static catalog literals (the both-directions rule,
+// D-132).
+const restartFieldLabels = createRestartFieldLabels(t);
+
 void reload();
 void reloadProviders();
 
@@ -50,6 +62,13 @@ const lastPaths = ref<SettingsResponse['paths'] | null>(null);
  * the reduce-retention warning's reference; `null` before any cleanup.
  */
 const lastAppliedRetentionDays = ref<number | null>(null);
+/**
+ * The reloader's live restart-pending diff (§6.4, FSM-5/D-193) — which
+ * restart-requiring values changed and were adopted, awaiting a process
+ * restart; `[]` when nothing is pending. Adopted from every successful
+ * load, so the marker appears and disappears with the served state.
+ */
+const lastPendingRestart = ref<readonly RestartField[]>([]);
 /** Whether the settings view has loaded successfully at least once. */
 const settingsLoaded = ref(false);
 /** The last successfully loaded providers (same rule as the settings). */
@@ -62,6 +81,7 @@ watch(settingsData, (data) => {
   lastSettings.value = data.settings;
   lastPaths.value = data.paths;
   lastAppliedRetentionDays.value = data.appliedRetentionDays;
+  lastPendingRestart.value = data.pendingRestart;
   settingsLoaded.value = true;
 });
 
@@ -117,6 +137,15 @@ function onThemeSelect(event: Event): void {
               >
                 {{ t('settings.facts.restartRequired') }}
               </span>
+              <!-- The live state beside the class marking (FSM-5, D-193):
+                this value changed and a restart is still owed on it. -->
+              <span
+                v-if="lastPendingRestart.includes('server.host')"
+                class="marker pending"
+                data-testid="settings-pending-marker"
+              >
+                {{ t('settings.facts.restartPending') }}
+              </span>
               <span
                 v-if="lastSettings.server.host.source === 'environment'"
                 class="marker"
@@ -136,6 +165,13 @@ function onThemeSelect(event: Event): void {
                 data-testid="settings-restart-marker"
               >
                 {{ t('settings.facts.restartRequired') }}
+              </span>
+              <span
+                v-if="lastPendingRestart.includes('server.port')"
+                class="marker pending"
+                data-testid="settings-pending-marker"
+              >
+                {{ t('settings.facts.restartPending') }}
               </span>
               <span
                 v-if="lastSettings.server.port.source === 'environment'"
@@ -158,6 +194,13 @@ function onThemeSelect(event: Event): void {
                 {{ t('settings.facts.restartRequired') }}
               </span>
               <span
+                v-if="lastPendingRestart.includes('auth.mode')"
+                class="marker pending"
+                data-testid="settings-pending-marker"
+              >
+                {{ t('settings.facts.restartPending') }}
+              </span>
+              <span
                 v-if="lastSettings.auth.mode.source === 'environment'"
                 class="marker"
                 data-testid="settings-env-marker"
@@ -169,6 +212,22 @@ function onThemeSelect(event: Event): void {
         </dl>
         <p class="restart-hint" data-testid="settings-restart-hint">
           {{ t('settings.facts.restartHint') }}
+        </p>
+        <!-- The live half of §14.5's distinguishing rule (FSM-5, D-193):
+          the reloader's own effective-vs-startup diff, served by the GET —
+          non-empty exactly while a changed restart-requiring value awaits
+          `quotameter restart`, across reloads of the page. -->
+        <p
+          v-if="lastPendingRestart.length > 0"
+          class="restart-hint pending-restart"
+          role="status"
+          data-testid="settings-pending-restart"
+        >
+          {{
+            t('settings.facts.restartPendingNotice', {
+              fields: lastPendingRestart.map((field) => restartFieldLabels[field]).join(', '),
+            })
+          }}
         </p>
       </section>
 
@@ -276,9 +335,20 @@ function onThemeSelect(event: Event): void {
   margin-left: 0.5rem;
 }
 
+/* The live pending state (FSM-5, D-193) — actionable (a restart is owed),
+ * so it carries the attention color the advisory notices use; the text
+ * itself names the state, never color alone (§14.1). */
+.marker.pending {
+  color: var(--qm-color-danger);
+}
+
 .restart-hint {
   color: var(--qm-color-muted);
   margin: 0.5rem 0 0;
+}
+
+.restart-hint.pending-restart {
+  color: var(--qm-color-danger);
 }
 
 .theme-row {

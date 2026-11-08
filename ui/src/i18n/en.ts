@@ -365,6 +365,14 @@ export const en = {
       // §6.4's own label, verbatim — the marker is text, never color
       // alone (§14.1).
       restartRequired: 'restart required',
+      // The live state beside the class marking (FSM-5, D-193): this
+      // value changed and a restart is still owed on it.
+      restartPending: 'restart pending',
+      // The live §6.4 notice: the reloader's own effective-vs-startup
+      // diff, non-empty exactly while a changed restart-requiring value
+      // awaits the restart (D-193).
+      restartPendingNotice:
+        'Changed and adopted by a reload, waiting for the process restart: {fields}. Run quotameter restart.',
       // §6.4's remedy, shown beside every restart-required row.
       restartHint:
         'These settings apply after a process restart: edit the configuration file, then run quotameter restart.',

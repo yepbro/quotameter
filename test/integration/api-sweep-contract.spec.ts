@@ -257,11 +257,15 @@ describe('the §13 endpoint inventory through the production composition', () =>
     const body = response.json() as {
       settings: Record<string, unknown>;
       paths: Record<string, string>;
+      pendingRestart: string[];
     };
     expect(body.paths).toEqual({ configPath: api.configPath, dataDir: api.dataDir });
     expect(body.settings.app).toMatchObject({
       timezone: { value: 'UTC', source: 'file' },
     });
+    // FSM-5/D-193: the fresh production composition serves the reloader's
+    // live diff — empty, because the startup configuration is effective.
+    expect(body.pendingRestart).toEqual([]);
   });
 
   it(

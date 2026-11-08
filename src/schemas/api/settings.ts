@@ -71,6 +71,18 @@ function annotated<T extends TSchema>(value: T, description: string) {
   );
 }
 
+/**
+ * The §6.4 restart-requiring fields — the wire vocabulary of the live
+ * `pendingRestart` list (GET) and the `restartRequired` outcome list (PUT).
+ * Pinned against `RESTART_REQUIRED_FIELDS` (`src/config/reload.ts`) by a
+ * schema-suite drift row.
+ */
+export const SETTINGS_RESTART_FIELDS = Object.freeze([
+  'server.host',
+  'server.port',
+  'auth.mode',
+] as const);
+
 /* ── GET /api/settings — the safe view ──────────────────────────────────── */
 
 /**
@@ -171,9 +183,13 @@ export type SettingsPaths = Static<typeof SettingsPathsSchema>;
  * is §11.3's reduce-retention warning's reference: the retention window
  * the last COMPLETED cleanup applied, read from the storage marker
  * `retention:applied-days` (D-063) — `null` before any cleanup has
- * completed (a fresh database). It stays outside {@link SettingsViewSchema}
- * beside the paths block so the pure view builder remains a function of
- * configuration and sources alone.
+ * completed (a fresh database). `pendingRestart` (FSM-5, D-193) is the
+ * live §6.4 state beside the view's static class markings: the
+ * restart-requiring fields whose effective values differ from the startup
+ * configuration right now — the reloader's own diff (empty on a fresh
+ * process, non-empty until a process restart adopts the values). Both stay
+ * outside {@link SettingsViewSchema} beside the paths block so the pure
+ * view builder remains a function of configuration and sources alone.
  */
 export const SettingsResponseSchema = Type.Object(
   {
@@ -184,6 +200,19 @@ export const SettingsResponseSchema = Type.Object(
         'The retention window in days the last completed cleanup applied; ' +
         'null before the first cleanup (spec §11.3 — the reduce-retention warning reference).',
     }),
+    pendingRestart: Type.Array(
+      Type.Union(
+        SETTINGS_RESTART_FIELDS.map((field) => Type.Literal(field)),
+        {
+          description: 'A restart-requiring field path.',
+        },
+      ),
+      {
+        description:
+          'Restart-requiring fields changed and adopted by a reload, still awaiting a ' +
+          'process restart (spec §6.4) — the live state, beside the per-field class markings.',
+      },
+    ),
   },
   { additionalProperties: false },
 );
@@ -295,17 +324,6 @@ export const SETTINGS_APPLY_FIELDS = Object.freeze([
   'providers',
   'logging.level',
   'auth.passwordHash',
-] as const);
-
-/**
- * The §6.4 restart-requiring fields — the wire vocabulary of the
- * `restartRequired` list. Pinned against `RESTART_REQUIRED_FIELDS`
- * (`src/config/reload.ts`) by a schema-suite drift row.
- */
-export const SETTINGS_RESTART_FIELDS = Object.freeze([
-  'server.host',
-  'server.port',
-  'auth.mode',
 ] as const);
 
 /**

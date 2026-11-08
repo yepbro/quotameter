@@ -5,7 +5,7 @@ import { AppConfigSchema } from '../../src/schemas/config';
 import { LOG_LEVELS as SERVER_LOG_LEVELS } from '../../src/schemas/config';
 import { MIN_PASSWORD_LENGTH as SERVER_MIN_PASSWORD_LENGTH } from '../../src/services/config-validation';
 import type { ProviderView } from '../../src/schemas/api/providers';
-import type { SettingsResponse } from '../../src/schemas/api/settings';
+import { SETTINGS_RESTART_FIELDS, type SettingsResponse } from '../../src/schemas/api/settings';
 import App from '../../ui/src/App.vue';
 import SettingsView from '../../ui/src/views/SettingsView.vue';
 import { createAccountSelection } from '../../ui/src/account-selection';
@@ -21,6 +21,7 @@ import {
   RETENTION_MAX_DAYS,
   RETENTION_MIN_DAYS,
   LOG_LEVELS,
+  createRestartFieldLabels,
 } from '../../ui/src/settings-fields';
 import { createAppTheme } from '../../ui/src/theme';
 import { FakeFetch, jsonResponse, type RecordedCall } from '../helpers/api';
@@ -81,6 +82,8 @@ interface SettingsOverrides {
   readonly restartTrio?: boolean;
   /** The applied-retention marker's value (default null — no cleanup yet). */
   readonly appliedRetentionDays?: number | null;
+  /** The reloader's live restart-pending diff (default [] — fresh process). */
+  readonly pendingRestart?: ReadonlyArray<'server.host' | 'server.port' | 'auth.mode'>;
 }
 
 function settingsResponse(overrides: SettingsOverrides = {}): SettingsResponse {
@@ -129,6 +132,7 @@ function settingsResponse(overrides: SettingsOverrides = {}): SettingsResponse {
       dataDir: '/home/op/.local/share/quotameter',
     },
     appliedRetentionDays: overrides.appliedRetentionDays ?? null,
+    pendingRestart: [...(overrides.pendingRestart ?? [])],
   };
 }
 
@@ -467,6 +471,156 @@ describe('the editability matrix (only §6.4-permitted settings editable)', () =
 function factsHaveNoControls(root: Element): boolean {
   return root.querySelectorAll('input, select, textarea, button').length === 0;
 }
+
+/* ── The live restart-pending state (FSM-5, D-193) ─────────────────────── */
+
+describe('settings page: the live restart-pending state (FSM-5, D-193)', () => {
+  it('renders no live marker or notice while nothing is pending — the class markings alone', async () => {
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.findAll('[data-testid="settings-pending-marker"]')).toHaveLength(0);
+    expect(wrapper.find('[data-testid="settings-pending-restart"]').exists()).toBe(false);
+    // The static class markings stand: the trio's markers and the remedy.
+    expect(wrapper.findAll('[data-testid="settings-restart-marker"]')).toHaveLength(3);
+    expect(wrapper.find('[data-testid="settings-restart-hint"]').text()).toContain(
+      'quotameter restart',
+    );
+  });
+
+  it('a served pending list marks exactly its rows and names the fields with the remedy', async () => {
+    const backend = new FakeSettingsBackend(settingsResponse({ pendingRestart: ['server.host'] }));
+    const wrapper = await mountView(backend);
+
+    // The live marker rides the pending row only, while the class markers
+    // stay on all three — §14.5's distinction: which fields REQUIRE a
+    // restart to change vs which VALUES are awaiting one right now.
+    expect(wrapper.findAll('[data-testid="settings-pending-marker"]')).toHaveLength(1);
+    expect(
+      wrapper
+        .find('[data-testid="settings-host"]')
+        .find('[data-testid="settings-pending-marker"]')
+        .exists(),
+    ).toBe(true);
+    expect(
+      wrapper
+        .find('[data-testid="settings-port"]')
+        .find('[data-testid="settings-pending-marker"]')
+        .exists(),
+    ).toBe(false);
+    expect(wrapper.findAll('[data-testid="settings-restart-marker"]')).toHaveLength(3);
+
+    const notice = wrapper.find('[data-testid="settings-pending-restart"]');
+    expect(notice.text()).toBe(
+      en.settings.facts.restartPendingNotice.replace('{fields}', 'Bind address'),
+    );
+    expect(notice.text()).toContain('quotameter restart');
+  });
+
+  it('every row binding is live — the marker follows auth.mode alone (review round)', async () => {
+    // Each row binds its own field: a copy-paste error in one row's
+    // includes() would pass a host-only world, so the auth-mode world
+    // pins the third binding directly.
+    const backend = new FakeSettingsBackend(settingsResponse({ pendingRestart: ['auth.mode'] }));
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.findAll('[data-testid="settings-pending-marker"]')).toHaveLength(1);
+    expect(
+      wrapper
+        .find('[data-testid="settings-auth-mode"]')
+        .find('[data-testid="settings-pending-marker"]')
+        .exists(),
+    ).toBe(true);
+    for (const row of ['settings-host', 'settings-port']) {
+      expect(
+        wrapper
+          .find(`[data-testid="${row}"]`)
+          .find('[data-testid="settings-pending-marker"]')
+          .exists(),
+        `${row} carries no marker`,
+      ).toBe(false);
+    }
+  });
+
+  it('a multi-field pending list marks every named row and joins the names in the notice', async () => {
+    const backend = new FakeSettingsBackend(
+      settingsResponse({ pendingRestart: ['server.host', 'auth.mode'] }),
+    );
+    const wrapper = await mountView(backend);
+
+    expect(wrapper.findAll('[data-testid="settings-pending-marker"]')).toHaveLength(2);
+    const notice = wrapper.find('[data-testid="settings-pending-restart"]');
+    expect(notice.text()).toBe(
+      en.settings.facts.restartPendingNotice.replace(
+        '{fields}',
+        'Bind address, Authentication mode',
+      ),
+    );
+  });
+
+  it('the PUT outcome notice and the live standing notice coexist — both true, distinct roles', async () => {
+    // The identity invariant (D-193) guarantees the PUT's restartRequired
+    // equals the next GET's pendingRestart, so a save while a restart is
+    // owed renders both: the form's request-outcome notice and the facts
+    // section's standing-state notice. The fake models the production
+    // coupling here (putOutcome mirrors the served pending list).
+    const backend = new FakeSettingsBackend(settingsResponse({ pendingRestart: ['server.port'] }));
+    backend.putOutcome = {
+      applied: ['app.pollingIntervalSeconds'],
+      restartRequired: ['server.port'],
+    };
+    const wrapper = await mountView(backend);
+
+    await wrapper.find('[data-testid="settings-interval"]').setValue('600');
+    await wrapper.find('[data-testid="settings-save"]').trigger('submit');
+    await settle();
+
+    const outcome = wrapper.find('[data-testid="settings-restart-pending"]');
+    const standing = wrapper.find('[data-testid="settings-pending-restart"]');
+    expect(outcome.exists()).toBe(true);
+    expect(standing.exists()).toBe(true);
+    expect(outcome.text()).toContain('Port');
+    expect(standing.text()).toContain('Port');
+    // The two sentences keep their distinct roles: the request outcome
+    // ("waiting to apply") and the standing state ("adopted by a reload").
+    expect(outcome.text()).toContain('Waiting for a restart to apply');
+    expect(standing.text()).toContain('Changed and adopted by a reload');
+  });
+
+  it('the live state appears and disappears with the served value across reloads', async () => {
+    const backend = new FakeSettingsBackend();
+    const wrapper = await mountView(backend);
+    expect(wrapper.find('[data-testid="settings-pending-restart"]').exists()).toBe(false);
+
+    // The audit's scenario: a hand-edited file plus an out-of-band reload
+    // (here: reflected by the next settings load after an unrelated save)
+    // turns the page into the honest "awaiting restart" answer.
+    backend.state.pendingRestart = ['server.host'];
+    await wrapper.find('[data-testid="settings-level"]').setValue('info');
+    await wrapper.find('[data-testid="settings-save"]').trigger('submit');
+    await settle();
+    expect(wrapper.find('[data-testid="settings-pending-restart"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-testid="settings-pending-marker"]')).toHaveLength(1);
+
+    // The served truth is the single source: an empty list clears both.
+    backend.state.pendingRestart = [];
+    await wrapper.find('[data-testid="settings-interval"]').setValue('600');
+    await wrapper.find('[data-testid="settings-save"]').trigger('submit');
+    await settle();
+    expect(wrapper.find('[data-testid="settings-pending-restart"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-testid="settings-pending-marker"]')).toHaveLength(0);
+  });
+
+  it('the restart-field labels mirror the server vocabulary (drift pin)', () => {
+    const labels = createRestartFieldLabels((key) => key);
+    expect(Object.keys(labels).sort()).toEqual([...SETTINGS_RESTART_FIELDS].sort());
+    expect(labels).toEqual({
+      'server.host': 'settings.facts.host',
+      'server.port': 'settings.facts.port',
+      'auth.mode': 'settings.facts.authMode',
+    });
+  });
+});
 
 /* ── Field validation ─────────────────────────────────────────────────── */
 

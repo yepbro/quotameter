@@ -358,9 +358,14 @@ const OPERATIONS = [
     summary: 'Safe settings view (secrets masked)',
     description:
       'Every scalar setting with value, source (`file`/`environment`), and restart-required marking; ' +
-      'secrets are masked or omitted (spec §13, §14.5) and configuration/data paths are read-only facts.',
+      'secrets are masked or omitted (spec §13, §14.5) and configuration/data paths are read-only facts. ' +
+      'Beside the static class markings, `pendingRestart` carries the live restart-pending diff — the ' +
+      'restart-requiring fields whose effective values were changed and adopted by a reload and still ' +
+      'await a process restart (empty on a fresh process; spec §6.4, D-193).',
     schema: { response: { 200: settingsSchemas.SettingsResponseSchema } },
-    responseDescriptions: { 200: 'The annotated settings view with paths.' },
+    responseDescriptions: {
+      200: 'The annotated settings view with paths and the live pendingRestart diff.',
+    },
     errorCodes: ['VALIDATION', 'UNAUTHENTICATED', 'FORBIDDEN', 'INTERNAL'],
   },
   {

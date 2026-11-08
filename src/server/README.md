@@ -469,7 +469,12 @@ no-half-wired-surface pin, one test per family).
   `source: 'environment'` is the §6.3 read-only marking, `passwordConfigured`
   is the mask-and-boolean for the hash, and the view can structurally
   express no secret (no view object declares one; the closed-contract
-  suite pins it). The PUT updates the §6.4 live-applicable vocabulary
+  suite pins it). Since FSM-5 (D-193) the GET envelope also carries
+  `pendingRestart` — the reloader's own live effective-vs-startup diff
+  (`ConfigReloader.pendingRestart()`, injected into the store as a thunk
+  and served verbatim), the state half beside the static class markings:
+  empty on a fresh process, `["server.host"]`-shaped from the reload that
+  adopts a hand-edited change until a process restart. The PUT updates the §6.4 live-applicable vocabulary
   through the D-022 boundary (`validateSettings` over the effective
   configuration → `parseConfig`: the loader's own ranges, enums, and
   cross-field rules with its field-addressed, value-free problems as the

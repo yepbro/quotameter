@@ -96,6 +96,11 @@ interface StoreHarness {
   readonly configPath: string;
   /** Re-points the effective() double at a new configuration. */
   setEffective(input: unknown): void;
+  /** The pendingRestart thunk double (FSM-5, D-193): call count + value. */
+  readonly restartPending: {
+    calls: number;
+    value: ReadonlyArray<'server.host' | 'server.port' | 'auth.mode'>;
+  };
   readRaw(): Promise<string>;
 }
 
@@ -155,14 +160,26 @@ async function withStores(
       effective: () => state.effective,
       reload: reload.reload,
     });
+    // The reloader's live diff as an observable double (FSM-5, D-193):
+    // counts calls (the liveness proof — read() consults it every time)
+    // and serves a flippable value.
+    const restartPending = {
+      calls: 0,
+      value: [] as ReadonlyArray<'server.host' | 'server.port' | 'auth.mode'>,
+    };
     await body({
       accountStore: createConfigFileAccountStore(owner),
       settingsStore: createConfigFileSettingsStore(owner, {
         repository: repository as unknown as QuotaRepository,
         dataDir: join(dir.path, 'data'),
+        pendingRestart: () => {
+          restartPending.calls++;
+          return restartPending.value;
+        },
       }),
       reload,
       repository,
+      restartPending,
       configPath,
       setEffective: (input: unknown) => {
         state.effective = effectiveOf(parsed(input));
@@ -357,6 +374,23 @@ describe('createConfigFileSettingsStore', () => {
       await expect(h.settingsStore.read()).resolves.toMatchObject({
         appliedRetentionDays: null,
       });
+    });
+  });
+
+  it('serves the reloader pendingRestart thunk verbatim, read per read() (FSM-5, D-193)', async () => {
+    await withStores({}, async (h) => {
+      // The store is a pass-through, never a recomputation: every read
+      // consults the thunk and serves exactly its answer of the moment.
+      await expect(h.settingsStore.read()).resolves.toMatchObject({ pendingRestart: [] });
+      h.restartPending.value = ['server.host'];
+      await expect(h.settingsStore.read()).resolves.toMatchObject({
+        pendingRestart: ['server.host'],
+      });
+      h.restartPending.value = ['server.host', 'auth.mode'];
+      await expect(h.settingsStore.read()).resolves.toMatchObject({
+        pendingRestart: ['server.host', 'auth.mode'],
+      });
+      expect(h.restartPending.calls).toBe(3);
     });
   });
 

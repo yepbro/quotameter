@@ -102,6 +102,10 @@ class MemorySettingsStore implements SettingsStore {
       sources: this.sources,
       paths: this.paths,
       appliedRetentionDays: this.appliedRetentionDays,
+      // The composition's mirror (FSM-5, D-193): the reloader's own live
+      // diff over its two baselines, computed with the same function the
+      // reloader applies — the double never invents a vocabulary.
+      pendingRestart: findReloadChanges(this.startup, this.current).restart,
     };
   }
 
@@ -259,6 +263,10 @@ describe('GET /api/settings — the safe view (§13/§14.5)', () => {
         // §11.3/D-178: the applied-retention reference rides the response
         // — null when no cleanup has completed (the double's default).
         appliedRetentionDays: null,
+        // FSM-5/D-193: the live restart-pending diff — empty here because
+        // the double's startup configuration IS its effective one (the
+        // fresh-process state).
+        pendingRestart: [],
       });
       expect(response.headers['cache-control']).toBe('no-store');
       expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
@@ -276,6 +284,55 @@ describe('GET /api/settings — the safe view (§13/§14.5)', () => {
       },
       { appliedRetentionDays: 180 },
     );
+  });
+
+  it('serves the live restart-pending diff (FSM-5, D-193)', async () => {
+    // The three acceptance scenarios of the live list: a fresh process
+    // answers empty; a hand-edited host adopted by a reload answers
+    // ["server.host"] persisting across GETs (until a restart, which a
+    // test process never performs); and a live-field PUT adds nothing.
+    await withSettingsApi(async ({ app, store }) => {
+      const pendingOf = async (): Promise<string[]> => {
+        const response = await app.inject({ method: 'GET', url: '/api/settings' });
+        expect(response.statusCode).toBe(200);
+        return (response.json() as { pendingRestart: string[] }).pendingRestart;
+      };
+
+      // (a) Fresh process: the startup configuration is the effective one.
+      expect(await pendingOf()).toEqual([]);
+
+      // (b) The hand-edited-file-plus-reload shape: the file's host change
+      // is adopted (the double's handEdit IS the adopted reload), and the
+      // state persists across repeated GETs — only a restart clears it.
+      // (The changed host stays loopback: a non-loopback bind without a
+      // password is refused by §15.1's own parse-time rule.)
+      store.handEdit((config) => ({ ...config, server: { host: 'localhost', port: 8787 } }));
+      expect(await pendingOf()).toEqual(['server.host']);
+      expect(await pendingOf()).toEqual(['server.host']);
+
+      // (c) A live-field PUT neither adds to nor clears the live list: the
+      // PUT refuses restart-requiring fields (D-130), so its reload adopts
+      // live changes only — the pending host change stands untouched.
+      const put = await putSettings(app, { app: { pollingIntervalSeconds: 600 } });
+      expect(put.statusCode).toBe(200);
+      expect((put.json() as { restartRequired: string[] }).restartRequired).toEqual([
+        'server.host',
+      ]);
+      expect(await pendingOf()).toEqual(['server.host']);
+    });
+  });
+
+  it('a live-field PUT adds nothing to the live restart-pending list', async () => {
+    await withSettingsApi(async ({ app }) => {
+      const put = await putSettings(app, {
+        app: { pollingIntervalSeconds: 600 },
+        logging: { level: 'debug' },
+      });
+      expect(put.statusCode).toBe(200);
+      expect((put.json() as { restartRequired: string[] }).restartRequired).toEqual([]);
+      const response = await app.inject({ method: 'GET', url: '/api/settings' });
+      expect((response.json() as { pendingRestart: string[] }).pendingRestart).toEqual([]);
+    });
   });
 
   it('identifies restart-required settings and environment-overridden read-only fields (§6.4/§6.3)', async () => {

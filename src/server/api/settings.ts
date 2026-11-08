@@ -23,7 +23,11 @@
  * Since U-053 (D-178) the GET response also carries
  * `appliedRetentionDays` — §11.3's reduce-retention warning reference,
  * read from the storage marker the cleanup writes; `null` before the
- * first completed cleanup.
+ * first completed cleanup. Since FSM-5 (D-193) it also carries
+ * `pendingRestart` — the reloader's own live effective-vs-startup diff
+ * over the restart-requiring trio, the state half beside the view's
+ * static class markings (spec §14.5's "distinguishing fields whose class
+ * requires a restart from values currently pending one").
  *
  * The PUT scope is §13's "Update settings allowed for runtime moderation"
  * read literally (D-130): the §6.4 live-applicable vocabulary is updatable;
@@ -96,6 +100,16 @@ export interface SettingsSnapshot {
    * applied one are exactly what the next cleanup deletes.
    */
   readonly appliedRetentionDays: number | null;
+  /**
+   * The restart-requiring fields whose effective values differ from the
+   * startup configuration right now — the reloader's own live diff
+   * (§6.4, FSM-5/D-193), the state half beside the view's per-field
+   * `restartRequired` class markings: `[]` on a fresh process; non-empty
+   * (and stable across reads) from the reload that adopted a
+   * restart-requiring change until a process restart. Sourced from the
+   * reloader's `pendingRestart()`, never recomputed here.
+   */
+  readonly pendingRestart: readonly RestartRequiredField[];
 }
 
 /**
@@ -355,6 +369,9 @@ export const settingsRoutes: FastifyPluginAsync<SettingsRouteOptions> = async (
         settings: settingsViewOf(snapshot.config, snapshot.sources),
         paths: snapshot.paths,
         appliedRetentionDays: snapshot.appliedRetentionDays,
+        // The live §6.4 state beside the class markings (FSM-5/D-193):
+        // the reloader's own effective-vs-startup diff, served verbatim.
+        pendingRestart: snapshot.pendingRestart,
       };
     },
   );

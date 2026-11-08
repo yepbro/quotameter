@@ -141,6 +141,8 @@ export function healthySettingsBody(historyRetentionDays = 365): SettingsRespons
     paths: { configPath: '/tmp/quotameter/config.json', dataDir: '/tmp/quotameter/data' },
     // §11.3/D-178: null — no completed cleanup in the healthy-fixture world.
     appliedRetentionDays: null,
+    // FSM-5/D-193: [] — the healthy-fixture process started clean.
+    pendingRestart: [],
   };
 }
 

@@ -106,20 +106,45 @@ describe('SettingsViewSchema (§13/§14.5 safe view)', () => {
 });
 
 describe('SettingsResponseSchema (the GET envelope)', () => {
-  it('accepts the view plus the read-only paths block and the applied-retention reference', () => {
+  it('requires both envelope extensions beside the view and the paths block', () => {
     const validate = new Ajv2020().compile(SettingsResponseSchema);
     const paths = {
       configPath: '/home/u/.config/quotameter/config.json',
       dataDir: '/home/u/.local/share/quotameter',
     };
-    expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: 180 })).toBe(true);
-    // §11.3/D-178: null before the first completed cleanup.
-    expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: null })).toBe(true);
-    expect(validate({ settings: VALID_VIEW, paths: { configPath: '/x' } })).toBe(false);
+    // The envelope is closed and both newer members are required: an
+    // answer without the applied-retention reference (U-053/D-178) or the
+    // live pendingRestart list (FSM-5/D-193) is a contract break, not an
+    // optional extension — the server always sends both.
+    expect(validate({ settings: VALID_VIEW, paths })).toBe(false);
+    expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: null })).toBe(false);
+    expect(validate({ settings: VALID_VIEW, paths, pendingRestart: [] })).toBe(false);
     expect(validate({ settings: VALID_VIEW })).toBe(false);
     // The reference is an integer-or-null, never a free-form value.
     expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: '180' })).toBe(false);
     expect(validate({ settings: VALID_VIEW, paths, appliedRetentionDays: 180.5 })).toBe(false);
+  });
+
+  it('carries the live pendingRestart list — closed to the §6.4 trio (FSM-5, D-193)', () => {
+    const validate = new Ajv2020().compile(SettingsResponseSchema);
+    const paths = {
+      configPath: '/home/u/.config/quotameter/config.json',
+      dataDir: '/home/u/.local/share/quotameter',
+    };
+    const base = { settings: VALID_VIEW, paths, appliedRetentionDays: null };
+    // Empty (a fresh process) and every §6.4 restart-requiring field; the
+    // integer applied-retention arm rides the same complete envelope.
+    expect(validate({ ...base, pendingRestart: [] })).toBe(true);
+    expect(validate({ ...base, appliedRetentionDays: 180, pendingRestart: [] })).toBe(true);
+    expect(validate({ ...base, pendingRestart: ['server.host'] })).toBe(true);
+    expect(validate({ ...base, pendingRestart: ['server.host', 'server.port', 'auth.mode'] })).toBe(
+      true,
+    );
+    // Closed: live fields, foreign paths, and free-form strings reject.
+    expect(validate({ ...base, pendingRestart: ['app.timezone'] })).toBe(false);
+    expect(validate({ ...base, pendingRestart: ['theme'] })).toBe(false);
+    expect(validate({ ...base, pendingRestart: ['server.host,server.port'] })).toBe(false);
+    expect(validate({ ...base, pendingRestart: 'server.host' })).toBe(false);
   });
 });
 

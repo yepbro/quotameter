@@ -366,7 +366,10 @@ test('settings page has no WCAG violations in either theme (task 179)', async ({
           dataDir: '/home/op/.local/share/quotameter',
         },
         // §11.3/D-178: null — no completed cleanup in the mocked world.
+        // FSM-5/D-193: [] — the baseline world is a clean start; the
+        // pending state's marker and notice get their own scan below.
         appliedRetentionDays: null,
+        pendingRestart: [],
       },
     }),
   );
@@ -377,6 +380,59 @@ test('settings page has no WCAG violations in either theme (task 179)', async ({
   await expect(page.getByTestId('settings-restart-marker')).toHaveCount(3);
   await expect(page.getByTestId('settings-env-note')).toHaveCount(1);
   await expect(page.getByTestId('api-error')).toHaveCount(0);
+  for (const mode of ['light', 'dark'] as const) {
+    await page.getByTestId('theme-select').selectOption(mode);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await assertNoAccessibilityViolations(page);
+  }
+});
+
+test('the settings pending-restart state has no WCAG violations in either theme (FSM-5)', async ({
+  page,
+}) => {
+  // The live state's own surface (D-193) joins the scan: the per-row
+  // "restart pending" marker and the section notice beside the static
+  // class markings — the danger-toned text with the remedy line, over
+  // the same populated page as the baseline cell above (only the served
+  // pendingRestart differs, so the two cells read as one matrix).
+  await page.route('**/api/**', (route) =>
+    fulfillSettingsBody(route, {
+      '/api/settings': {
+        settings: {
+          server: {
+            host: { value: '127.0.0.1', source: 'file', restartRequired: true },
+            port: { value: 8787, source: 'environment', restartRequired: true },
+          },
+          app: {
+            timezone: { value: 'UTC', source: 'file', restartRequired: false },
+            pollingIntervalSeconds: {
+              value: 300,
+              source: 'environment',
+              restartRequired: false,
+            },
+            historyRetentionDays: { value: 180, source: 'file', restartRequired: false },
+          },
+          auth: {
+            mode: { value: 'auto', source: 'file', restartRequired: true },
+            passwordConfigured: true,
+          },
+          logging: { level: { value: 'warn', source: 'file', restartRequired: false } },
+        },
+        paths: {
+          configPath: '/home/op/.config/quotameter/config.json',
+          dataDir: '/home/op/.local/share/quotameter',
+        },
+        appliedRetentionDays: null,
+        // FSM-5/D-193: a hand-edited host adopted by a reload — the
+        // live marker and notice are on the page under scan.
+        pendingRestart: ['server.host'],
+      },
+    }),
+  );
+  await page.goto('/settings');
+  await expect(page.getByTestId('settings-pending-restart')).toBeVisible();
+  await expect(page.getByTestId('settings-pending-marker')).toHaveCount(1);
+  await expect(page.getByTestId('settings-restart-marker')).toHaveCount(3);
   for (const mode of ['light', 'dark'] as const) {
     await page.getByTestId('theme-select').selectOption(mode);
     await expect(page.locator('html')).toHaveAttribute('data-theme', mode);

@@ -6492,18 +6492,18 @@
     "/api/settings": {
       "get": {
         "summary": "Safe settings view (secrets masked)",
-        "description": "Every scalar setting with value, source (`file`/`environment`), and restart-required marking; secrets are masked or omitted (spec §13, §14.5) and configuration/data paths are read-only facts.",
+        "description": "Every scalar setting with value, source (`file`/`environment`), and restart-required marking; secrets are masked or omitted (spec §13, §14.5) and configuration/data paths are read-only facts. Beside the static class markings, `pendingRestart` carries the live restart-pending diff — the restart-requiring fields whose effective values were changed and adopted by a reload and still await a process restart (empty on a fresh process; spec §6.4, D-193).",
         "operationId": "getSettings",
         "tags": ["settings"],
         "responses": {
           "200": {
-            "description": "The annotated settings view with paths.",
+            "description": "The annotated settings view with paths and the live pendingRestart diff.",
             "content": {
               "application/json": {
                 "schema": {
                   "additionalProperties": false,
                   "type": "object",
-                  "required": ["settings", "paths", "appliedRetentionDays"],
+                  "required": ["settings", "paths", "appliedRetentionDays", "pendingRestart"],
                   "properties": {
                     "settings": {
                       "additionalProperties": false,
@@ -6804,6 +6804,27 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "pendingRestart": {
+                      "description": "Restart-requiring fields changed and adopted by a reload, still awaiting a process restart (spec §6.4) — the live state, beside the per-field class markings.",
+                      "type": "array",
+                      "items": {
+                        "description": "A restart-requiring field path.",
+                        "anyOf": [
+                          {
+                            "const": "server.host",
+                            "type": "string"
+                          },
+                          {
+                            "const": "server.port",
+                            "type": "string"
+                          },
+                          {
+                            "const": "auth.mode",
+                            "type": "string"
+                          }
+                        ]
+                      }
                     }
                   }
                 }

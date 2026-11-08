@@ -251,6 +251,102 @@ describe('reload — restart-requiring settings are reported, not applied live',
   });
 });
 
+describe('reload — the live pendingRestart diff (FSM-5, D-193)', () => {
+  it('is empty on a fresh process and unchanged by live-only changes', async () => {
+    await withTempDir(async (dir) => {
+      const reloader = await startReloader(
+        dir,
+        variant(() => {}),
+      );
+      // Startup IS the effective configuration — nothing awaits a restart.
+      expect(reloader.pendingRestart()).toEqual([]);
+      await writeFile(
+        configFilePath(dir.path),
+        variant((c) => {
+          c.app.pollingIntervalSeconds = 120;
+          c.logging.level = 'debug';
+        }),
+        'utf8',
+      );
+      await expect(reloader.reload()).resolves.toMatchObject({ outcome: 'applied' });
+      expect(reloader.pendingRestart()).toEqual([]);
+    });
+  });
+
+  it('equals the adopting reload restartRequired and persists across reads and reloads', async () => {
+    await withTempDir(async (dir) => {
+      const reloader = await startReloader(
+        dir,
+        variant(() => {}),
+      );
+      await writeFile(
+        configFilePath(dir.path),
+        variant((c) => (c.server.host = '0.0.0.0')),
+        'utf8',
+      );
+      const adopted = await reloader.reload();
+      if (!adopted.ok) throw new Error(adopted.problems.join('; '));
+      // The identity that keeps the GET list and every PUT outcome
+      // answering the same question: between reloads the getter is the
+      // reload's own diff, read against the current effective config.
+      expect(adopted.restartRequired).toEqual(['server.host']);
+      expect(reloader.pendingRestart()).toEqual(adopted.restartRequired);
+
+      // Stable across reads, and across a no-change reload the same way.
+      expect(reloader.pendingRestart()).toEqual(['server.host']);
+      const again = await reloader.reload();
+      if (!again.ok) throw new Error(again.problems.join('; '));
+      expect(reloader.pendingRestart()).toEqual(['server.host']);
+      expect(reloader.pendingRestart()).toEqual(again.restartRequired);
+    });
+  });
+
+  it('is unchanged by a rejected reload (the incumbent stays effective, spec §6.2)', async () => {
+    await withTempDir(async (dir) => {
+      const reloader = await startReloader(
+        dir,
+        variant(() => {}),
+      );
+      await writeFile(
+        configFilePath(dir.path),
+        variant((c) => (c.server.port = 9400)),
+        'utf8',
+      );
+      await expect(reloader.reload()).resolves.toMatchObject({ ok: true });
+      expect(reloader.pendingRestart()).toEqual(['server.port']);
+
+      // A broken file rejects; the last valid configuration stays, so the
+      // pending state stays exactly what it was.
+      await writeFile(configFilePath(dir.path), '{ not json', 'utf8');
+      await expect(reloader.reload()).resolves.toMatchObject({ ok: false });
+      expect(reloader.pendingRestart()).toEqual(['server.port']);
+    });
+  });
+
+  it('settles back to empty when a later reload returns to the startup values', async () => {
+    await withTempDir(async (dir) => {
+      const reloader = await startReloader(
+        dir,
+        variant(() => {}),
+      );
+      await writeFile(
+        configFilePath(dir.path),
+        variant((c) => (c.auth.mode = 'required')),
+        'utf8',
+      );
+      await expect(reloader.reload()).resolves.toMatchObject({ ok: true });
+      expect(reloader.pendingRestart()).toEqual(['auth.mode']);
+      await writeFile(
+        configFilePath(dir.path),
+        variant(() => {}),
+        'utf8',
+      );
+      await expect(reloader.reload()).resolves.toMatchObject({ ok: true });
+      expect(reloader.pendingRestart()).toEqual([]);
+    });
+  });
+});
+
 describe('reload — invalid configuration keeps the last valid config (spec §6.2)', () => {
   it('rejects the very first reload on a missing file and keeps the incumbent', async () => {
     await withTempDir(async (dir) => {

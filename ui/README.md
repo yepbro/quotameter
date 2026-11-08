@@ -591,14 +591,14 @@ server carries.
 
 ### Architecture
 
-| Module                                       | Owns                                                                                                                                   |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/views/SettingsView.vue`                 | the two loads (`settings.get`, `providers.list`), last-good copies, the read-only facts and paths, the theme row, composition          |
-| `src/components/SettingsGeneralForm.vue`     | the §6.4-live scalars: time-zone search, interval, retention, log level; the minimal-write PUT; the saved/pending-restart notices      |
-| `src/components/SettingsPasswordForm.vue`    | the §15.2 password change (the PUT's `auth.password` channel) with the session-revocation consequence                                  |
-| `src/components/SettingsScheduleSection.vue` | the §9.2 peak-hours schedule, read-only in its own time zone                                                                           |
-| `src/settings-fields.ts`                     | the UI-local validated ranges, the log-level enum, the §15.2 minimum — drift-pinned against the server constants by test               |
-| `src/timezones.ts`                           | the pure zone helpers: validity (the server check's mirror), the engine list seam, the suggestion filter with the canonical-twin match |
+| Module                                       | Owns                                                                                                                                                            |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/views/SettingsView.vue`                 | the two loads (`settings.get`, `providers.list`), last-good copies, the read-only facts and paths, the theme row, composition                                   |
+| `src/components/SettingsGeneralForm.vue`     | the §6.4-live scalars: time-zone search, interval, retention, log level; the minimal-write PUT; the saved/pending-restart notices                               |
+| `src/components/SettingsPasswordForm.vue`    | the §15.2 password change (the PUT's `auth.password` channel) with the session-revocation consequence                                                           |
+| `src/components/SettingsScheduleSection.vue` | the §9.2 peak-hours schedule, read-only in its own time zone                                                                                                    |
+| `src/settings-fields.ts`                     | the UI-local validated ranges, the log-level enum, the §15.2 minimum, the §6.4 restart-field labels (D-193) — drift-pinned against the server constants by test |
+| `src/timezones.ts`                           | the pure zone helpers: validity (the server check's mirror), the engine list seam, the suggestion filter with the canonical-twin match                          |
 
 ### The editability contract
 
@@ -618,7 +618,13 @@ The annotations are the served contract's own (`source`, `restartRequired`
 carries **only the changed fields**; a save reloads the served truth and
 the drafts re-adopt it. A non-empty PUT outcome `restartRequired` list
 renders the pending-restart notice — the process's hand-edited-file
-state, never the request's doing.
+state, never the request's doing. Since FSM-5 (D-193) the facts section
+also renders the **live** half of the same state from the GET's
+`pendingRestart`: a per-row "restart pending" marker beside exactly the
+named fields plus a section notice with the `quotameter restart` remedy,
+appearing and disappearing with the served value — §14.5's distinction
+between fields whose class requires a restart and values currently
+pending one, both truths visible at once.
 
 ### The time-zone search
 

@@ -17,7 +17,11 @@
  * pre-flight validation and carries the restart advisory — it cannot see
  * the service's memory, so the three-way classification stays here. The UI
  * labels `restartRequired` fields "restart required" with a `quotameter
- * restart` hint (spec §6.4). Signal installation is not here:
+ * restart` hint (spec §6.4) — and since FSM-5 (D-193) the settings GET
+ * reads the live half of that vocabulary straight from the reloader:
+ * {@link ConfigReloader.pendingRestart} is the effective-vs-startup diff
+ * at any moment, not only inside a reload result. Signal installation is
+ * not here:
  * `src/server/main.ts` wires `process.on('SIGHUP', …)` (U-052, D-177) to
  * the composition-wrapped reload, of which the bare `reloader.reload()`
  * here is one part (the D-128 config-sync and the D-176 polling feeds ride
@@ -302,6 +306,19 @@ export interface ConfigReloader {
   /** The currently effective configuration (the last valid one ever loaded). */
   current(): EffectiveConfig;
   /**
+   * The restart-requiring fields whose EFFECTIVE values differ from the
+   * startup ones right now — the live "pending a restart" diff (§6.4,
+   * FSM-5/D-193): the same `findReloadChanges` pairing a reload's
+   * `restartRequired` result uses, read against the current effective
+   * configuration instead of a reload candidate. Between reloads `current`
+   * is stable, so after a successful reload this equals that reload's
+   * `restartRequired` — the value a settings GET reports and the one a
+   * PUT response reports can never disagree. `[]` on a fresh process (the
+   * startup configuration is the current one) and unchanged by a rejected
+   * reload (§6.2 keeps the incumbent).
+   */
+  pendingRestart(): readonly RestartRequiredField[];
+  /**
    * Re-runs the load pipeline and applies §6.4. Never rejects for
    * configuration problems — those are the `rejected` result; only a fault
    * in an injected dependency (a broken logger) can reject, and then the
@@ -351,6 +368,12 @@ export function createConfigReloader(options: ConfigReloaderOptions): ConfigRelo
   return {
     startup,
     current: () => current,
+    // The reloader's own diff, live: both baselines are its own state, so
+    // the "which pair of configurations means pending" knowledge (D-026)
+    // never leaves this module — the settings GET consumes the answer, it
+    // never recomputes it (FSM-5/D-193).
+    pendingRestart: (): readonly RestartRequiredField[] =>
+      findReloadChanges(startup.config, current.config).restart,
     reload(): Promise<ReloadResult> {
       // Serialize: a reload begun while another is in flight waits for it,
       // then re-runs the pipeline itself — SIGHUP bursts each take effect.

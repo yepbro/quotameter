@@ -10,6 +10,7 @@ import ApiErrorNotice from './ApiErrorNotice.vue';
 import { useApi, useApiCall } from '../api';
 import { browserTimeZones, isValidTimeZone, zoneSuggestions } from '../timezones';
 import {
+  createRestartFieldLabels,
   isIntegerInRange,
   LOG_LEVELS,
   POLLING_INTERVAL_MAX_SECONDS,
@@ -150,13 +151,11 @@ const { error, pending, execute } = useApiCall(() => {
 });
 
 // The PUT outcome's restartRequired list speaks in field paths; the
-// operator-facing names come from static catalog lookups (every t()
-// argument a literal — the both-directions rule, D-132).
-const restartFieldLabels: Record<'server.host' | 'server.port' | 'auth.mode', string> = {
-  'server.host': t('settings.facts.host'),
-  'server.port': t('settings.facts.port'),
-  'auth.mode': t('settings.facts.authMode'),
-};
+// operator-facing names come from the shared §6.4 vocabulary (static
+// catalog literals only — the both-directions rule, D-132), the same one
+// the facts section's live pendingRestart notice names its fields with
+// (FSM-5, D-193).
+const restartFieldLabels = createRestartFieldLabels(t);
 
 async function submit(): Promise<void> {
   const { settings } = props;
