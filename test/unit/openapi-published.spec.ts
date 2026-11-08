@@ -12,12 +12,14 @@ import { SESSION_COOKIE_NAME } from '../../src/services/session-cookie';
 import { ProviderRegistry } from '../../src/providers/registry';
 import type { QuotaRepository } from '../../src/storage/repository';
 import { buildOpenApiDocument } from '../../scripts/openapi-document.mjs';
+import { serializeOpenApiDocument } from '../../scripts/generate-openapi.mjs';
 
 /**
- * The OpenAPI drift guard (spec §13, §18; task 163, decision D-144): the
- * published `docs/openapi.json` must match the routes the server actually
- * registers, in both directions and down to the schemas — the same spirit as
- * the coverage-threshold guard (D-093) and the published-config-schema pin
+ * The OpenAPI drift guard (spec §13, §18; task 163, decision D-144;
+ * extended by task 192, decision D-202): the published `docs/openapi.json`
+ * must match the routes the server actually registers, in both directions
+ * and down to the schemas — the same spirit as the coverage-threshold
+ * guard (D-093) and the published-config-schema pin
  * (`config-schema-published.spec.ts`).
  *
  * The published document is the JSON projection of the same TypeBox
@@ -27,7 +29,9 @@ import { buildOpenApiDocument } from '../../scripts/openapi-document.mjs';
  * This suite pins the hand-maintained half against the real thing:
  *
  * 1. **Freshness** — the committed artifact equals the builder output, so
- *    regeneration (`make openapi`) cannot be forgotten.
+ *    regeneration (`make openapi`) cannot be forgotten; task 192 (D-202)
+ *    pinned the byte level too: the committed file equals the writer's own
+ *    serialization, so a green suite guarantees regeneration is a no-op.
  * 2. **No undocumented route** — every (method, path) the `/api` scope
  *    registers appears in the document.
  * 3. **No phantom route** — every documented (method, path) is really
@@ -44,6 +48,11 @@ import { buildOpenApiDocument } from '../../scripts/openapi-document.mjs';
  *    route configs, exactly the state-changing methods carry §15.3's
  *    custom header (D-117), and the root session-cookie requirement and
  *    scheme are present (D-126's constant).
+ * 6. **Contract-lane coverage** (task 192, D-202) — every documented
+ *    operation is exercised end-to-end by the §13 contract sweep
+ *    (`test/integration/api-sweep-contract.spec.ts`, task 164/D-145), and
+ *    every sweep call targets exactly one documented operation: the
+ *    published reference and the contract tests cannot fork.
  *
  * The route inventory is collected through fastify's `onRoute` hook — the
  * one public introspection surface that still exposes route options (method,
@@ -59,10 +68,11 @@ import { buildOpenApiDocument } from '../../scripts/openapi-document.mjs';
  * guard compares parsed data, never the inferred shape.
  */
 
+/** The committed published artifact's exact bytes (parsed for traversal below). */
+const committedText = readFileSync(new URL('../../docs/openapi.json', import.meta.url), 'utf8');
+
 /** The committed published artifact, as loose keyword maps for traversal. */
-const committedDocument = JSON.parse(
-  readFileSync(new URL('../../docs/openapi.json', import.meta.url), 'utf8'),
-) as Record<string, unknown>;
+const committedDocument = JSON.parse(committedText) as Record<string, unknown>;
 
 /** The re-assembled form of "no parameters of this kind were documented". */
 const NO_PARAMETERS = {
@@ -262,12 +272,79 @@ function reassembledObjectSchema(
 
 /* ── 1. Freshness ───────────────────────────────────────────────────────── */
 
+/* ── Contract-lane coverage helpers (task 192, D-202) ───────────────────── */
+
+/** The §13 contract sweep's source (task 164, D-145) — the tie's other side. */
+const sweepSource = readFileSync(
+  new URL('../integration/api-sweep-contract.spec.ts', import.meta.url),
+  'utf8',
+);
+
+/**
+ * The sweep's HTTP invocations as the parser recognizes them: the method
+ * single-quoted, the path a quoted string or a template literal (`\s*`
+ * spans the multi-line argument lists).
+ */
+const SWEEP_CALL_PATTERN = /\.(?:call|probe)\(\s*'([A-Z]+)'\s*,\s*(['"`])([^'"`]+)\2/g;
+
+/** One `call`/`probe` invocation of the sweep, as the source parser sees it. */
+interface SweptCall {
+  readonly method: string;
+  /** The path with the query string stripped — routing never sees it. */
+  readonly path: string;
+}
+
+/** The sweep's HTTP invocations, parsed out of its source. */
+function sweptCalls(): SweptCall[] {
+  return [...sweepSource.matchAll(SWEEP_CALL_PATTERN)].map((match) => ({
+    method: match[1] ?? '',
+    path: (match[3] ?? '').split('?')[0] ?? '',
+  }));
+}
+
+/**
+ * Raw `call`/`probe` invocation openings the parser did not match — the
+ * parse-pin's teeth. A sweep call written in a shape the parser cannot see
+ * (a double-quoted method, a path through a variable, a renamed helper)
+ * would otherwise silently drop out of the coverage set below; this fails
+ * naming the unseen invocation instead.
+ */
+function unparsedInvocations(): string[] {
+  const parsed = new Set([...sweepSource.matchAll(SWEEP_CALL_PATTERN)].map((m) => m.index));
+  return [...sweepSource.matchAll(/\.(?:call|probe)\(/g)]
+    .filter((match) => !parsed.has(match.index))
+    .map((match) => JSON.stringify(sweepSource.slice(match.index, (match.index ?? 0) + 60)));
+}
+
+/** True when a concrete swept path instantiates an OpenAPI path template. */
+function pathMatchesTemplate(path: string, template: string): boolean {
+  const segments = path.split('/');
+  const templateSegments = template.split('/');
+  return (
+    segments.length === templateSegments.length &&
+    segments.every((segment, index) => {
+      const templateSegment = templateSegments[index] ?? '';
+      return segment === templateSegment || (segment !== '' && /^\{[^}]+\}$/.test(templateSegment));
+    })
+  );
+}
+
 describe('published OpenAPI artifact (spec §13, §18; task 163, D-144)', () => {
   it('equals the builder output — regenerate with `make openapi` when stale', () => {
     // Both sides are pure JSON data: the projection drops the TypeBox
     // symbol markers the live schema nodes carry, so equality compares
     // exactly what an OpenAPI consumer reads.
     expect(committedDocument).toEqual(builtDocument);
+  });
+
+  it('is byte-for-byte what regeneration writes — `make openapi` is a no-op while green', async () => {
+    // The equality above compares parsed data, so a hand-reformatted file
+    // (or a Prettier configuration change) would pass while NOT being what
+    // `make openapi` produces. The byte arm runs the writer's own exported
+    // serializer — the one implementation, never a mirrored copy that
+    // could fork — so green guarantees a zero-diff regeneration (task 192,
+    // D-202).
+    expect(await serializeOpenApiDocument(builtDocument)).toBe(committedText);
   });
 
   it('declares OpenAPI 3.1.0 over the draft 2020-12 dialect the schemas use', () => {
@@ -464,5 +541,50 @@ describe('published OpenAPI artifact (spec §13, §18; task 163, D-144)', () => 
     const scheme = components.securitySchemes?.sessionCookie as Record<string, unknown>;
     expect(scheme).toBeDefined();
     expect(scheme).toMatchObject({ type: 'apiKey', in: 'cookie', name: SESSION_COOKIE_NAME });
+  });
+
+  /* ── 7. Contract-lane coverage (task 192, D-202) ──────────────────────── */
+
+  it('is exercised end-to-end by the §13 contract sweep, in both directions', () => {
+    // The arms above prove the document matches what the server REGISTERS;
+    // this one proves it matches what the contract tests TEST. The sweep
+    // (task 164, D-145) answers every §13 endpoint through the production
+    // composition — the executable form of the spec's route table — so
+    // tying its calls to the document's operations makes "API docs match
+    // contract tests" a checked invariant: a documented operation without
+    // a sweep call (documentation the contract lane never proves) and a
+    // sweep call without its documented operation (a tested route the
+    // reference does not publish) both fail here.
+    const calls = sweptCalls();
+    // The parse-pin: every raw invocation must be seen by the parser — a
+    // call shape it cannot recognize fails here by name, never silently.
+    expect(
+      unparsedInvocations(),
+      'sweep invocations the parser cannot see — extend the parser (SWEEP_CALL_PATTERN) or reshape the call',
+    ).toEqual([]);
+
+    const documented = documentedOperations();
+    const covered = new Set<string>();
+    const offDocument: string[] = [];
+    for (const call of calls) {
+      const hits = [...documented.keys()].filter(
+        (key) =>
+          key.startsWith(`${call.method} `) &&
+          pathMatchesTemplate(call.path, key.slice(call.method.length + 1)),
+      );
+      if (hits.length === 1) {
+        covered.add(hits[0]!);
+      } else {
+        offDocument.push(`${call.method} ${call.path} (${hits.length} matching operations)`);
+      }
+    }
+    expect(offDocument, 'sweep calls that do not hit exactly one documented operation').toEqual([]);
+
+    const uncovered = [...documented.keys()].filter((key) => !covered.has(key));
+    expect(
+      uncovered,
+      'documented operations the contract sweep never exercises — add the ' +
+        'happy-path call to test/integration/api-sweep-contract.spec.ts',
+    ).toEqual([]);
   });
 });

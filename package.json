@@ -21,6 +21,7 @@
     "bin/",
     "dist/",
     "schema/config.schema.json",
+    "docs/openapi.json",
     "ui/dist/",
     "README.md",
     "LICENSE",

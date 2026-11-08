@@ -1,11 +1,24 @@
 # HTTP API reference (OpenAPI)
 
 Quotameter's HTTP API is described by a published OpenAPI document (spec §13,
-§18): [`docs/openapi.json`](openapi.json) in the repository — OpenAPI 3.1.0,
-with every request and response schema embedded as the JSON Schema (draft
-2020-12) projection of the TypeBox contracts the server validates and
-serializes through. Point any OpenAPI 3.1 tooling (Swagger UI, Redoc,
-Insomnia, Postman, editor plugins) at the file.
+§18): [`docs/openapi.json`](openapi.json) — OpenAPI 3.1.0, with every request
+and response schema embedded as the JSON Schema (draft 2020-12) projection of
+the TypeBox contracts the server validates and serializes through. Point any
+OpenAPI 3.1 tooling (Swagger UI, Redoc, Insomnia, Postman, editor plugins) at
+the file.
+
+The reference is published in two places (decision D-202):
+
+- **the repository** — `docs/openapi.json` beside this page, the canonical
+  home of the current development state;
+- **the npm package** — the same file ships inside the installed package
+  (`docs/openapi.json` under the package root, e.g.
+  `node_modules/quotameter/docs/openapi.json` for a local install), so an
+  operator integrating against an installed instance — including an
+  air-gapped one — always has the reference for the exact version running,
+  not whatever the repository's current state says. The document's
+  `info.version` is stamped from `package.json` at generation time, which is
+  why the packed copy cannot describe a server it did not ship with.
 
 ## The document is generated, not hand-written
 
@@ -50,6 +63,10 @@ A unit test, `test/unit/openapi-published.spec.ts`, fails `make check` when
 the published document and the real server drift apart — in either
 direction:
 
+- **byte freshness**: the committed file equals the writer's own
+  serialization of the builder's output, byte-for-byte — while this arm is
+  green, `make openapi` is guaranteed to be a no-op, so a hand-edited or
+  reformatted artifact cannot masquerade as generated (task 192, D-202);
 - a route registered by the `/api` scope but absent from the document (a new
   endpoint must ship its documentation in the same commit);
 - a documented operation with no matching route (a removed or renamed
@@ -63,7 +80,15 @@ direction:
   routes, spec §13/§15.1 — login and the session reader declare it through
   the same public route config, D-121/D-146/D-182)
   and the §15.3 mutation-header requirement are pinned against the live
-  route configurations.
+  route configurations;
+- **contract-test coverage** (task 192, D-202): every documented operation
+  is exercised end-to-end by the §13 contract sweep
+  (`test/integration/api-sweep-contract.spec.ts`, which answers every
+  endpoint through the production composition), and every sweep call
+  targets exactly one documented operation — the published reference and
+  the contract tests cannot fork: an endpoint added to the document without
+  a contract test fails, and a tested route missing from the document
+  fails.
 
 ## Reading the API through it
 

@@ -565,7 +565,8 @@ export function buildOpenApiDocument(operations = OPERATIONS) {
         'common envelope `{ "error": { "code", "message", "details" } }` with stable codes. ' +
         'All state-changing requests (POST/PUT/PATCH/DELETE) require the dedicated nonstandard header, ' +
         'and a JSON content type whenever the request carries a body (spec §15.3); CORS is disabled. ' +
-        'See docs/api.md for the human-readable reference.',
+        'The human-readable reference is docs/api.md in the project repository ' +
+        '(https://github.com/yepbro/quotameter).',
     },
     servers: [
       {

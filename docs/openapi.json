@@ -4,7 +4,7 @@
   "info": {
     "title": "Quotameter HTTP API",
     "version": "0.0.0",
-    "description": "The internal HTTP API of the Quotameter web service (spec §13). Every request and response is defined by the same TypeBox contracts the server validates through, and every error answers the common envelope `{ \"error\": { \"code\", \"message\", \"details\" } }` with stable codes. All state-changing requests (POST/PUT/PATCH/DELETE) require the dedicated nonstandard header, and a JSON content type whenever the request carries a body (spec §15.3); CORS is disabled. See docs/api.md for the human-readable reference."
+    "description": "The internal HTTP API of the Quotameter web service (spec §13). Every request and response is defined by the same TypeBox contracts the server validates through, and every error answers the common envelope `{ \"error\": { \"code\", \"message\", \"details\" } }` with stable codes. All state-changing requests (POST/PUT/PATCH/DELETE) require the dedicated nonstandard header, and a JSON content type whenever the request carries a body (spec §15.3); CORS is disabled. The human-readable reference is docs/api.md in the project repository (https://github.com/yepbro/quotameter)."
   },
   "servers": [
     {

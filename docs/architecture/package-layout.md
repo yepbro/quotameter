@@ -156,8 +156,10 @@ components → `component`, browser flows → `e2e`.
 
 Spec §3 fixes the packaging shape the layout must support: no install-time
 build, no `postinstall`, no native modules; the tarball ships the built
-frontend `dist/`, a ready-to-run CLI, and the published JSON Schema
-(`schema/config.schema.json`, task 062). Concretely: `bin/quotameter.mjs`
+frontend `dist/`, a ready-to-run CLI, the published JSON Schema
+(`schema/config.schema.json`, task 062), and the published OpenAPI document
+(`docs/openapi.json`, task 192, decision D-202 — the generated API reference
+of the service the package installs, version-stamped from the manifest). Concretely: `bin/quotameter.mjs`
 stays plain JavaScript and derives its runtime version gate from the
 manifest's `engines.node` declaration (task 129, decision D-098) — the
 single source of truth, so the gate and the declaration cannot drift; the

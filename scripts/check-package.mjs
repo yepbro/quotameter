@@ -4,14 +4,22 @@
  *
  * Runs `npm pack --dry-run` and compares the packed file list against the
  * manifest's `files` allowlist: tests, fixtures, local configuration, plans,
- * docs beyond the README, and development artifacts must never ship. Fails
- * with the list of unexpected entries when the package would leak something.
+ * prose docs beyond the README, and development artifacts must never ship.
+ * Fails with the list of unexpected entries when the package would leak
+ * something.
  *
  * Two entry classes (task 184, D-194):
  *  - exact entries — single files (`bin/quotameter.mjs`, the published
- *    schema, the README, LICENSE, NOTICE);
+ *    schema, the published OpenAPI document, the README, LICENSE, NOTICE);
  *  - prefix entries — directories of built output: `dist/` (the compiled
  *    CLI, task 185/D-195) and `ui/dist/` (the prebuilt web UI).
+ *
+ * The published OpenAPI document (task 192, D-202) is the one deliberate
+ * exception to "docs beyond the README never ship": like
+ * `schema/config.schema.json`, it is a generated contract artifact, not
+ * prose — the machine-readable API reference of the very service the
+ * package installs, version-stamped by `info.version` from `package.json`,
+ * so the packed copy always describes the shipped server.
  *
  * The prefix class is allowed but not required: `npm pack` silently skips
  * allowlisted-but-missing paths (the LICENSE/NOTICE precedent), and a clean
@@ -37,14 +45,16 @@ import { pathToFileURL } from 'node:url';
  * and the README automatically; LICENSE/NOTICE/THIRD-PARTY-NOTICES are
  * listed here and packed once they exist (they are §18 deliverables or, for
  * the third-party notices, the embedded-license set of D-201). The published
- * JSON Schema (task 062, D-015) is listed and required: it is committed,
- * so a tarball without it means the allowlist stopped matching reality.
+ * JSON Schema (task 062, D-015) and the published OpenAPI document (task
+ * 192, D-202) are listed and required: both are committed, so a tarball
+ * without them means the allowlist stopped matching reality.
  */
 export const ALLOWED_EXACT = [
   'package.json',
   'README.md',
   'bin/quotameter.mjs',
   'schema/config.schema.json',
+  'docs/openapi.json',
   'LICENSE',
   'NOTICE',
   'THIRD-PARTY-NOTICES',
@@ -60,7 +70,12 @@ export const ALLOWED_EXACT = [
 export const ALLOWED_PREFIXES = ['dist/', 'ui/dist/'];
 
 /** Entries that must be present in every packed tarball. */
-export const REQUIRED_ENTRIES = ['package.json', 'bin/quotameter.mjs', 'schema/config.schema.json'];
+export const REQUIRED_ENTRIES = [
+  'package.json',
+  'bin/quotameter.mjs',
+  'schema/config.schema.json',
+  'docs/openapi.json',
+];
 
 function main() {
   const stdout = execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8' });
