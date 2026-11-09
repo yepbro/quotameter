@@ -52,27 +52,27 @@ first pushed-run execution is therefore still pending (residual R2).
 
 ## Summary
 
-| #   | Criterion (abbreviated)                                                                       | Verdict     | Primary evidence anchor                                                      |
-| --- | --------------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------- |
-| 1   | Installs and runs on supported Linux/systemd targets, Node ≥ 22.13.0, clean containers        | Complete    | D-203 six-cell matrix; D-206 scenarios; D-196                                |
-| 2   | `init` requires IANA tz; system unit, user unit, or exact manual instructions                 | Complete    | CLI suites; D-206; `docs/examples/`                                          |
-| 3   | Accounts added via CLI or UI and tested independently                                         | Complete    | smoke scenario 1; credential-check probe; UI E2E; R1 closed by U-061 (D-210) |
-| 4   | 5-min default interval; runtime changes; immediate post-startup collection                    | Complete    | schema default 300; reload suites; smoke scenarios 2/3/5                     |
-| 5   | SQLite via `node:sqlite`; migrations with pre-migration backups                               | Complete    | migration suites; smoke scenario 4                                           |
-| 6   | Light/dark/system themes; current values; 24 h–30 d charts; disabled out-of-retention ranges  | Complete    | E2E `themes`, `history-ranges`; component suites                             |
-| 7   | Reset/gap/error/peak markers with correct TZ/DST                                              | Complete    | E2E `chart-markers`; peak-hours suites; TZ matrix                            |
-| 8   | API failures preserve last valid values, visible; parse failures retain sanitized diagnostics | Complete    | smoke scenario 7; §7.2–§7.4 suites; R1 closed by U-061 (D-210)               |
-| 9   | No browser needed; restarts after failure and reboot                                          | Complete    | D-206 crash-restart and reboot phases; smoke environment                     |
-| 10  | Password for remote; loopback `auto` passwordless; CSRF/Origin and Host guards in all modes   | Complete    | security suite family; smoke ran in `auto` loopback                          |
-| 11  | Keys never leak to assets/logs/API/errors/diagnostics; config permissions enforced            | Complete    | sanitize/secrets suites; smoke scenario 8                                    |
-| 12  | All artifacts English; every §18 deliverable present                                          | Complete    | §18 inventory below; `test/component/i18n-catalog.spec.ts`                   |
-| 13  | Gates pass in CI; publication from GitHub Actions with provenance                             | **Pending** | last green run 42458066716; wiring guards — residuals R2, R3                 |
-| 14  | Z.ai source and payload contract documented with links/fixtures; nothing guessed              | Complete    | D-199 dossier + drift guard; D-208 live confirmation                         |
+| #   | Criterion (abbreviated)                                                                       | Verdict  | Primary evidence anchor                                                           |
+| --- | --------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------- |
+| 1   | Installs and runs on supported Linux/systemd targets, Node ≥ 22.13.0, clean containers        | Complete | D-203 six-cell matrix; D-206 scenarios; D-196                                     |
+| 2   | `init` requires IANA tz; system unit, user unit, or exact manual instructions                 | Complete | CLI suites; D-206; `docs/examples/`                                               |
+| 3   | Accounts added via CLI or UI and tested independently                                         | Complete | smoke scenario 1; credential-check probe; UI E2E; R1 closed by U-061 (D-210)      |
+| 4   | 5-min default interval; runtime changes; immediate post-startup collection                    | Complete | schema default 300; reload suites; smoke scenarios 2/3/5                          |
+| 5   | SQLite via `node:sqlite`; migrations with pre-migration backups                               | Complete | migration suites; smoke scenario 4                                                |
+| 6   | Light/dark/system themes; current values; 24 h–30 d charts; disabled out-of-retention ranges  | Complete | E2E `themes`, `history-ranges`; component suites                                  |
+| 7   | Reset/gap/error/peak markers with correct TZ/DST                                              | Complete | E2E `chart-markers`; peak-hours suites; TZ matrix                                 |
+| 8   | API failures preserve last valid values, visible; parse failures retain sanitized diagnostics | Complete | smoke scenario 7; §7.2–§7.4 suites; R1 closed by U-061 (D-210)                    |
+| 9   | No browser needed; restarts after failure and reboot                                          | Complete | D-206 crash-restart and reboot phases; smoke environment                          |
+| 10  | Password for remote; loopback `auto` passwordless; CSRF/Origin and Host guards in all modes   | Complete | security suite family; smoke ran in `auto` loopback                               |
+| 11  | Keys never leak to assets/logs/API/errors/diagnostics; config permissions enforced            | Complete | sanitize/secrets suites; smoke scenario 8                                         |
+| 12  | All artifacts English; every §18 deliverable present                                          | Complete | §18 inventory below; `test/component/i18n-catalog.spec.ts`                        |
+| 13  | Gates pass in CI; publication from GitHub Actions with provenance                             | Complete | green pushed runs 42641831541, 42652784987; v0.1.0 provenance publish 42654771911 |
+| 14  | Z.ai source and payload contract documented with links/fixtures; nothing guessed              | Complete | D-199 dossier + drift guard; D-208 live confirmation                              |
 
-Thirteen of fourteen criteria are met by their own words — thirteen clean
-after U-061 (D-210) closed residual R1 on criteria 3 and 8. Criterion 13 is
-pending on two named residuals (R2, R3). No criterion is marked complete
-without evidence.
+All fourteen criteria are met by their own words — fourteen clean after
+U-061 (D-210) closed residual R1 on criteria 3 and 8 and task 200's release
+cycle closed residuals R2 and R3 on criterion 13 (2026-11-09). No criterion
+is marked complete without evidence.
 
 ## Criterion-by-criterion verification
 
@@ -353,37 +353,36 @@ tests pass; npm publication occurs from GitHub Actions with provenance
 D-207 audit ran formatting, lint, both type checks, the 257-file suite with all
 coverage layers, the TZ matrix, build verification, E2E, audit, licenses, the
 tarball allowlist, and the systemd scenarios green in the task worktree; the
-last green pushed `CI` run is **42458066716** (2026-11-08T07:15:48Z, push of
-`e358788`) covering the then-current job set. The workflow's current shape —
-including the two-runtime `install` matrix (D-203) and the `systemd` job
-(D-206) — is pinned by `test/unit/ci-workflow.spec.ts` and
-`test/unit/systemd-scenario.spec.ts`, which run inside every `test:ci`.
+first green pushed `CI` run carrying the complete current job set — including
+the two-runtime `install` matrix (D-203) and the `systemd` job (D-206) — is
+**42641831541** (2026-11-09, push of `16e616c`, all 25 jobs green), and
+**42652784987** (push of `163621c`, green after one rerun of a single
+load-flake matrix cell) repeats it.
 
-**Residual R2 — CI currency.** Run 42458066716 predates the two-runtime
-install matrix and the `systemd` job; `origin/master` is still `e358788`, so
-those jobs have never executed on a pushed run. They are wiring-verified (the
-guard specs fail `make check` on any drift) and were executed locally (the
-six-cell matrix; `make test-systemd`), but "tests pass in CI" for the current
-workflow requires a green pushed run that includes them. Owner: the next
-`master` push (the release checklist's CI-watch step, D-205, verifies it).
+**Residual R2 — CI currency — closed 2026-11-09.** The runs above are pushed
+green runs that include both previously-unexecuted jobs; the wiring guards
+(`test/unit/ci-workflow.spec.ts`, `test/unit/systemd-scenario.spec.ts`) keep
+the job set pinned inside every `test:ci`.
 
-**Residual R3 — the publication clause, pending by design.** "npm publication
-occurs from GitHub Actions with provenance" cannot have evidence yet: no
-release has been published. The first release `v0.1.0` is task 200's full-cycle
-rehearsal, deliberately not gated on §19 (D-186); the registry so far holds
-only the D-204 name-reservation stub (`0.0.0`) and its recorded `0.0.0-stage`
-staging artifact — neither a release. The
-release workflow, its `environment: npm` trusted-publishing configuration, and
-the provenance verification command are landed and pinned
-(`test/unit/release-workflow.spec.ts`, `docs/release.md`, D-204/D-205); the
-clause's §19-closing evidence is due at `1.0.0`. Owner: task 200, then the
-`1.0.0` milestone.
+**Residual R3 — the publication clause — closed 2026-11-09 by task 200's
+`v0.1.0` release cycle.** The release workflow published `v0.1.0` from the
+`v0.1.0` tag (run **42654771911**, green through the tag/version gate, the
+green-CI gate, the containerized test suite — see U-062/D-211 for the first
+attempt's environment failure and the re-pointed tag — the builds, and the
+tarball allowlist) with provenance verified live: `npm view quotameter@0.1.0 dist.attestations`
+prints the attestations object with the
+SLSA provenance predicate, `dist-tags.latest` moved off the D-204 `0.0.0`
+reservation stub, and the clean-container install on `node:22.13.0-slim`
+answers `0.1.0` through the registry-installed command. The publish also
+validated the pending trusted-publisher configuration inside its 48-hour
+window (D-204). The §19-closing milestone evidence remains due at `1.0.0`
+(D-186).
 
 **Scope note.** The daily mutation gate is not named by this criterion's
 words; its own post-repair live verification is recorded in D-207 as pending
 the next scheduled run.
 
-**Verdict — Pending (R2, R3). Not marked complete.**
+**Verdict — Complete.**
 
 ### 14. Z.ai source and payload contract documented; nothing guessed
 
@@ -410,23 +409,24 @@ their own rules, retaining the observed bodies as contract material.
 
 ## Residuals and owners
 
-| ID  | Essence                                                                                                                                                                                                               | Criteria touched        | Owner                                                                             | Closes when                                                                                     |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| R1  | ~~Envelope-encoded auth rejection on the collection path misclassifies as `parse_error`/`format-changed`~~ **closed 2026-11-09 by U-061 (D-210)** — the auth outcome end to end, the retained body a contract fixture | 3, 8                    | closed                                                                            | —                                                                                               |
-| R2  | The two-runtime `install` matrix and the `systemd` CI job have never executed on a pushed run (last green: 42458066716, 2026-11-08T07:15:48Z)                                                                         | 13 (CI clause)          | the next `master` push; verified by the release checklist's CI-watch step (D-205) | a green `CI` run on a pushed commit that includes both jobs                                     |
-| R3  | "npm publication occurs from GitHub Actions with provenance" — no release published yet                                                                                                                               | 13 (publication clause) | task 200 (`v0.1.0` rehearsal, D-186); §19-closing evidence at `1.0.0`             | the `1.0.0` release cycle: provenance-verified publication from `.github/workflows/release.yml` |
+| ID  | Essence                                                                                                                                                                                                                                                                 | Criteria touched        | Owner  | Closes when |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------ | ----------- |
+| R1  | ~~Envelope-encoded auth rejection on the collection path misclassifies as `parse_error`/`format-changed`~~ **closed 2026-11-09 by U-061 (D-210)** — the auth outcome end to end, the retained body a contract fixture                                                   | 3, 8                    | closed | —           |
+| R2  | ~~The two-runtime `install` matrix and the `systemd` CI job have never executed on a pushed run~~ **closed 2026-11-09** — green `CI` runs 42641831541 (push of `16e616c`) and 42652784987 (push of `163621c`) include both jobs                                         | 13 (CI clause)          | closed | —           |
+| R3  | ~~"npm publication occurs from GitHub Actions with provenance" — no release published yet~~ **closed 2026-11-09 by task 200's `v0.1.0` release cycle** — published from `.github/workflows/release.yml` (run 42654771911) with SLSA provenance verified on the registry | 13 (publication clause) | closed | —           |
 
 ## Re-verification at 1.0.0
 
 §19 closes at `1.0.0` (D-186: the milestone release that must satisfy every
 criterion). Before that release, re-verify this matrix:
 
-1. Replace R2's evidence with the named green `CI` run (including the
-   two-runtime `install` matrix and the `systemd` job) — the release
-   checklist's CI-watch step produces it.
-2. Replace R3's record with the actual publication evidence (the checklist's
-   post-release verification: `npm view quotameter@X.Y.Z dist.attestations`
-   printing the SLSA provenance).
+1. R2 closed 2026-11-09 — the green pushed `CI` runs 42641831541 and
+   42652784987 include the two-runtime `install` matrix and the `systemd`
+   job; at `1.0.0`, cite that release cycle's own green run.
+2. R3 closed 2026-11-09 — `v0.1.0` was published from the release workflow
+   with SLSA provenance (run 42654771911; the checklist's post-release
+   verification printed the attestations). At `1.0.0`, re-run the same
+   verification for that version.
 3. R1 closed 2026-11-09 by U-061 (D-210) — criteria 3 and 8 re-verified
    against its landed contract tests; nothing further owed for R1.
 4. Re-run the cheap local gates (`make check`) so the suite references above
