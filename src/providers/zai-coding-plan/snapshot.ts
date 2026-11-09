@@ -114,6 +114,16 @@ export class SnapshotParseError extends Error {
    */
   readonly envelopeMessage: string | undefined;
   /**
+   * The delivered envelope's `code` when it was present, numeric, and
+   * non-success (the resolved A3 fact: the live provider signals an
+   * invalid/expired key on the collection endpoint as HTTP 200 + an
+   * envelope `code` of 401 — see the dossier's "Real-account smoke —
+   * 2026-11-09" section). The adapter carries the contract fact only; the
+   * polling layer's classifier owns the §7.2 vocabulary decision (U-061,
+   * D-210). `undefined` for every other cause.
+   */
+  readonly envelopeCode: number | undefined;
+  /**
    * The delivered response's `Content-Type` header value as the caller
    * scrubbed it — the constructor carries, never scrubs (the same caller
    * contract `sanitizedPayload` documents): the Z.ai cycle runs the value
@@ -132,6 +142,7 @@ export class SnapshotParseError extends Error {
     sanitizedPayload: string,
     envelopeMessage?: string,
     contentType?: string,
+    envelopeCode?: number,
   ) {
     super(reason);
     this.name = new.target.name;
@@ -139,6 +150,7 @@ export class SnapshotParseError extends Error {
     this.httpStatus = httpStatus;
     this.sanitizedPayload = sanitizedPayload;
     this.envelopeMessage = envelopeMessage;
+    this.envelopeCode = envelopeCode;
     this.contentType = contentType;
   }
 }
@@ -200,13 +212,18 @@ export function parseQuotaLimitBody(
   // real media type verbatim; only an echoed secret is replaced.
   const sanitizedContentType =
     contentType === undefined ? undefined : sanitizeRawResponse(contentType, secrets);
-  const fail = (reason: string, envelopeMessage?: string): SnapshotParseError =>
+  const fail = (
+    reason: string,
+    envelopeMessage?: string,
+    envelopeCode?: number,
+  ): SnapshotParseError =>
     new SnapshotParseError(
       reason,
       httpStatus,
       sanitizeRawResponse(body, secrets),
       envelopeMessage,
       sanitizedContentType,
+      envelopeCode,
     );
 
   let parsed: unknown;
@@ -224,7 +241,18 @@ export function parseQuotaLimitBody(
       envelope.code !== undefined && isNonEmptyString(envelope.msg)
         ? sanitizeRawResponse(envelope.msg, secrets)
         : undefined;
-    throw fail('the response envelope code was not a success value', envelopeMessage);
+    // The success predicate tolerates string spellings ('0'/'200'), so the
+    // failure path normalizes the same way: a digit-string code carries its
+    // numeric value ({"code":"401"} is the same rejection as 401), anything
+    // else leaves the code unset and the parse classification applies.
+    const rawCode = envelope.code;
+    const envelopeCode =
+      typeof rawCode === 'number'
+        ? rawCode
+        : typeof rawCode === 'string' && /^\d+$/.test(rawCode.trim())
+          ? Number(rawCode.trim())
+          : undefined;
+    throw fail('the response envelope code was not a success value', envelopeMessage, envelopeCode);
   }
   const data = asRecord(envelope.data);
   if (data === undefined) {

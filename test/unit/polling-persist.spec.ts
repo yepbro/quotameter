@@ -638,6 +638,40 @@ describe('adapter parse failures', () => {
     expect(repo.runs).toHaveLength(0);
   });
 
+  it('degrades a bogus envelope hint to the plain parse path instead of failing (U-061/D-210)', async () => {
+    // The hint fields are lenient by design (classification hints, not
+    // §11.2 columns): every bogus shape below must classify as the ordinary
+    // parse failure with the static reason — never an auth outcome, never a
+    // hard settle error.
+    for (const hint of [
+      { envelopeCode: '401' },
+      { envelopeCode: NaN },
+      { envelopeCode: {} },
+      { envelopeMessage: '   ' },
+      { envelopeMessage: 42 },
+    ]) {
+      const bogus = Object.assign(
+        new Error('not really a parse failure'),
+        {
+          reason: 'looks like one',
+          sanitizedPayload: '{}',
+          httpStatus: 200,
+        },
+        hint,
+      );
+      const { recorder, repo } = harness(async () => {
+        throw bogus;
+      });
+      const result = await runCycleWithRetries(() =>
+        recorder.attempt(new AbortController().signal),
+      );
+      const settled = recorder.settleCycle(result);
+      expect(settled.outcome).toBe('parse_error');
+      expect(settled.errorMessage).toBe('looks like one');
+      expect(repo.runs).toHaveLength(1);
+    }
+  });
+
   it('falls through to fail-fast when the parse shape carries a bogus status', async () => {
     const bogus = Object.assign(new Error('not really a parse failure'), {
       reason: 'looks like one',

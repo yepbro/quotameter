@@ -360,8 +360,10 @@ no-record class); an error outside both taxonomies throws, contained per
 transport evidence — the delivered 2xx of the exchange that produced it —
 as §11.2's `http_status`, through the same classification the failure
 statuses ride. The adapter parse failure is recognized structurally
-(`reason`/`sanitizedPayload`/`httpStatus`/`contentType` — the layout forbids
-importing the adapter island), its observed `Content-Type` rides the §7.4
+(`reason`/`sanitizedPayload`/`httpStatus`/`contentType`, plus the
+envelope-encoded rejection facts `envelopeCode`/`envelopeMessage` whose
+401/403 arm classifies as auth — U-061/D-210; the layout forbids importing
+the adapter island), its observed `Content-Type` rides the §7.4
 payload as §11.2's raw-response "content type",
 `retry_after_seconds` is `deferNextPoll`'s decision at the settle
 reading (D-062: seconds only for a deferred 429, `NULL` otherwise),

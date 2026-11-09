@@ -188,7 +188,10 @@ task-099 specifics decision D-053.
   `contentType` carries the delivered `Content-Type` the same way —
   §7.4-scrubbed by the caller before construction, the wire for §11.2's
   raw-response "content type" column (U-035/D-169) — and
-  `envelopeMessage` retains a non-success envelope's `msg`, sanitized (A2).
+  `envelopeMessage` retains a non-success envelope's `msg`, sanitized (A2),
+  and `envelopeCode` carries that envelope's numeric non-success `code`
+  (digit-strings normalized) — the resolved-A3 fact the classifier reads as
+  auth for 401/403 (U-061/D-210).
   Every endpoints-2/3 failure — transport, parse violation, or a caller
   abort mid-cycle — is soft: logged through the injected logger and
   degraded, never cycle-fatal (D-047: metric values originate only on

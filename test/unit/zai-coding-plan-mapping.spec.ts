@@ -110,6 +110,32 @@ describe('parseQuotaLimitBody — envelope and container strictness', () => {
     expect(error.sanitizedPayload).toContain('Synthetic diagnostic text');
   });
 
+  it('carries the envelope code and diagnostic of an envelope-encoded auth rejection (A3, U-061)', () => {
+    // The retained live probe body (D-208): the collection endpoint answers
+    // a bad key with HTTP 200 + this envelope. The adapter carries the two
+    // contract facts; the classifier owns the §7.2 decision.
+    const error = parseErrorOf(quotaFixture('zai-envelope-auth-rejection.json'));
+    expect(error.reason).toBe('the response envelope code was not a success value');
+    expect(error.envelopeCode).toBe(401);
+    expect(error.envelopeMessage).toBe('token expired or incorrect');
+    expect(error.httpStatus).toBe(200);
+  });
+
+  it('normalizes a digit-string envelope code to its number (A3, U-061)', () => {
+    // The success predicate already tolerates '0'/'200' spellings; the
+    // rejection path must not classify {"code":"401"} differently from 401.
+    const error = parseErrorOf('{"code":"401","msg":"token expired or incorrect","success":false}');
+    expect(error.envelopeCode).toBe(401);
+    expect(error.envelopeMessage).toBe('token expired or incorrect');
+    const nonNumeric = parseErrorOf('{"code":"unauthorized","success":false}');
+    expect(nonNumeric.envelopeCode).toBeUndefined();
+  });
+
+  it('carries a non-auth non-success envelope code unchanged (A2 stays parse)', () => {
+    const error = parseErrorOf(quotaFixture('zai-envelope-error.json'));
+    expect(error.envelopeCode).toBe(40001);
+  });
+
   it('rejects a missing code without inventing a diagnostic from the leftover msg', () => {
     const error = parseErrorOf(quotaFixture('zai-envelope-malformed.json'));
     expect(error.reason).toBe('the response envelope code was not a success value');

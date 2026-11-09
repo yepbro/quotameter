@@ -52,26 +52,27 @@ first pushed-run execution is therefore still pending (residual R2).
 
 ## Summary
 
-| #   | Criterion (abbreviated)                                                                       | Verdict                | Primary evidence anchor                                                |
-| --- | --------------------------------------------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------- |
-| 1   | Installs and runs on supported Linux/systemd targets, Node ≥ 22.13.0, clean containers        | Complete               | D-203 six-cell matrix; D-206 scenarios; D-196                          |
-| 2   | `init` requires IANA tz; system unit, user unit, or exact manual instructions                 | Complete               | CLI suites; D-206; `docs/examples/`                                    |
-| 3   | Accounts added via CLI or UI and tested independently                                         | Complete with residual | smoke scenario 1; credential-check probe; UI E2E — residual R1 (U-061) |
-| 4   | 5-min default interval; runtime changes; immediate post-startup collection                    | Complete               | schema default 300; reload suites; smoke scenarios 2/3/5               |
-| 5   | SQLite via `node:sqlite`; migrations with pre-migration backups                               | Complete               | migration suites; smoke scenario 4                                     |
-| 6   | Light/dark/system themes; current values; 24 h–30 d charts; disabled out-of-retention ranges  | Complete               | E2E `themes`, `history-ranges`; component suites                       |
-| 7   | Reset/gap/error/peak markers with correct TZ/DST                                              | Complete               | E2E `chart-markers`; peak-hours suites; TZ matrix                      |
-| 8   | API failures preserve last valid values, visible; parse failures retain sanitized diagnostics | Complete with residual | smoke scenario 7; §7.2–§7.4 suites — residual R1 (U-061)               |
-| 9   | No browser needed; restarts after failure and reboot                                          | Complete               | D-206 crash-restart and reboot phases; smoke environment               |
-| 10  | Password for remote; loopback `auto` passwordless; CSRF/Origin and Host guards in all modes   | Complete               | security suite family; smoke ran in `auto` loopback                    |
-| 11  | Keys never leak to assets/logs/API/errors/diagnostics; config permissions enforced            | Complete               | sanitize/secrets suites; smoke scenario 8                              |
-| 12  | All artifacts English; every §18 deliverable present                                          | Complete               | §18 inventory below; `test/component/i18n-catalog.spec.ts`             |
-| 13  | Gates pass in CI; publication from GitHub Actions with provenance                             | **Pending**            | last green run 42458066716; wiring guards — residuals R2, R3           |
-| 14  | Z.ai source and payload contract documented with links/fixtures; nothing guessed              | Complete               | D-199 dossier + drift guard; D-208 live confirmation                   |
+| #   | Criterion (abbreviated)                                                                       | Verdict     | Primary evidence anchor                                                      |
+| --- | --------------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------- |
+| 1   | Installs and runs on supported Linux/systemd targets, Node ≥ 22.13.0, clean containers        | Complete    | D-203 six-cell matrix; D-206 scenarios; D-196                                |
+| 2   | `init` requires IANA tz; system unit, user unit, or exact manual instructions                 | Complete    | CLI suites; D-206; `docs/examples/`                                          |
+| 3   | Accounts added via CLI or UI and tested independently                                         | Complete    | smoke scenario 1; credential-check probe; UI E2E; R1 closed by U-061 (D-210) |
+| 4   | 5-min default interval; runtime changes; immediate post-startup collection                    | Complete    | schema default 300; reload suites; smoke scenarios 2/3/5                     |
+| 5   | SQLite via `node:sqlite`; migrations with pre-migration backups                               | Complete    | migration suites; smoke scenario 4                                           |
+| 6   | Light/dark/system themes; current values; 24 h–30 d charts; disabled out-of-retention ranges  | Complete    | E2E `themes`, `history-ranges`; component suites                             |
+| 7   | Reset/gap/error/peak markers with correct TZ/DST                                              | Complete    | E2E `chart-markers`; peak-hours suites; TZ matrix                            |
+| 8   | API failures preserve last valid values, visible; parse failures retain sanitized diagnostics | Complete    | smoke scenario 7; §7.2–§7.4 suites; R1 closed by U-061 (D-210)               |
+| 9   | No browser needed; restarts after failure and reboot                                          | Complete    | D-206 crash-restart and reboot phases; smoke environment                     |
+| 10  | Password for remote; loopback `auto` passwordless; CSRF/Origin and Host guards in all modes   | Complete    | security suite family; smoke ran in `auto` loopback                          |
+| 11  | Keys never leak to assets/logs/API/errors/diagnostics; config permissions enforced            | Complete    | sanitize/secrets suites; smoke scenario 8                                    |
+| 12  | All artifacts English; every §18 deliverable present                                          | Complete    | §18 inventory below; `test/component/i18n-catalog.spec.ts`                   |
+| 13  | Gates pass in CI; publication from GitHub Actions with provenance                             | **Pending** | last green run 42458066716; wiring guards — residuals R2, R3                 |
+| 14  | Z.ai source and payload contract documented with links/fixtures; nothing guessed              | Complete    | D-199 dossier + drift guard; D-208 live confirmation                         |
 
-Thirteen of fourteen criteria are met by their own words (eleven clean, two —
-3 and 8 — with the U-061 residual named). Criterion 13 is pending on two
-named residuals. No criterion is marked complete without evidence.
+Thirteen of fourteen criteria are met by their own words — thirteen clean
+after U-061 (D-210) closed residual R1 on criteria 3 and 8. Criterion 13 is
+pending on two named residuals (R2, R3). No criterion is marked complete
+without evidence.
 
 ## Criterion-by-criterion verification
 
@@ -138,15 +139,16 @@ probed live (D-208): a bogus key gets a genuine HTTP 401 and classifies
 correctly (`credentials-rejected`) — the connection test the criterion names is
 observation-backed correct.
 
-**Residual R1 (U-061), recorded not papered over:** the smoke also observed
-that the **collection** endpoint answers a bad key with HTTP 200 +
-`{"code":401,...}` and the adapter misclassifies that envelope as
+**Residual R1 — closed by U-061 (D-210), history kept:** the smoke also
+observed that the **collection** endpoint answers a bad key with HTTP 200 +
+`{"code":401,...}`, and the adapter then misclassified that envelope as
 `parse_error`/`format-changed` (bypassing the D-064 suspension machinery on
-that path). That defect sits on the collection path, not on the add/test path
-this criterion's words describe; it is filed as U-061 with the retained body as
-contract material and is also recorded under criterion 8.
+that path). That defect sat on the collection path, not on the add/test path
+this criterion's words describe; U-061 landed the auth classification end to
+end with the retained body as a contract fixture, and the same live-shape
+coverage now pins it (also under criterion 8).
 
-**Verdict — Complete with residual (R1/U-061).**
+**Verdict — Complete (residual R1 closed by U-061, D-210: the envelope-encoded rejection now classifies as the §7.2 auth outcome end to end, with the provider's sanitized reason in `lastError`).**
 
 ### 4. Five-minute default interval; runtime changes; immediate startup collection
 
@@ -242,15 +244,19 @@ through the API the UI renders, and the provider's diagnostic message was
 retained sanitized (readable through `quotameter doctor --raw`). The
 criterion's own two sentences held in the live run.
 
-**Residual R1 (U-061), stated honestly:** the same live run exposed that the
-collection path's envelope-encoded rejection is classified as a parse/format
-failure rather than an auth failure — so the error is **visible and the
-diagnostics retained** (this criterion's words), but under the wrong label
-until U-061 lands (auth episodes, suspension machinery, the §7.3 auth status).
-The taxonomy fix belongs to U-061; this criterion's preservation/visibility/
-retention demands are met today.
+**Residual R1 — closed by U-061 (D-210), history kept:** the same live run
+exposed that the collection path's envelope-encoded rejection classified as a
+parse/format failure rather than an auth failure — visible and diagnosed
+(this criterion's words), but under the wrong label. U-061 landed the
+taxonomy fix: the envelope 401/403 now classifies as `auth_error` end to end
+(auth episodes, suspension machinery, the §7.3 auth status), and the
+provider's reason surfaces in `lastError`; §7.4 raw-response retention
+remains parse-scoped per spec. The pre-fix observation that the delivered
+envelope was readable through `quotameter doctor --raw` described the
+then-misclassified (parse) cycle — the auth-classified cycle's diagnostic
+surface is `lastError`.
 
-**Verdict — Complete with residual (R1/U-061).**
+**Verdict — Complete (residual R1 closed by U-061, D-210: the envelope-encoded rejection now classifies as the §7.2 auth outcome end to end, with the provider's sanitized reason in `lastError`).**
 
 ### 9. No browser needed; restarts after failure and reboot
 
@@ -404,11 +410,11 @@ their own rules, retaining the observed bodies as contract material.
 
 ## Residuals and owners
 
-| ID  | Essence                                                                                                                                       | Criteria touched                                        | Owner                                                                             | Closes when                                                                                     |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| R1  | Envelope-encoded auth rejection on the collection path misclassifies as `parse_error`/`format-changed` (U-061)                                | 3, 8 (adjacent fidelity; both criteria's own words met) | U-061                                                                             | U-061's done-condition: the §7.2 auth outcome end to end, contract tests over the retained body |
-| R2  | The two-runtime `install` matrix and the `systemd` CI job have never executed on a pushed run (last green: 42458066716, 2026-11-08T07:15:48Z) | 13 (CI clause)                                          | the next `master` push; verified by the release checklist's CI-watch step (D-205) | a green `CI` run on a pushed commit that includes both jobs                                     |
-| R3  | "npm publication occurs from GitHub Actions with provenance" — no release published yet                                                       | 13 (publication clause)                                 | task 200 (`v0.1.0` rehearsal, D-186); §19-closing evidence at `1.0.0`             | the `1.0.0` release cycle: provenance-verified publication from `.github/workflows/release.yml` |
+| ID  | Essence                                                                                                                                                                                                               | Criteria touched        | Owner                                                                             | Closes when                                                                                     |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| R1  | ~~Envelope-encoded auth rejection on the collection path misclassifies as `parse_error`/`format-changed`~~ **closed 2026-11-09 by U-061 (D-210)** — the auth outcome end to end, the retained body a contract fixture | 3, 8                    | closed                                                                            | —                                                                                               |
+| R2  | The two-runtime `install` matrix and the `systemd` CI job have never executed on a pushed run (last green: 42458066716, 2026-11-08T07:15:48Z)                                                                         | 13 (CI clause)          | the next `master` push; verified by the release checklist's CI-watch step (D-205) | a green `CI` run on a pushed commit that includes both jobs                                     |
+| R3  | "npm publication occurs from GitHub Actions with provenance" — no release published yet                                                                                                                               | 13 (publication clause) | task 200 (`v0.1.0` rehearsal, D-186); §19-closing evidence at `1.0.0`             | the `1.0.0` release cycle: provenance-verified publication from `.github/workflows/release.yml` |
 
 ## Re-verification at 1.0.0
 
@@ -421,8 +427,8 @@ criterion). Before that release, re-verify this matrix:
 2. Replace R3's record with the actual publication evidence (the checklist's
    post-release verification: `npm view quotameter@X.Y.Z dist.attestations`
    printing the SLSA provenance).
-3. Record U-061's disposition (landed fix or explicit deferral) against
-   criteria 3 and 8.
+3. R1 closed 2026-11-09 by U-061 (D-210) — criteria 3 and 8 re-verified
+   against its landed contract tests; nothing further owed for R1.
 4. Re-run the cheap local gates (`make check`) so the suite references above
    are fresh, and update this page's verification date.
 

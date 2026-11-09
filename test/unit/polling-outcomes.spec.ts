@@ -277,6 +277,70 @@ describe('classifyParseFailure (spec §7.2 Format changed)', () => {
     );
   });
 
+  it('classifies an envelope-encoded 401/403 as the §7.2 auth outcome (A3 resolved, U-061/D-210)', () => {
+    // The live provider rejects a bad key on the collection endpoint as
+    // HTTP 200 + an envelope code — the same two codes carry the same auth
+    // outcome as on the wire, with the provider's sanitized msg naming the
+    // reason in the error message.
+    const failure: ParseFailureInput = {
+      httpStatus: 200,
+      reason: 'the response envelope code was not a success value',
+      envelopeCode: 401,
+      envelopeMessage: 'token expired or incorrect',
+    };
+    expect(classifyParseFailure(failure)).toEqual({
+      outcome: 'auth_error',
+      httpStatus: 200,
+      retryAfterRaw: undefined,
+      retryAfterEligible: false,
+      retryable: false,
+      statusContribution: 'auth-rejected',
+      errorMessage: 'token expired or incorrect',
+    });
+    expect(classifyParseFailure({ ...failure, envelopeCode: 403 })).toMatchObject({
+      outcome: 'auth_error',
+      errorMessage: 'token expired or incorrect',
+    });
+  });
+
+  it('falls back to the static reason when the auth envelope carried no msg', () => {
+    expect(
+      classifyParseFailure({
+        httpStatus: 200,
+        reason: 'the response envelope code was not a success value',
+        envelopeCode: 401,
+      }),
+    ).toMatchObject({
+      outcome: 'auth_error',
+      errorMessage: 'the response envelope code was not a success value',
+    });
+  });
+
+  it('keeps every other non-success envelope code at parse_error (A2 confirmed)', () => {
+    expect(
+      classifyParseFailure({
+        httpStatus: 200,
+        reason: 'the response envelope code was not a success value',
+        envelopeCode: 40001,
+        envelopeMessage: 'Synthetic diagnostic text for the envelope-failure fixture',
+      }),
+    ).toMatchObject({
+      outcome: 'parse_error',
+      statusContribution: 'format-changed',
+      errorMessage: 'the response envelope code was not a success value',
+    });
+  });
+
+  it('rejects a present-but-blank envelopeMessage (fail-fast wiring check)', () => {
+    expect(() =>
+      classifyParseFailure({
+        reason: 'the response envelope code was not a success value',
+        envelopeCode: 401,
+        envelopeMessage: '  ',
+      }),
+    ).toThrow(TypeError);
+  });
+
   it('rejects a blank reason (fail-fast wiring check)', () => {
     expect(() => classifyParseFailure({ reason: '' })).toThrow(TypeError);
     expect(() => classifyParseFailure({ reason: '   ' })).toThrow(

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { createAccountContext } from '../../src/providers/registry';
@@ -9,6 +10,16 @@ import {
   TransportTimeoutError,
 } from '../../src/providers/transport';
 import { SnapshotParseError } from '../../src/providers/zai-coding-plan/snapshot';
+
+/** The retained live bad-key probe (D-208) — the U-061/D-210 contract fixture. */
+const ENVELOPE_AUTH_REJECTION_BODY = JSON.stringify(
+  JSON.parse(
+    readFileSync(
+      new URL('../fixtures/synthetic/zai-envelope-auth-rejection.json', import.meta.url),
+      'utf8',
+    ),
+  ),
+) as string;
 import type { NormalizedMetric, ProviderSnapshot } from '../../src/schemas/metrics';
 import { createCycleRecorder, type CycleRecorder } from '../../src/services/polling-persist';
 import type { CycleOutcome } from '../../src/services/polling-outcomes';
@@ -234,6 +245,48 @@ describe('a failed cycle writes exactly one run row and no snapshot', () => {
       expect(repository.getLatestSnapshot('work')).toBeNull();
       expect(repository.getMetricSeries('work', 'five-hour-credits')).toHaveLength(0);
       expect(repository.listQuotaEvents('work')).toHaveLength(0);
+    });
+  });
+
+  it('classifies an envelope-encoded auth rejection as auth_error with the provider reason (U-061/D-210)', async () => {
+    // The retained live probe (D-208): the collection endpoint answers a
+    // bad key with HTTP 200 + {"code":401,...}. The adapter carries the
+    // facts; the classifier gives the §7.2 auth outcome with the sanitized
+    // msg as the run's error message, the honest 200 as its status.
+    await withRepository(async (repository, clock) => {
+      const recorder = recorderFor(repository, clock, async () => {
+        throw new SnapshotParseError(
+          'the response envelope code was not a success value',
+          200,
+          ENVELOPE_AUTH_REJECTION_BODY,
+          'token expired or incorrect',
+          undefined,
+          401,
+        );
+      });
+      const classified = await runCycle(recorder, clock);
+      expect(classified).toMatchObject({
+        outcome: 'auth_error',
+        httpStatus: 200,
+        errorMessage: 'token expired or incorrect',
+        retryable: false,
+        statusContribution: 'auth-rejected',
+      });
+      const runs = repository.listCollectionRuns('work');
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        outcome: 'auth_error',
+        attempts: 1,
+        httpStatus: 200,
+        errorMessage: 'token expired or incorrect',
+      });
+      expect(repository.listSnapshots('work')).toHaveLength(0);
+      // §7.4 retains a payload "only when parsing/schema validation fails" —
+      // this cycle is auth-classified, so the diagnostic surface is the run's
+      // errorMessage (the sanitized envelope msg, asserted above), and the
+      // retention stays parse-scoped exactly as the spec draws the line.
+      expect(repository.getRawResponseByRun(runs[0]!.id)).toBeNull();
+      expect(repository.listRawResponses('work')).toHaveLength(0);
     });
   });
 

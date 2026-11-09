@@ -25,35 +25,36 @@ Hand-written payloads that never came from a real account. Prefer synthetic fixt
 
 ## Index
 
-| File                                                  | Kind      | Purpose                                                                                                                                    |
-| ----------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `synthetic/provider-usage-sample.json`                | synthetic | Well-formed usage snapshot example used by parsing tests.                                                                                  |
-| `synthetic/provider-usage-empty.json`                 | synthetic | Provider success response with no quota data.                                                                                              |
-| `sanitized/zai-quota-limit.json`                      | sanitized | Live capture 2026-10-30, redacted: `GET /api/monitor/usage/quota/limit` (limits + plan level).                                             |
-| `sanitized/zai-subscription-list.json`                | sanitized | Live capture 2026-10-30, redacted: `GET /api/biz/subscription/list` (three subscription records).                                          |
-| `sanitized/zai-customer-package-reset-list.json`      | sanitized | Live capture 2026-10-30, redacted: `GET /api/biz/customer-package-reset/list?targetType=PERSONAL`.                                         |
-| `synthetic/zai-quota-limit-empty-limits.json`         | synthetic | Envelope-valid quota response with an empty `limits` array — no metrics to normalize.                                                      |
-| `synthetic/zai-quota-limit-unknown-type.json`         | synthetic | Quota response whose only limit entry carries an unrecognized `type` — unknown-shape handling.                                             |
-| `synthetic/zai-envelope-malformed.json`               | synthetic | Response violating the verified envelope (missing `code`/`data`) — envelope-validation failure.                                            |
-| `synthetic/zai-envelope-code-string.json`             | synthetic | Success envelope with `code: "200"` (string spelling) — prototype tolerance variant.                                                       |
-| `synthetic/zai-envelope-code-zero.json`               | synthetic | Success envelope with `code: 0` — the other accepted success value.                                                                        |
-| `synthetic/zai-envelope-error.json`                   | synthetic | Failure envelope (non-success `code`, `msg` only, no `data`) — assumption-shape A2.                                                        |
-| `synthetic/zai-quota-limit-weekly.json`               | synthetic | Response with a weekly `unit 6` entry (absolute values) beside the tokens entry — assumption-shapes A1 + A5.                               |
-| `synthetic/zai-quota-limit-tokens-absolute.json`      | synthetic | `TOKENS_LIMIT` entry carrying absolute values and no `percentage`/reset — assumption-shape A5.                                             |
-| `synthetic/zai-quota-limit-partial.json`              | synthetic | Response with only the monthly entry — partial limits payload.                                                                             |
-| `synthetic/zai-quota-limit-different-plan.json`       | synthetic | Same shapes under `level: "lite"` — different-plan variant.                                                                                |
-| `synthetic/zai-quota-limit-different-unit.json`       | synthetic | Known `type`, unseen `unit` (2) — unrecognized pair, skipped and logged.                                                                   |
-| `synthetic/zai-quota-limit-duplicate-keys.json`       | synthetic | Two `unit 6` spellings plus a repeated pair — first-wins key-collision handling.                                                           |
-| `synthetic/zai-quota-limit-invalid-entries.json`      | synthetic | Three recognized entries with unusable values — invalid metrics, never zero.                                                               |
-| `synthetic/zai-quota-limit-reset-time-string.json`    | synthetic | Valid entry with a string `nextResetTime` — metadata defect, `resetsAt` omitted.                                                           |
-| `synthetic/zai-quota-limit-renamed-fields.json`       | synthetic | Recognized entries whose value fields were renamed — changed-schema variant.                                                               |
-| `synthetic/zai-quota-limit-extra-fields.json`         | synthetic | Verified shape plus extra unknown fields at every level — must parse unchanged.                                                            |
-| `synthetic/zai-quota-limit-data-not-object.json`      | synthetic | `data` as an array where endpoints 1/3 expect an object — wrong-typed container.                                                           |
-| `synthetic/zai-quota-limit-limits-not-array.json`     | synthetic | `limits` reshaped into an object — wrong-typed container.                                                                                  |
-| `synthetic/zai-subscription-list-divergent.json`      | synthetic | Records where first-`VALID` and `inCurrentPeriod` rules diverge; distinct `productName`s make the winner observable — assumption-shape A9. |
-| `synthetic/zai-subscription-list-data-not-array.json` | synthetic | `data` as an object where endpoint 2 expects an array — wrong-typed container.                                                             |
-| `synthetic/zai-customer-package-reset-cards.json`     | synthetic | Non-empty reset-card arrays and both `last*ResetTime` fields set — assumption-shape A4.                                                    |
-| `synthetic/zai-models.json`                           | synthetic | Invented body for `GET /api/coding/paas/v4/models` — status-based check only, never parsed.                                                |
+| File                                                  | Kind      | Purpose                                                                                                                                                   |
+| ----------------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `synthetic/provider-usage-sample.json`                | synthetic | Well-formed usage snapshot example used by parsing tests.                                                                                                 |
+| `synthetic/provider-usage-empty.json`                 | synthetic | Provider success response with no quota data.                                                                                                             |
+| `sanitized/zai-quota-limit.json`                      | sanitized | Live capture 2026-10-30, redacted: `GET /api/monitor/usage/quota/limit` (limits + plan level).                                                            |
+| `sanitized/zai-subscription-list.json`                | sanitized | Live capture 2026-10-30, redacted: `GET /api/biz/subscription/list` (three subscription records).                                                         |
+| `sanitized/zai-customer-package-reset-list.json`      | sanitized | Live capture 2026-10-30, redacted: `GET /api/biz/customer-package-reset/list?targetType=PERSONAL`.                                                        |
+| `synthetic/zai-quota-limit-empty-limits.json`         | synthetic | Envelope-valid quota response with an empty `limits` array — no metrics to normalize.                                                                     |
+| `synthetic/zai-quota-limit-unknown-type.json`         | synthetic | Quota response whose only limit entry carries an unrecognized `type` — unknown-shape handling.                                                            |
+| `synthetic/zai-envelope-malformed.json`               | synthetic | Response violating the verified envelope (missing `code`/`data`) — envelope-validation failure.                                                           |
+| `synthetic/zai-envelope-code-string.json`             | synthetic | Success envelope with `code: "200"` (string spelling) — prototype tolerance variant.                                                                      |
+| `synthetic/zai-envelope-code-zero.json`               | synthetic | Success envelope with `code: 0` — the other accepted success value.                                                                                       |
+| `synthetic/zai-envelope-error.json`                   | synthetic | Failure envelope (non-success `code`, `msg` only, no `data`) — assumption-shape A2.                                                                       |
+| `synthetic/zai-envelope-auth-rejection.json`          | synthetic | Envelope-encoded auth rejection (`code` 401 + provider reason), verbatim from the retained live bad-key probe (D-208) — the U-061/D-210 contract fixture. |
+| `synthetic/zai-quota-limit-weekly.json`               | synthetic | Response with a weekly `unit 6` entry (absolute values) beside the tokens entry — assumption-shapes A1 + A5.                                              |
+| `synthetic/zai-quota-limit-tokens-absolute.json`      | synthetic | `TOKENS_LIMIT` entry carrying absolute values and no `percentage`/reset — assumption-shape A5.                                                            |
+| `synthetic/zai-quota-limit-partial.json`              | synthetic | Response with only the monthly entry — partial limits payload.                                                                                            |
+| `synthetic/zai-quota-limit-different-plan.json`       | synthetic | Same shapes under `level: "lite"` — different-plan variant.                                                                                               |
+| `synthetic/zai-quota-limit-different-unit.json`       | synthetic | Known `type`, unseen `unit` (2) — unrecognized pair, skipped and logged.                                                                                  |
+| `synthetic/zai-quota-limit-duplicate-keys.json`       | synthetic | Two `unit 6` spellings plus a repeated pair — first-wins key-collision handling.                                                                          |
+| `synthetic/zai-quota-limit-invalid-entries.json`      | synthetic | Three recognized entries with unusable values — invalid metrics, never zero.                                                                              |
+| `synthetic/zai-quota-limit-reset-time-string.json`    | synthetic | Valid entry with a string `nextResetTime` — metadata defect, `resetsAt` omitted.                                                                          |
+| `synthetic/zai-quota-limit-renamed-fields.json`       | synthetic | Recognized entries whose value fields were renamed — changed-schema variant.                                                                              |
+| `synthetic/zai-quota-limit-extra-fields.json`         | synthetic | Verified shape plus extra unknown fields at every level — must parse unchanged.                                                                           |
+| `synthetic/zai-quota-limit-data-not-object.json`      | synthetic | `data` as an array where endpoints 1/3 expect an object — wrong-typed container.                                                                          |
+| `synthetic/zai-quota-limit-limits-not-array.json`     | synthetic | `limits` reshaped into an object — wrong-typed container.                                                                                                 |
+| `synthetic/zai-subscription-list-divergent.json`      | synthetic | Records where first-`VALID` and `inCurrentPeriod` rules diverge; distinct `productName`s make the winner observable — assumption-shape A9.                |
+| `synthetic/zai-subscription-list-data-not-array.json` | synthetic | `data` as an object where endpoint 2 expects an array — wrong-typed container.                                                                            |
+| `synthetic/zai-customer-package-reset-cards.json`     | synthetic | Non-empty reset-card arrays and both `last*ResetTime` fields set — assumption-shape A4.                                                                   |
+| `synthetic/zai-models.json`                           | synthetic | Invented body for `GET /api/coding/paas/v4/models` — status-based check only, never parsed.                                                               |
 
 ## Sanitized provenance — the `zai-*.json` set
 

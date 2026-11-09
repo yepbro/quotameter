@@ -73,6 +73,11 @@ const fixture = (name: string): string =>
   readFileSync(new URL(`../fixtures/${name}`, import.meta.url), 'utf8');
 
 const SANITIZED_QUOTA = fixture('sanitized/zai-quota-limit.json');
+
+/** The retained live bad-key probe (D-208), read from the contract fixture:
+ * the collection endpoint answers HTTP 200 + an envelope-encoded 401 — the
+ * resolved-A3 shape U-061 handles. */
+const ENVELOPE_AUTH_REJECTION = fixture('synthetic/zai-envelope-auth-rejection.json').trim();
 const SANITIZED_SUBSCRIPTION = fixture('sanitized/zai-subscription-list.json');
 const SANITIZED_RESET = fixture('sanitized/zai-customer-package-reset-list.json');
 
@@ -507,6 +512,57 @@ describe('the composed polling engine (U-051, D-176)', () => {
         },
         (mock) => {
           mock.setPathBehavior(QUOTA_PATH, { kind: 'respond', status: 401, body: '{}' });
+        },
+      );
+    },
+  );
+
+  it(
+    'suspends after an envelope-encoded auth rejection with the provider reason (A3 resolved, U-061/§7.2)',
+    { timeout: 60_000 },
+    async () => {
+      await withPolledApp(
+        polledConfig,
+        async (world) => {
+          const runs = await waitRuns(world, 'poll-me', 1, 15_000);
+          // The envelope-encoded 401 rides the same §7.2 machinery as the
+          // wire-level one: auth outcome, the honest delivered 200 retained,
+          // and the provider's sanitized reason as the run's message.
+          expect(runs[0]).toMatchObject({
+            outcome: 'auth_error',
+            httpStatus: 200,
+            errorMessage: 'token expired or incorrect',
+          });
+          expect(await statusOf(world, 'poll-me')).toBe('auth-rejected');
+          // The user-facing surface: /api/status's lastError carries the
+          // provider's sanitized reason, not the static parse sentence.
+          const statusBody = await world.inject('GET', '/api/status');
+          const authRow = (
+            statusBody.json() as {
+              accounts: { id: string; lastError: { message: string } | null }[];
+            }
+          ).accounts.find((account) => account.id === 'poll-me');
+          expect(authRow?.lastError?.message).toBe('token expired or incorrect');
+          // The manual test lifts the pause exactly as for the polled 401.
+          world.routeHealthy();
+          world.mock.setPathBehavior(CREDENTIALS_PATH, {
+            kind: 'respond',
+            status: 200,
+            body: '{"data":[]}',
+          });
+          const test = await world.inject('POST', '/api/accounts/poll-me/test');
+          expect(test.statusCode).toBe(200);
+          const recovered = await waitRuns(world, 'poll-me', 2, 20_000);
+          expect(recovered[1]!.outcome).toBe('success');
+          expect(await statusOf(world, 'poll-me')).toBe('fresh');
+          expectMarkersAbsent(world, [test.body, ENVELOPE_AUTH_REJECTION]);
+        },
+        (mock) => {
+          mock.setPathBehavior(QUOTA_PATH, {
+            kind: 'respond',
+            status: 200,
+            body: ENVELOPE_AUTH_REJECTION,
+          });
         },
       );
     },

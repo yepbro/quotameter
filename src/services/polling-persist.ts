@@ -223,6 +223,14 @@ interface AdapterParseFailure {
   /** §11.2's raw-response "content type" (D-051/D-169); `null` = absent. */
   readonly contentType: string | null;
   readonly sanitizedPayload: string;
+  /**
+   * The envelope-encoded rejection facts the classifier consumes (the
+   * resolved A3 path, U-061/D-210): the envelope's numeric non-success
+   * `code` and its sanitized diagnostic `msg`, when the adapter carried
+   * them; `undefined` for every other parse cause.
+   */
+  readonly envelopeCode: number | undefined;
+  readonly envelopeMessage: string | undefined;
 }
 
 /**
@@ -261,11 +269,27 @@ function adapterParseFailure(error: unknown): AdapterParseFailure | undefined {
   if (typeof contentType !== 'string' && contentType !== undefined) return undefined;
   const typeOrNull =
     typeof contentType === 'string' && contentType.trim() !== '' ? contentType : null;
+  const { envelopeCode, envelopeMessage } = error as unknown as Record<string, unknown>;
+  // Deliberately LENIENT where the fields above are fail-fast: a bogus
+  // `envelopeCode`/`envelopeMessage` reads as absent rather than turning a
+  // legitimate parse failure into a hard settle error — these two are
+  // classification hints, not §11.2 columns, so a corrupt hint must degrade
+  // to the static parse path (pinned by the bogus-hint cells in the unit
+  // suite), while the classifier itself still fail-fasts on a present-but-
+  // blank message arriving through a well-typed seam.
+  const codeOrNull =
+    typeof envelopeCode === 'number' && Number.isInteger(envelopeCode) ? envelopeCode : undefined;
+  const messageOrNull =
+    typeof envelopeMessage === 'string' && envelopeMessage.trim() !== ''
+      ? envelopeMessage
+      : undefined;
   return {
     reason,
     httpStatus: httpStatus as number | undefined,
     contentType: typeOrNull,
     sanitizedPayload,
+    envelopeCode: codeOrNull,
+    envelopeMessage: messageOrNull,
   };
 }
 
@@ -477,6 +501,8 @@ export function createCycleRecorder(options: CycleRecorderOptions): CycleRecorde
       const classified = classifyParseFailure({
         httpStatus: parseFailure.httpStatus,
         reason: parseFailure.reason,
+        envelopeCode: parseFailure.envelopeCode,
+        envelopeMessage: parseFailure.envelopeMessage,
       });
       const rawResponse: CycleRawResponseInput = {
         capturedAt: endedAt,

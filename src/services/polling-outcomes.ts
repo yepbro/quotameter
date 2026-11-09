@@ -27,7 +27,9 @@
  *   response arrived, `undefined` otherwise.
  * - `errorMessage` — §11.2's sanitized `error_message`: transport errors are
  *   static-English-and-scrubbed by construction (D-042), adapter reasons are
- *   the adapter's static English; `undefined` on a clean success.
+ *   the adapter's static English — except the envelope-encoded auth arm
+ *   (U-061/D-210), whose message is the envelope's sanitized provider `msg`;
+ *   `undefined` on a clean success.
  *
  * A caller abort (task 104's `aborted` kind) is service lifecycle, not a
  * provider failure: it classifies as the pseudo-outcome `'cancelled'` —
@@ -196,6 +198,23 @@ export interface ParseFailureInput {
   readonly httpStatus?: number;
   /** Non-blank static English describing what failed. */
   readonly reason: string;
+  /**
+   * The delivered envelope's numeric non-success `code`, when the adapter
+   * carried it (the resolved A3 fact: the live provider rejects an
+   * invalid/expired key on the collection endpoint as HTTP 200 + an
+   * envelope `code`, not as an HTTP status). `401`/`403` classify as the
+   * §7.2 auth outcome exactly as the same statuses do on the wire
+   * (U-061, D-210); every other value keeps the parse classification.
+   */
+  readonly envelopeCode?: number;
+  /**
+   * The envelope's sanitized diagnostic `msg` alongside `envelopeCode`
+   * (A2's retained string). When the arm classifies as auth, it becomes
+   * the outcome's error message — the §7.3 `lastError` then names the
+   * provider's reason instead of the static parse sentence. Non-blank when
+   * present (the extractor only sets it for non-empty strings).
+   */
+  readonly envelopeMessage?: string;
 }
 
 /* ── Internal helpers ──────────────────────────────────────────────────── */
@@ -325,12 +344,36 @@ export function classifyTransportError(error: TransportError): CycleOutcome {
  * the adapter knows it. Not retryable: §7.2's retry row covers only network
  * failure, timeout, and 5xx, and re-reading a deterministic payload defect
  * within the cycle cannot fix it.
+ *
+ * The resolved-A3 arm (U-061/D-210): when the adapter carried the
+ * envelope-encoded rejection facts, `envelopeCode` 401/403 classifies as
+ * `auth_error` — the same outcome, flags, and §7.3 rank the wire-level
+ * statuses get — with the sanitized envelope `msg` as the error message;
+ * every other non-success code stays `parse_error` (A2).
  */
 export function classifyParseFailure(failure: ParseFailureInput): CycleOutcome {
   if (typeof failure.reason !== 'string' || failure.reason.trim() === '') {
     throw new TypeError('classifyParseFailure: reason must be a non-empty string');
   }
   expectValidHttpStatus(failure.httpStatus, 'classifyParseFailure');
+  if (failure.envelopeMessage !== undefined && failure.envelopeMessage.trim() === '') {
+    throw new TypeError('classifyParseFailure: envelopeMessage must be non-blank when present');
+  }
+  // The resolved A3 arm (U-061, D-210): the live provider rejects an
+  // invalid/expired key on the collection endpoint as HTTP 200 + an
+  // envelope-encoded 401/403, so the same two codes carry the §7.2 auth
+  // outcome here as `outcomeForHttpStatus` gives them on the wire — same
+  // factory, so every §7.2 flag and the §7.3 rank-1 contribution are
+  // identical by construction. The delivered status is retained honestly
+  // (200 in practice); the sanitized `msg` names the provider's reason in
+  // the error message, falling back to the static sentence when the
+  // envelope carried none.
+  if (failure.envelopeCode === 401 || failure.envelopeCode === 403) {
+    return failedOutcome('auth_error', {
+      httpStatus: failure.httpStatus,
+      errorMessage: failure.envelopeMessage ?? failure.reason,
+    });
+  }
   return failedOutcome('parse_error', {
     httpStatus: failure.httpStatus,
     errorMessage: failure.reason,
