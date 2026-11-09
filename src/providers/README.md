@@ -149,10 +149,12 @@ task-099 specifics decision D-053.
   (dossier assumption A7). The response body is never parsed: it was never
   captured, so the check reads only the status the verified flow delivers
   (fixture `synthetic/zai-models.json` exists purely as a stand-in).
-- **Three distinct results (status-based, dossier A3)** — a delivered 2xx
+- **Three distinct results (status-based, dossier A3 — resolved 2026-11-09)** — a delivered 2xx
   resolves (credentials valid); HTTP 401/403 rejects with
-  `CredentialsRejectedError` (`kind: 'credentials-rejected'`, the only
-  rejection statuses — Z.ai's real auth-rejection shape is an assumption);
+  `CredentialsRejectedError` (`kind: 'credentials-rejected'` — the credential
+  check itself was observed answering a bad key with a genuine HTTP 401 on
+  2026-11-09, so this path's shape is no longer an assumption; the collection
+  endpoint's envelope-encoded rejection is a separate finding — U-061);
   every other transport failure of any kind (network, timeout, DNS, 5xx,
   429, other statuses, and 2xx responses the transport gates refused —
   wrong content type, over the byte cap) rejects with

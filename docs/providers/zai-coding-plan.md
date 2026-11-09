@@ -945,7 +945,9 @@ Host `https://api.z.ai`, plain GETs, one verified authentication form
 - Endpoint 4 is the credential check 093 observed (HTTP 200 with the same Coding Plan key —
   [authentication](#authentication-observed-forms)). Its body was never captured, so
   `validateCredentials` is **status-based**: 2xx → valid, 401/403 → rejected (assumption A3 —
-  the same unobserved auth-failure shape as [below](#response-envelopes)), any other
+  now **half-resolved by observation**: the 2026-11-09 smoke probed this path with a bad key
+  and it answered a genuine HTTP 401, classified correctly — see
+  [Real-account smoke — 2026-11-09](#real-account-smoke--2026-11-09)), any other
   outcome (transport failure of any kind) → unavailable — the three distinct results task
   098 must produce, with no key material in the error.
 
@@ -1016,10 +1018,13 @@ Adapter envelope rules (D-047):
   Error codes are never interpreted and never enumerated; `synthetic/zai-envelope-malformed.json`
   drives this shape.
 - **HTTP-level failures** arrive as `TransportStatusError` (kind `http-status`) before any
-  parsing. §7.2's 401/403 → `Auth rejected` handling is an **assumption (A3)**, not an
-  observation: Z.ai's actual auth-rejection shape was never captured, and an envelope-encoded
-  rejection (HTTP 200 + error `code`) would currently read as `Format changed`. A retained
-  §7.4 payload is the diagnostic that would settle it.
+  parsing. §7.2's 401/403 → `Auth rejected` handling was an **assumption (A3)** — now
+  observed (2026-11-09 smoke, [Real-account smoke — 2026-11-09](#real-account-smoke--2026-11-09)):
+  the two endpoints' rejection shapes differ. The credential check answers a bad key with a
+  genuine HTTP 401 (already classified correctly); the **collection endpoint** answers it
+  with HTTP 200 + an error envelope (`{"code":401,"msg":"token expired or incorrect","success":false}`),
+  which currently reads as `Format changed` — the exact fallback this assumption recorded.
+  The correction is tracked as U-061.
 
 ### Metric mapping (endpoint 1 → §8.4)
 
@@ -1179,18 +1184,18 @@ restart, expiry; a weekly card also restores the 5-hour quota) are documented in
 Each unverified gap, the adapter behavior chosen for it, where the gap surfaces, and the
 observation that would reopen it:
 
-| #   | Gap (unverified)                                                               | Adapter behavior                                                                                                        | Surfaces as / reopen trigger                                                      |
-| --- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| A1  | Weekly `unit 6` entry — documented quota, absent from the capture              | recognized as `weekly-quota` (WEEKLY); percentage-only → `PERCENT`; absolutes → arithmetic reading with `CREDITS` (A5)  | first capture containing a `unit 6` entry                                         |
-| A2  | Error envelope (`code`/`msg` on failure) — no sample exists                    | any non-success/absent `code` or wrong-typed container → parse error; `msg` kept as diagnostic; codes never interpreted | first retained §7.4 payload of a real failure                                     |
-| A3  | Auth-rejection shape — 401/403 vs 200 + error envelope                         | only HTTP 401/403 count as `Auth rejected` (§7.2); an envelope-encoded rejection reads `Format changed`                 | first observed bad-key response                                                   |
-| A4  | Reset-card object shape — prototype-only (`available`, `expireTime`)           | not parsed in v1 (endpoint 3 maps nothing)                                                                              | a non-empty card array in a future capture                                        |
-| A5  | Absolute values on `TOKENS_LIMIT`/weekly entries — percentage-only observed    | arithmetic reading applies; `unit: CREDITS` — 094's documented credit metering beats the `TOKENS` type name             | first such capture; a contradiction needs a D-047 successor                       |
-| A6  | `Content-Type: application/json` declaration on 2xx responses — not recorded   | assumed; the transport gate is enforced as-is                                                                           | a `content-type` transport failure in diagnostics                                 |
-| A7  | Additional required request headers — only `Authorization` verified            | adapter sends `Authorization` only                                                                                      | an `http-status`/`content-type` failure appearing on an otherwise healthy account |
-| A8  | `targetType` values other than `PERSONAL` (team scope) — unobserved            | v1 always sends `targetType=PERSONAL`; no other value is defined                                                        | team-plan support, if ever requested                                              |
-| A9  | Subscription record-selection rule — candidates coincide in the single capture | `inCurrentPeriod === true` preferred, then first `status === "VALID"`                                                   | a capture where the rules diverge                                                 |
-| A10 | `percentage` rounding direction — consistent with ceiling, not observed        | pass-through verbatim; no rounding assumed or corrected                                                                 | a capture with sub-percent consumption states                                     |
+| #   | Gap (unverified)                                                                                                                                                                                                                                                                                                                                     | Adapter behavior                                                                                                                                                                                             | Surfaces as / reopen trigger                                                      |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| A1  | Weekly `unit 6` entry — documented quota, absent from the capture                                                                                                                                                                                                                                                                                    | recognized as `weekly-quota` (WEEKLY); percentage-only → `PERCENT`; absolutes → arithmetic reading with `CREDITS` (A5)                                                                                       | first capture containing a `unit 6` entry                                         |
+| A2  | Error envelope (`code`/`msg` on failure) — **observed 2026-11-09** (the [smoke section](#real-account-smoke--2026-11-09)): `{"code":401,"msg":"token expired or incorrect","success":false}`, no `data` container, `msg` account-free                                                                                                                | confirmed as documented: any non-success/absent `code` or wrong-typed container → parse error; `msg` kept as diagnostic; codes never interpreted (the 401 reading is A3's business — U-061)                  | **fired**: first retained §7.4 payload of a real failure                          |
+| A3  | Auth-rejection shape — **resolved 2026-11-09, per endpoint** (the [smoke section](#real-account-smoke--2026-11-09)): endpoint 1 (collection) rejects **envelope-encoded** — HTTP 200 + `{"code":401,"msg":"token expired or incorrect","success":false}`; endpoint 4 (credential check) answers a genuine **HTTP 401**, already classified correctly | until U-061: only HTTP 401/403 count as `Auth rejected` (§7.2); the collection path's envelope-encoded rejection reads `Format changed` — the A3 fallback is what real invalid/expired keys hit on that path | **resolved** by the first observed bad-key response; the fix is tracked as U-061  |
+| A4  | Reset-card object shape — prototype-only (`available`, `expireTime`)                                                                                                                                                                                                                                                                                 | not parsed in v1 (endpoint 3 maps nothing)                                                                                                                                                                   | a non-empty card array in a future capture                                        |
+| A5  | Absolute values on `TOKENS_LIMIT`/weekly entries — percentage-only observed                                                                                                                                                                                                                                                                          | arithmetic reading applies; `unit: CREDITS` — 094's documented credit metering beats the `TOKENS` type name                                                                                                  | first such capture; a contradiction needs a D-047 successor                       |
+| A6  | `Content-Type: application/json` declaration on 2xx responses — not recorded                                                                                                                                                                                                                                                                         | assumed; the transport gate is enforced as-is                                                                                                                                                                | a `content-type` transport failure in diagnostics                                 |
+| A7  | Additional required request headers — only `Authorization` verified                                                                                                                                                                                                                                                                                  | adapter sends `Authorization` only                                                                                                                                                                           | an `http-status`/`content-type` failure appearing on an otherwise healthy account |
+| A8  | `targetType` values other than `PERSONAL` (team scope) — unobserved                                                                                                                                                                                                                                                                                  | v1 always sends `targetType=PERSONAL`; no other value is defined                                                                                                                                             | team-plan support, if ever requested                                              |
+| A9  | Subscription record-selection rule — candidates coincide in the single capture                                                                                                                                                                                                                                                                       | `inCurrentPeriod === true` preferred, then first `status === "VALID"`                                                                                                                                        | a capture where the rules diverge                                                 |
+| A10 | `percentage` rounding direction — consistent with ceiling, not observed                                                                                                                                                                                                                                                                              | pass-through verbatim; no rounding assumed or corrected                                                                                                                                                      | a capture with sub-percent consumption states                                     |
 
 ### Evidence index
 
@@ -1572,16 +1577,16 @@ suspension are the services layer's, over D-048's seven-outcome seam
 failures** — soft endpoints-2/3 failures are absorbed inside the cycle and never reach the
 classifier (the "Soft endpoints" bullet below):
 
-| Failure (this provider's surface)                              | Outcome         | Retried in-cycle                          | `Retry-After`                                                 | §7.3 status                       |
-| -------------------------------------------------------------- | --------------- | ----------------------------------------- | ------------------------------------------------------------- | --------------------------------- |
-| Deadline expiry on endpoint 1 (§7.2 timeout, per request)      | `timeout`       | yes (3×, 2/4/8 s + ≤500 ms jitter, D-059) | no                                                            | `unreachable`                     |
-| DNS / connection / socket / other network failure (endpoint 1) | `network_error` | yes (same)                                | no                                                            | `unreachable`                     |
-| HTTP 5xx on endpoint 1                                         | `server_error`  | yes (same)                                | no                                                            | `unreachable`                     |
-| HTTP 429                                                       | `rate_limited`  | no                                        | honored, 0–3600 s, 429-only (D-062, `polling-retry-after.ts`) | none (age states govern)          |
-| HTTP 401/403 (A3 — only these reject)                          | `auth_error`    | no                                        | no                                                            | `auth-rejected`                   |
-| Any other HTTP status; `response-too-large`; `content-type`    | `parse_error`   | no                                        | no                                                            | `format-changed`                  |
-| Envelope/container/JSON violation (endpoint 1)                 | `parse_error`   | no                                        | no                                                            | `format-changed`                  |
-| Caller abort (§8.1 signal)                                     | `'cancelled'`   | no                                        | no                                                            | none — lifecycle, never persisted |
+| Failure (this provider's surface)                                                                                                      | Outcome         | Retried in-cycle                          | `Retry-After`                                                 | §7.3 status                       |
+| -------------------------------------------------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------- | ------------------------------------------------------------- | --------------------------------- |
+| Deadline expiry on endpoint 1 (§7.2 timeout, per request)                                                                              | `timeout`       | yes (3×, 2/4/8 s + ≤500 ms jitter, D-059) | no                                                            | `unreachable`                     |
+| DNS / connection / socket / other network failure (endpoint 1)                                                                         | `network_error` | yes (same)                                | no                                                            | `unreachable`                     |
+| HTTP 5xx on endpoint 1                                                                                                                 | `server_error`  | yes (same)                                | no                                                            | `unreachable`                     |
+| HTTP 429                                                                                                                               | `rate_limited`  | no                                        | honored, 0–3600 s, 429-only (D-062, `polling-retry-after.ts`) | none (age states govern)          |
+| HTTP 401/403 (A3 resolved 2026-11-09: endpoint 4 behaves this way; endpoint 1 rejects envelope-encoded — misread as parse until U-061) | `auth_error`    | no                                        | no                                                            | `auth-rejected`                   |
+| Any other HTTP status; `response-too-large`; `content-type`                                                                            | `parse_error`   | no                                        | no                                                            | `format-changed`                  |
+| Envelope/container/JSON violation (endpoint 1)                                                                                         | `parse_error`   | no                                        | no                                                            | `format-changed`                  |
+| Caller abort (§8.1 signal)                                                                                                             | `'cancelled'`   | no                                        | no                                                            | none — lifecycle, never persisted |
 
 - **Retries** (D-059, `polling-retry.ts`): one initial attempt plus up to three retries with
   base delays 2 s → 4 s → 8 s plus 0–500 ms jitter, only for `network_error`/`timeout`/
@@ -1712,3 +1717,29 @@ The suites that make the contract executable (all named files exist; the guard p
   section states the current state and cites the dated sections as its provenance; when a future
   round changes the contract, it appends a new dated section and this summary is superseded
   there — never silently rewritten here.
+
+## Real-account smoke — 2026-11-09
+
+Append-only record of the first live bad-key observations (task 198; decision
+D-208; the full report is [docs/smoke-test.md](../smoke-test.md)). Two probes
+with a deliberately invalid key against the live API:
+
+1. **Endpoint 1 (usage-statistics/collection path):** HTTP **200** with the
+   error envelope `{"code":401,"msg":"token expired or incorrect","success":false}`
+   (retained verbatim — it carries no account linkage, per the sanitization
+   policy). The adapter's current classification is `parse_error` /
+   `format-changed` — the A3 fallback the ledger had documented for exactly
+   this shape. Consequence: real invalid/expired keys never reach the §7.2
+   auth outcome on the collection path; the D-064 suspension machinery stays
+   idle; the status/`lastError` surface carries the static parse reason (the
+   `msg` itself is preserved — §7.4 retention and `doctor --raw` render it,
+   and the adapter's sanitized `envelopeMessage` awaits a consumer). The
+   correction is tracked as **U-061**.
+2. **Endpoint 4 (credential check):** a genuine **HTTP 401** —
+   `validateCredentials` classifies it correctly (`credentials-rejected`), so
+   the status-based design holds for this path; no correction needed there.
+
+The same run also fired **A2**'s trigger (the envelope above is the first
+retained §7.4 payload of a real failure) and confirmed the adapter behaves
+exactly as A2 documented (parse classification, `msg` kept, code not
+interpreted). Assumptions A1/A4–A9 are untouched by this round.

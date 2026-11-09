@@ -70,10 +70,11 @@ export class CredentialCheckError extends Error {
 
 /**
  * The provider answered and refused the account credentials — HTTP 401/403
- * on the credential check. An assumption-shaped classification (dossier
- * ledger A3): Z.ai's real auth-rejection shape was never captured, and only
- * these two statuses count as rejection; the first observed bad-key response
- * reopens the assumption.
+ * on the credential check. Observed 2026-11-09 (dossier ledger A3, the
+ * "Real-account smoke" section): a bad key answers this endpoint with a
+ * genuine HTTP 401, so this classification is observation-backed here; the
+ * collection endpoint rejects envelope-encoded instead (U-061 handles that
+ * path).
  */
 export class CredentialsRejectedError extends CredentialCheckError {
   /** The HTTP status that grounded the rejection (401 or 403). */
