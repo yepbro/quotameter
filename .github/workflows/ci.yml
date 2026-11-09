@@ -480,6 +480,29 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Task 196 (spec §17.2's final sentence, decision D-206): the systemd
+  # half of the installation tests — install/start, restart after failure,
+  # reboot enablement, reload, and the user unit with linger — against a
+  # real systemd PID 1 in the purpose-built scenario container (the job
+  # containers have no systemd; D-103/D-104's structural validation stays
+  # the in-suite pin for unit CONTENT). The tarball is the same package
+  # job artifact the install matrix consumes, so the scenarios exercise
+  # the packaged CLI (dist/), not a source checkout.
+  systemd:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the packed tarball
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-tarball
+
+      - name: Run the systemd lifecycle scenarios
+        run: test/systemd/run.sh quotameter-*.tgz
+
   # Unsupported runtime behavior (task 054): a Node.js below the declared
   # minimum must fail with an actionable message naming the required version.
   unsupported-node:
@@ -519,7 +542,7 @@ jobs:
   # required check is exactly `CI`) while the pipeline grows behind it.
   CI:
     name: CI
-    needs: [static, test, timezone, build, install, package, unsupported-node]
+    needs: [static, test, timezone, build, install, package, unsupported-node, systemd]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:

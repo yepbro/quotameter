@@ -22,6 +22,15 @@ Tests are `*.spec.ts`; every test cleans up after itself; no execution-order dep
 
 Type-check ownership: `test/component/**` belongs to exactly one tsconfig project — `ui/tsconfig.json` (server `tsc` cannot parse `.vue` imports, so the root project excludes the directory). The override `"exclude": ["**/node_modules"]` in `ui/tsconfig.json` is load-bearing: without it the config inherits the root's `exclude: ["test/component"]` through `extends` and the specs are type-checked by no project at all (U-030).
 
+## Systemd lifecycle scenarios
+
+The §17.2 systemd lifecycle scenarios (task 196, D-206) cannot run in the vitest projects — they need systemd as PID 1, logind, and a per-user manager, none of which the dev or CI job containers provide. They run in a purpose-built docker container:
+
+- `make test-systemd` — builds the compiled CLI in the dev container, packs the tarball into the data volume (the generated-output rule), builds the `test/systemd/Dockerfile` image, and executes the three scenario phases with real container reboots between them: system-unit install/start/health + crash restart (§5.6 lock re-acquired) + reload (§6.4), reboot enablement + user unit with linger disabled then enabled, and the lingered user unit after a second reboot. Requires a host docker daemon; the first run builds the image (network for apt and the base pull — cached afterwards), and every run installs the tarball inside the container, so npm resolves the runtime dependencies from the registry each time.
+- The same orchestrator, `test/systemd/run.sh <tarball>`, is what the CI `systemd` job runs against the package job's tarball artifact.
+- What the suite pins in `make check`: `test/unit/systemd-scenario.spec.ts` is the structural guard over the machinery (image package set, phase order, the exact landed renderer strings the assertions grep, the wiring) — the scenario pass itself is evidence produced by running them, not a vitest outcome.
+- `SYSTEMD_SCENARIO_KEEP=1` keeps the container and payload directory for inspection instead of tearing them down (the image is intentionally kept in both modes — it is the build cache for the next run).
+
 ## Hard rules
 
 - **No-network guard** is active in every Vitest project: requests to non-loopback hosts throw. HTTP tests use `test/helpers/mockProviderServer.ts` (status/body/delay/socket-termination control) on 127.0.0.1.

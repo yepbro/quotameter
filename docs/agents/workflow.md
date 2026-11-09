@@ -9,7 +9,7 @@
 ## Branch protection and CI
 
 - `master` is protected: pull requests + the required status check named exactly **`CI`** are enforced; force-pushes and branch deletion are disabled.
-- The required check is a **gate job** named `CI` in `.github/workflows/ci.yml` that fails when any job behind it fails (static, test matrix, timezone matrix, install containers, package, unsupported-node). Never rename it; add new jobs to its `needs`. Mutation testing lives in the separate daily `.github/workflows/mutation.yml` (D-045) and does not gate pushes.
+- The required check is a **gate job** named `CI` in `.github/workflows/ci.yml` that fails when any job behind it fails (static, test matrix, timezone matrix, install containers, package, systemd, unsupported-node). Never rename it; add new jobs to its `needs`. The `systemd` job (task 196, D-206) runs the §17.2 lifecycle scenarios in a docker container booted with systemd as PID 1 — it needs the daemon's `--privileged` for that container, the standard systemd-in-docker requirement. Mutation testing lives in the separate daily `.github/workflows/mutation.yml` (D-045) and does not gate pushes.
 - Admin (`yepbro`) may push directly — used during bootstrap; regular work lands via squash-merged PRs.
 - Node matrix: `22.13.0` (declared minimum), `22`, `24` in the test job; the install job's clean-container matrix pins §17.2's two runtime lines — the declared minimum and the 24 LTS line the spec names — each SHA-verified (see below). §17.2 names 22 and 24; adding a newer LTS to either matrix is a deliberate spec-following change, not an automatic one.
 - Diagnosing a red run: `gh api "repos/yepbro/quotameter/actions/runs?head_sha=<full-sha>"` → job ids → `gh run view --job <id> --log`.

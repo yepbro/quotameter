@@ -132,6 +132,26 @@ test-ci: deps ## Run tests in CI mode (coverage + JUnit report)
 test-e2e: deps build ## Run Playwright E2E against a locally built UI
 	@$(RUN) npm run test:e2e
 
+# The systemd lifecycle scenarios (task 196, spec §17.2) run on the HOST:
+# they need a real systemd PID 1, which only a purpose-built docker container
+# provides (the dev container is not systemd-capable). The tarball is built
+# in the dev container and packed into the data volume (generated output
+# stays out of the tracked tree), then handed to the host-side orchestrator.
+.PHONY: test-systemd
+test-systemd: deps ## Run the §17.2 systemd lifecycle scenarios in a systemd container (host docker)
+	@set -e; \
+	  tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/quotameter-systemd-tarball-XXXXXX"); \
+	  trap 'rm -rf "$$tmp"' EXIT; \
+	  $(RUN) npm run build:cli; \
+	  name=$$($(RUN) bash -c 'set -euo pipefail; mkdir -p /var/lib/quotameter/reports; \
+	    npm pack --pack-destination /var/lib/quotameter/reports | tail -n 1'); \
+	  case "$$name" in \
+	    quotameter-*.tgz) ;; \
+	    *) echo "npm pack produced an unexpected result: $$name" >&2; exit 1 ;; \
+	  esac; \
+	  $(RUN) cat "/var/lib/quotameter/reports/$$name" > "$$tmp/$$name"; \
+	  bash test/systemd/run.sh "$$tmp/$$name"
+
 .PHONY: test-watch
 test-watch: deps ## Watch mode for local development (interactive)
 	$(RUN_TTY) npm run test:watch
