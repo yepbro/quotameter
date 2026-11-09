@@ -30,7 +30,11 @@ import { describe, expect, it } from 'vitest';
  *   `verify:build` and the tarball check (task 185/D-195: the installed
  *   command resolves `dist/cli/main.js`, so the published tarball must
  *   carry it and the checks must validate it);
- * - a test gate (`test:ci`) runs before publishing;
+ * - a test gate (`test:ci`) runs before publishing — inside the same
+ *   node container image as the CI test matrix's declared-minimum cell,
+ *   never on the bare runner host (U-062, D-211: the first v0.1.0 tag
+ *   failed 29 CLI integration tests deterministically because the runner
+ *   host ships systemd/timedatectl while the CI test containers do not);
  * - the tarball allowlist check runs before the publish step;
  * - the publish runs with `--provenance` under the `id-token: write`
  *   permission, and no npm token/secret appears anywhere in the workflow;
@@ -252,11 +256,58 @@ describe('release workflow guard (task U-029, spec §4.4; decisions D-008, D-152
 
   it('a coverage-gated test run and the allowlist check precede the publish', () => {
     const steps = releaseSteps();
-    const tests = requireStep(steps, (run) => run === 'npm run test:ci', 'test suite');
+    const tests = requireStep(
+      steps,
+      (run) => run.startsWith('docker run'),
+      'containerized test suite',
+    );
     const pack = requireStep(steps, (run) => run === 'npm run check:package', 'tarball allowlist');
     const publish = requireStep(steps, (run) => run.startsWith('npm publish'), 'npm publish');
     expect(tests, 'the test gate must precede the publish step').toBeLessThan(publish);
     expect(pack, 'the tarball allowlist check must precede the publish step').toBeLessThan(publish);
+  });
+
+  it('the test gate runs the suite in the CI test matrix container, not on the runner host', () => {
+    // U-062/D-211: the first v0.1.0 tag ran `npm run test:ci` on the bare
+    // ubuntu-latest runner and failed 29 CLI integration tests
+    // deterministically — the runner host ships systemd/timedatectl while
+    // the node containers CI's test job runs in do not, and the CLI suites
+    // are calibrated to the container (cli-doctor.spec.ts's own words:
+    // "The container ships no systemd"). The gate therefore executes in
+    // the same image as the CI test matrix's declared-minimum cell, with
+    // the same fresh `npm ci` and the same non-root `setpriv` run that job
+    // performs (the §6.3 permission-refusal arms are meaningless for root).
+    const steps = releaseSteps();
+    const testsIndex = requireStep(
+      steps,
+      (run) => run.startsWith('docker run'),
+      'containerized test suite',
+    );
+    const script = steps[testsIndex]?.runLines.join('\n') ?? '';
+    expect(script, 'the test gate must run `npm run test:ci` inside the container').toMatch(
+      /npm run test:ci/,
+    );
+    expect(
+      script,
+      'the test gate must install dependencies inside the container (a fresh npm ci, ' +
+        'not the host node_modules built for a different OS)',
+    ).toMatch(/\bnpm ci\b/);
+    expect(
+      script,
+      'the test gate must drop to the image node user before running the suite, ' +
+        'mirroring the CI test cell (root bypasses the §6.3 permission arms)',
+    ).toMatch(/setpriv --reuid=node --regid=node --init-groups/);
+    const image = /node:(\d+\.\d+\.\d+)/.exec(script)?.[1];
+    const ciMatrixMinimum = /node: \['([\d.]+)'/.exec(
+      readFileSync(path.join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8'),
+    )?.[1];
+    expect(ciMatrixMinimum, 'ci.yml no longer names a declared-minimum matrix entry').toBeDefined();
+    expect(
+      image,
+      'the test-gate container image must equal the CI test matrix declared-minimum ' +
+        'cell — environment parity is the U-062 fix; bump both together (the ci.yml ' +
+        'all-sites procedure in that workflow covers the matrix side)',
+    ).toBe(ciMatrixMinimum);
   });
 
   it('the publish refuses to run unless the tagged commit has a green CI check run', () => {

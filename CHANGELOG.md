@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The release workflow's test gate now runs the suite in the CI test container instead of on the bare runner host (task U-062, spec §4.4; decision D-211): the repository's first release tag (`v0.1.0`, 2026-11-09) failed its workflow run deterministically — 29 CLI integration-test failures across five suites on a green-CI commit — because the `ubuntu-latest` runner host ships `timedatectl`/systemd answers where the CI test job's `node:` containers have none, and the CLI suites are calibrated to the container ("The container ships no systemd"). The step now executes `npm ci` and `npm run test:ci` inside the CI test matrix's declared-minimum image (`node:22.13.0`, non-root via `setpriv` — the CI cell's exact shape), with the image cross-pinned against ci.yml's matrix by the release-workflow guard; the OIDC exchange and `npm publish --provenance` stay on the runner host. `docs/release.md`'s Tagging section gains the companion clause: a tag whose release never published (no version on npm — the registry is the arbiter) may be deleted and re-pointed at the fixed commit, under which the never-published `v0.1.0` tag was re-created at this fix.
+
 ## [0.1.0] - 2026-11-09
 
 ### Added

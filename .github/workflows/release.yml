@@ -100,10 +100,26 @@ jobs:
           esac
 
       # Release-relevant gate: the same coverage-gated suite CI's test job
-      # and `make check` run. Publishing a tag whose tests fail must never
-      # happen, even when the tagged commit's CI run was green.
+      # and `make check` run — in the SAME container image as the CI test
+      # matrix's declared-minimum cell (node:22.13.0; the image is
+      # cross-pinned against ci.yml by test/unit/release-workflow.spec.ts).
+      # The first v0.1.0 tag (run 42645883527, 2026-11-09) ran the suite on
+      # the bare ubuntu-latest runner and failed 29 CLI integration tests
+      # deterministically: the runner host ships systemd/timedatectl while
+      # the node containers CI tests in do not, and the doctor/status/init
+      # expectations are calibrated to the container (U-062, D-211). The
+      # execution shape mirrors the CI cell too: a fresh npm ci inside the
+      # container (the named volume keeps its node_modules off the host's,
+      # which the build steps below still use) and the non-root setpriv run
+      # that job performs — the §6.3 permission-refusal arms are meaningless
+      # for root. Like the CI cell, the workspace is chowned to the image
+      # node user for the run, then restored to its original owner (the
+      # runner's own uid) so the host build/publish steps after this one
+      # keep writing freely. Publishing and the OIDC exchange stay on the
+      # runner host.
       - name: Run the test suite
-        run: npm run test:ci
+        run: |
+          docker run --rm -v "$PWD":/app -v quotameter-release-node-modules:/app/node_modules -w /app node:22.13.0 sh -c 'owner=$(stat -c %u:%g /app) || exit 1; npm ci || exit 1; chown -R node:node /app || exit 1; setpriv --reuid=node --regid=node --init-groups env HOME=/home/node npm run test:ci; rc=$?; chown -R "$owner" /app; exit $rc'
 
       # The published tarball ships the prebuilt web UI (spec §3, §17.2: no
       # install-time build). DIST_DIR stays unset, so the build writes to
