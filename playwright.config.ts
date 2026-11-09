@@ -16,7 +16,10 @@ export default defineConfig({
   testDir: 'test/e2e',
   timeout: 30_000,
   fullyParallel: true,
-  retries: process.env.CI ? 1 : 0,
+  // Zero retries everywhere (task 197, D-207): a CI-side retry would mask a
+  // first-attempt flake, and spec §17's "no flaky tests" demands that a flaky
+  // cell surface as a red run, not pass on the second attempt.
+  retries: 0,
   reporter: process.env.CI ? [['list'], ['junit', { outputFile: junitOutputFile }]] : 'list',
   // Container runs write artifacts into the isolated data volume (see
   // compose.yaml) to avoid ownership conflicts with host-generated output.

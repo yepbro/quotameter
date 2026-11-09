@@ -18,12 +18,14 @@ quality target comes from spec §17.3 (see
 | Cost       | Free — Actions minutes are not billed for public repositories                                                                                   |
 | Output     | Run artifact (JSON + HTML; the Stryker output log when the run crashes before scoring) and the rolling `mutation-report` issue                  |
 
-The pipeline inside the run: checkout → `npm ci` → Stryker
-(`continue-on-error` and output teed to a log, so both a below-threshold
-score and a crash still produce the triage issue) → the Stryker log is
-preserved into the artifact when no report was written → artifact upload →
-markdown rendered from the JSON report (or a crash report when the JSON
-never appeared) → issue upsert through the preinstalled `gh` CLI (the
+The pipeline inside the run: checkout → `npm ci` → a digest-pinned `gh`
+installed into the job container (the runner image's preinstalled CLI
+does not exist inside the container — the D-162 blind spot, D-207) →
+Stryker (`continue-on-error` and output teed to a log, so both a
+below-threshold score and a crash still produce the triage issue) → the
+Stryker log is preserved into the artifact when no report was written →
+artifact upload → markdown rendered from the JSON report (or a crash
+report when the JSON never appeared) → issue upsert through `gh` (the
 repository pins third-party actions by commit SHA and adds none here) →
 the job is marked failed **after** reporting — with wording that matches
 what actually happened: a below-break score says so, a crashed run says
@@ -174,16 +176,26 @@ configured break threshold`. Thresholds live in
 ## Running locally
 
 ```bash
-make mutation          # full Stryker run in the dev container (~30 min on 8 cores)
+make mutation          # full Stryker run in the dev container
 ```
 
 Reports land in the container's report volume (`REPORTS_DIR`, see
 [`docs/agents/environment.md`](agents/environment.md)); the JSON reporter
 writes the same `mutation/mutation.json` the GitHub workflow consumes, so
-a local HTML/JSON review works identically to the artifact.
+a local HTML/JSON review works identically to the artifact. Budget the
+time deliberately: the run mutates everything under `src/` (18 013 mutants
+at task 197's audit) at `concurrency: 4` — a scoped run
+(`npx stryker run --mutate src/<module>.ts`) proves the initial test run
+and scores one file in minutes, while the full run is an hours-scale job
+(the hosted CI job must fit it inside its 6-hour ceiling; the concurrency
+choice and its measurement are recorded in D-207).
 
 ## Operational notes
 
+- **The reporting steps must stay bash** (task 197, D-207): the job runs in
+  a container whose default step shell is `sh` (dash) — the upsert step's
+  `set -euo pipefail` is illegal there and silently killed the triage
+  reporting on every container run until the step declared `shell: bash`.
 - **Schedule drift is normal** — GitHub queues cron runs and can be late
   by tens of minutes in busy windows; the non-round minute (`17`) keeps
   us out of the worst congestion.

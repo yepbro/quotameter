@@ -202,6 +202,90 @@ describe('mutation workflow honesty guard (task U-046, spec §4.4, §17.3; decis
     ).toBe(true);
   });
 
+  it('every pipefail-using step declares bash, and gh is installed before its first use', () => {
+    const steps = mutationSteps();
+
+    // The D-162 container's default step shell is `sh` (dash), where
+    // `set -o pipefail` is illegal: the upsert step died at line 1 with
+    // "set: Illegal option -o pipefail" (exit 2) on every container run
+    // until it declared `shell: bash` (task 197, D-207). The rule is
+    // generic — any step whose script uses pipefail must declare bash —
+    // so the next pipefail step cannot regress silently.
+    for (const step of steps) {
+      if (!step.runLines.some((line) => line.includes('pipefail'))) continue;
+      expect(
+        step.rawLines.some((line) => line.trim() === 'shell: bash'),
+        `${step.name}: uses pipefail but does not declare shell: bash — under ` +
+          'the container default sh the step dies at "set: Illegal option -o ' +
+          'pipefail" (D-207)',
+      ).toBe(true);
+    }
+
+    // The same blind spot hid a second defect (the review round's P1):
+    // `gh` is preinstalled on the hosted RUNNER image, not inside the
+    // node container, so the upsert would have died at `gh: command not
+    // found` (exit 127) even with bash. The install step must exist,
+    // verify its tarball against pinned digests, self-check, and run
+    // before the first step that invokes gh.
+    const install = steps.find((step) => /^Install the GitHub CLI/.test(step.name));
+    expect(
+      install,
+      'the digest-pinned gh install step is missing — without it the upsert ' +
+        'step exits 127 at the first gh call inside the container (D-207)',
+    ).toBeDefined();
+    const firstGhUse = steps.findIndex((step) =>
+      step.runLines.some((line) => /\bgh \w/.test(line)),
+    );
+    const installIndex = steps.findIndex((step) => step.name === install?.name);
+    expect(
+      firstGhUse,
+      'some step invokes gh — the ordering pin below needs that step to exist',
+    ).toBeGreaterThan(-1);
+    expect(
+      installIndex,
+      'the install step must exist in the scanned order (a -1 here would ' +
+        'make the ordering pin vacuous)',
+    ).toBeGreaterThan(-1);
+    expect(installIndex).toBeLessThan(firstGhUse);
+    expect(
+      install?.runLines.includes('echo "${digest}  /tmp/gh.tar.gz" | sha256sum -c -'),
+      'the gh tarball must be digest-verified (the D-157 posture): a bare ' +
+        'download trusts the release CDN against itself',
+    ).toBe(true);
+    // The version and BOTH architecture digests move together: the pinned
+    // literals appear verbatim, once each (a bumped version that leaves a
+    // digest behind fails here).
+    for (const literal of [
+      'version=2.103.3',
+      'digest=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d',
+      'digest=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63',
+    ]) {
+      expect(
+        install?.runLines.filter((line) => line.includes(literal)).length,
+        `the gh pin "${literal.slice(0, 24)}…" must appear exactly once — a ` +
+          'version bump edits the version and both digests in one change',
+      ).toBe(1);
+    }
+    expect(
+      install?.runLines.some((line) => line.trim() === 'gh --version'),
+      'the install step self-checks — a broken binary must fail the job at ' +
+        'install time, not at the first triage call',
+    ).toBe(true);
+
+    // And the upsert step itself declares bash (the pipefail rule above
+    // holds because its `set -euo pipefail` line is now legal — pin the
+    // declaration explicitly so removing it is a named failure).
+    const upsert = stepByName(
+      /^Upsert the triage issue$/,
+      "the 'Upsert the triage issue' step is missing",
+    );
+    expect(
+      upsert.rawLines.some((line) => line.trim() === 'shell: bash'),
+      'the upsert step runs under bash — its set -euo pipefail is illegal ' +
+        "under the container's default sh (D-207)",
+    ).toBe(true);
+  });
+
   it('the upsert verdict comes from the report file, not the step outcome', () => {
     const step = stepByName(
       /^Upsert the triage issue$/,

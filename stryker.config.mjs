@@ -54,5 +54,12 @@ export default {
     break: 60,
   },
   timeoutMS: 60000,
-  concurrency: 2,
+  // Four runners: the hosted job's 4-vCPU container with two runners measured
+  // 13 223/16 507 mutants in the 6 h hosted-job ceiling (2026-11-05..07 runs,
+  // ~1.6 s of wall time per mutant, ≈3.3 s of runner time per mutant per
+  // runner) — a full 18k-mutant run needs ~8 h of wall time and can never
+  // score. Four runners (the dev container's 8 cores leave local headroom)
+  // projects under the ceiling; task 197 (D-207) records the measurement and
+  // the oversubscription risk with its fallback.
+  concurrency: 4,
 };

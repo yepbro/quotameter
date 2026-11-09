@@ -1,7 +1,7 @@
 import { chmod, mkdir, stat, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createInitDatabase } from '../../src/cli/init-database';
 import { lockFilePath } from '../../src/server/single-instance';
 import { createTempDir } from '../helpers/isolation';
@@ -17,17 +17,52 @@ import { createTempDir } from '../helpers/isolation';
  * of a suite that actually opens databases (D-116).
  */
 
+/**
+ * The hostile-umask simulation (task 197, D-207). `process.umask(mask)`
+ * throws in worker threads — "Setting process.umask() is not supported in
+ * workers" — which is exactly where Stryker's vitest runner executes the
+ * suite: the 2026-11-08 daily run crashed in its initial test run on this
+ * cell (the config-write/config-permissions suites already simulate for the
+ * same reason). The kernel's `mkdir` masking (`mode & ~umask`) is applied
+ * on the fs seam instead: a module mock overrides only `mkdir`, and only
+ * while a mask is armed, so every other call (and every other test) keeps
+ * the real filesystem. `createTempDir` uses `mkdtemp`, which the override
+ * does not touch.
+ */
+const hostileUmask = vi.hoisted(() => ({ mask: 0 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const maskedMkdir = async (
+    path: string,
+    options?: number | { recursive?: boolean; mode?: number },
+  ): Promise<void | string> => {
+    const base = typeof options === 'number' ? { mode: options } : { ...options };
+    const mode =
+      base.mode !== undefined && hostileUmask.mask !== 0
+        ? base.mode & ~hostileUmask.mask
+        : base.mode;
+    // The literal `recursive: true` / bare-object shapes keep the call
+    // inside real mkdir's overloads (a `recursive?: boolean` union would
+    // match none of them under strict checking).
+    return base.recursive === true
+      ? actual.mkdir(path, { recursive: true, mode })
+      : actual.mkdir(path, { mode });
+  };
+  return { ...actual, mkdir: maskedMkdir };
+});
+
 describe('createInitDatabase (real filesystem, real storage seam)', () => {
   it('creates the data directory at 0700 even under a hostile umask, and migrates', async () => {
     const dir = await createTempDir('qm-init-db-');
     const dataDir = join(dir.path, 'deep/data');
-    const previousUmask = process.umask();
     try {
-      // umask 0177 would mask a recursive mkdir's 0700 down to 0600 on
-      // EVERY level it creates — untraversable; the level-by-level
-      // mkdir+chmod walk must keep creation working and every created
-      // level at 0700 (the configuration path's own discipline).
-      process.umask(0o177);
+      // A simulated umask of 0177 would mask a recursive mkdir's 0700 down
+      // to 0600 on EVERY level it creates — untraversable; the
+      // level-by-level mkdir+chmod walk must keep creation working and
+      // every created level at 0700 (the configuration path's own
+      // discipline).
+      hostileUmask.mask = 0o177;
       const outcome = await createInitDatabase(dataDir);
       expect(outcome).toEqual({
         state: 'ready',
@@ -36,7 +71,7 @@ describe('createInitDatabase (real filesystem, real storage seam)', () => {
       expect((await stat(dataDir)).mode & 0o777).toBe(0o700);
       expect((await stat(join(dir.path, 'deep'))).mode & 0o777).toBe(0o700);
     } finally {
-      process.umask(previousUmask);
+      hostileUmask.mask = 0;
       await dir.remove();
     }
   });

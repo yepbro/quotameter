@@ -7,8 +7,11 @@
 # summary as a comment so the history stays reviewable. A run that dies
 # before scoring (no `reports/mutation/mutation.json`) is reported as a
 # crash — never as a below-threshold score — and never replaces the last
-# scored body. Uses the preinstalled `gh` CLI instead of a third-party
-# action (the repository pins actions by commit SHA and adds none here).
+# scored body. The triage uses `gh` installed into the job container by
+# a digest-pinned step below (the runner image's preinstalled CLI does
+# not exist inside the container — the D-162 move's blind spot) instead
+# of a third-party action (the repository pins actions by commit SHA
+# and adds none here).
 name: mutation
 
 on:
@@ -42,6 +45,36 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # The triage reporting needs the GitHub CLI, and the job container
+      # ships none: `gh` is preinstalled on the hosted RUNNER image, not
+      # inside `node:22.13.0` — with only the upsert step's shell fixed,
+      # the step died at `gh: command not found` (task 197's review
+      # round, D-207's fourth-axis catch). Supply-chain pin (the D-157
+      # posture): the tarball is verified against SHA-256 digests pinned
+      # here in repository history — the one trust domain a compromised
+      # release CDN cannot rewrite.
+      #
+      # Digest sources, re-verified by downloading and hashing both
+      # archives of the version before pinning:
+      # https://github.com/cli/cli/releases/tag/v2.103.3 (retrieved 2026-11-08)
+      #
+      # BUMP PROCEDURE: the version and BOTH digests move together in
+      # one change (`test/unit/mutation-workflow.spec.ts` pins them).
+      - name: Install the GitHub CLI for triage reporting
+        run: |
+          version=2.103.3
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) arch=amd64; digest=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d ;;
+            aarch64) arch=arm64; digest=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63 ;;
+            *) echo "::error::unsupported runner architecture: $arch" >&2; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${arch}.tar.gz" -o /tmp/gh.tar.gz
+          echo "${digest}  /tmp/gh.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gh.tar.gz -C /tmp
+          install -m 0755 "/tmp/gh_${version}_linux_${arch}/bin/gh" /usr/local/bin/gh
+          gh --version
 
       # Below-threshold results must still produce the triage issue, so the
       # step's failure is recorded instead of stopping the job. The output
@@ -93,12 +126,18 @@ jobs:
           STRYKER_LOG_FILE: /tmp/stryker-output.log
         run: node scripts/render-mutation-report.mjs > /tmp/mutation-report.md
 
+      # `shell: bash` for the same reason as the Stryker step above: the job
+      # container's default step shell is `sh` (dash), where the script's
+      # `set -o pipefail` is illegal — the step died with "set: Illegal
+      # option -o pipefail" (exit 2) on every container run since D-162,
+      # silently killing the issue triage even when Stryker scored green.
       - name: Upsert the triage issue
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           STRYKER_OUTCOME: ${{ steps.stryker.outcome }}
+        shell: bash
         run: |
           set -euo pipefail
           date=$(date -u +%F)
