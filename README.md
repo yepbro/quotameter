@@ -15,6 +15,7 @@ Designed to be installed and operated by one person on their own Linux VPS: dist
 - [Technical Specification](plan/SPECIFICATION.md) — full requirements: architecture, providers, persistence, security, testing, and release process
 - [Implementation Task Plan](plan/tasks.md) — staged, independently reviewable task breakdown with acceptance conditions
 - [Decision Log](DECISIONS.md) — key technical and business decisions, their reasons, and consequences
+- [MVP acceptance evidence](docs/mvp-acceptance.md) — every §19 acceptance criterion verified against named evidence (automated suites, clean-container runs, the live smoke), with residuals and the `1.0.0` re-verification hook
 - [Contributing guide](CONTRIBUTING.md) — commit convention, pull-request rules, and repository workflow
 - [Configuration reference](docs/configuration.md) — every `config.json` field: type, default, validation, environment override, and restart requirement, drift-guarded against the shipped schema
 - [Configuration JSON Schema](docs/config-schema.md) — the published `config.json` schema, editor validation, and regeneration
